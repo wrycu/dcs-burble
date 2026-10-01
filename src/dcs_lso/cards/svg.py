@@ -14,7 +14,7 @@ from html import escape
 
 from ..detect import PassResult, PassSample
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
-from ..grading import GradeResult
+from ..grading import GradeResult, grade_name, grade_short
 from ..grading.grade import GLIDESLOPE_DEG, LINEUP_DEG, POSITIONS
 
 NM = 1852.0
@@ -237,7 +237,7 @@ def _table(grade: GradeResult, out: list[str]) -> None:
         out.append(f'<text class="tc-muted" x="{cx}" y="{top}" font-size="11" font-weight="600">{head}</text>')
     for i, st in enumerate(grade.positions):
         ry = top + 20 + i * 20
-        remarks = " ".join(r.text for r in grade.remarks if r.position is st.position)
+        remarks = " · ".join(r.english for r in grade.remarks if r.position is st.position)
         if st.samples == 0 or st.glideslope_deg is None:
             cells = [st.position.value, "not counted", "", "", ""]
         else:
@@ -246,7 +246,7 @@ def _table(grade: GradeResult, out: list[str]) -> None:
                      aoa, remarks]
         for cx, cell in zip(cols, cells):
             out.append(f'<text class="tc-text" x="{cx}" y="{ry}" font-size="12">{escape(cell)}</text>')
-    iw = " ".join(r.text for r in grade.remarks if r.position.value == "IW")
+    iw = " · ".join(r.english for r in grade.remarks if r.position.value == "IW")
     if iw:
         ry = top + 20 + len(grade.positions) * 20
         out.append(f'<text class="tc-text" x="{cols[0]}" y="{ry}" font-size="12">IW</text>')
@@ -282,8 +282,8 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     out.append(f'<text class="tc-muted" x="{PAD_L}" y="56" font-size="12">{escape(sub)}</text>')
     gx = PAD_L + PLOT_W
     out.append(f'<text class="{_grade_class(grade.grade.value)}" x="{gx}" y="36" font-size="26" font-weight="700" '
-               f'text-anchor="end">{escape(grade.grade.value)}</text>')
-    detail = f"{grade.points:g} pts · grading v{grade.version}"
+               f'text-anchor="end">{escape(grade_short(grade.grade.value))}</text>')
+    detail = f"{grade_name(grade.grade.value)} · {grade.points:g} pts · grading v{grade.version}"
     if p.wire:
         detail = f"wire #{p.wire} · " + detail
     out.append(f'<text class="tc-muted" x="{gx}" y="56" font-size="12" text-anchor="end">{escape(detail)}</text>')

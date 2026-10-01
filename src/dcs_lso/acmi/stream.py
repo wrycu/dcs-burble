@@ -138,7 +138,9 @@ async def serve_recording(path: str | Path, host: str = "127.0.0.1", port: int =
             loop = asyncio.get_running_loop()
             start = loop.time()
             first_frame: float | None = None
-            for line in iter_lines(path):
+            for n, line in enumerate(iter_lines(path)):
+                if n % 1000 == 0:
+                    await writer.drain()  # backpressure: let the reader keep up (and yield the loop)
                 if line.startswith("0,RecordingTime="):
                     line = f"0,RecordingTime={datetime.now(UTC).isoformat().replace('+00:00', 'Z')}\n"
                 if speed > 0 and line.startswith("#"):

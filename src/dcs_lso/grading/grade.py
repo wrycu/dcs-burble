@@ -72,15 +72,68 @@ class Grade(StrEnum):
     WAVE_OFF = "WO"
 
 
+# Plain-language names. "---" in particular is a real grade (No Grade: safe but below
+# average), not a missing one, so it should always be shown with its name.
+NAMES = {Grade.PERFECT: "Perfect", Grade.OK: "OK", Grade.FAIR: "Fair", Grade.NO_GRADE: "No Grade",
+         Grade.CUT: "Cut", Grade.BOLTER: "Bolter", Grade.WAVE_OFF: "Wave-off"}
+# Short labels for tight spaces such as greenie board cells.
+SHORT = {Grade.PERFECT: "OK+", Grade.NO_GRADE: "NG"}
+
+
+def grade_name(grade: str) -> str:
+    try:
+        return NAMES[Grade(grade)]
+    except ValueError:
+        return grade
+
+
+def grade_short(grade: str) -> str:
+    try:
+        g = Grade(grade)
+    except ValueError:
+        return grade
+    return SHORT.get(g, g.value)
+
+
 POINTS = {Grade.PERFECT: 5.0, Grade.OK: 4.0, Grade.FAIR: 3.0, Grade.NO_GRADE: 2.0,
           Grade.BOLTER: 2.5, Grade.WAVE_OFF: 1.0, Grade.CUT: 0.0}
 
 
+# (a little, normal, a lot) wording per remark code; a plain string has no severity.
+ENGLISH: dict[str, tuple[str, str, str] | str] = {
+    "HI": ("A little high", "High", "Well high"),
+    "LO": ("A little low", "Low", "Well low"),
+    "LUL": ("Lined up a little left", "Lined up left", "Lined up well left"),
+    "LUR": ("Lined up a little right", "Lined up right", "Lined up well right"),
+    "F": ("A little fast", "Fast", "Very fast"),
+    "SLO": ("A little slow", "Slow", "Very slow"),
+    "LNF": "Landed nose first",
+}
+POSITION_ENGLISH = {Position.X: "at the start", Position.IM: "in the middle", Position.IC: "in close",
+                    Position.AR: "at the ramp", Position.IW: "in the wires"}
+
+
 @dataclass(frozen=True, slots=True)
 class Remark:
-    code: str  # HI, LO, LUL, LUR, F, SLO
+    code: str  # HI, LO, LUL, LUR, F, SLO, LNF
     position: Position
     severity: Severity
+
+    @property
+    def english(self) -> str:
+        """Plain-English wording, without the position (e.g. "Well high")."""
+        words = ENGLISH.get(self.code)
+        if words is None:
+            return self.text
+        if isinstance(words, str):
+            return words
+        little, normal, lot = words
+        return {Severity.LITTLE: little, Severity.LOT: lot}.get(self.severity, normal)
+
+    @property
+    def english_with_position(self) -> str:
+        """E.g. "Well high at the start"."""
+        return f"{self.english} {POSITION_ENGLISH[self.position]}"
 
     @property
     def text(self) -> str:

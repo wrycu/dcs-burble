@@ -70,6 +70,8 @@ def test_board_and_pass_pages(client, token):
     board = client.get("/", params={"days": 0}).text
     assert "Greenie Board" in board and "Wrycu" in board and "New callsign" in board
     assert board.count('href="/passes/') == len(PASS_FILES)
+    # "---" is a real grade (No Grade); the board must not show it as a bare "---".
+    assert ">NG</a>" in board and "No Grade" in board and ">---</a>" not in board
     only = client.get("/", params={"days": 0, "pilot": "New callsign"}).text
     assert only.count('href="/passes/') == 1
 

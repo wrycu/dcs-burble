@@ -83,16 +83,13 @@ class Central:
     # -- passes -----------------------------------------------------------------------------
 
     def load_pass(self, p: Pass) -> PassResult:
-        """Rebuild the pass from its stored slice (plus DCS's grade from the sidecar)."""
-        sidecar = p.slice.sidecar
+        """Rebuild the pass from its stored slice (plus DCS's grade, which may have arrived later)."""
         recording = load_recording(self.store.path(p.slice.sha256))
         for candidate in find_passes(recording):
             if (candidate.aircraft_id == p.aircraft_id
                     and abs(candidate.start_time - p.start_time) <= START_TIME_TOLERANCE_S):
-                dcs = (sidecar.get("dcs") or {})
-                if dcs.get("grade"):
-                    candidate.dcs_grade = LsoGrade(**dcs["grade"])
-                candidate.wire = dcs.get("wire")
+                candidate.dcs_grade = LsoGrade.parse(p.dcs_grade) if p.dcs_grade else None
+                candidate.wire = p.wire
                 return candidate
         raise IngestError("pass not found in its slice")
 
@@ -105,6 +102,12 @@ class Central:
         with self.sessions.begin() as s:
             existing = s.scalar(select(Pass).where(Pass.source_id == source_id, Pass.pass_key == key))
             if existing is not None:
+                # The only thing a re-upload can add: DCS's grade, if it wasn't known the first time
+                # (e.g. found in debrief.log at mission end).
+                dcs = sidecar.get("dcs") or {}
+                if existing.dcs_grade is None and (dcs.get("grade") or {}).get("raw"):
+                    existing.dcs_grade = dcs["grade"]["raw"]
+                    existing.wire = dcs.get("wire")
                 g = existing.grade
                 return IngestResult(existing.id, False, g.grade if g else "", g.text if g else "")
 

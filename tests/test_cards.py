@@ -23,10 +23,13 @@ def test_card_is_valid_svg_with_grade_and_tracks():
     root = ET.fromstring(ai_card())
     assert root.tag == f"{SVG}svg"
     text = " ".join(t.text or "" for t in root.iter(f"{SVG}text"))
-    assert "C" in text and "LNFIW" in text and "DCS LSO: GRADE:C : LNFIW  WIRE# 3" in text and "wire #3" in text
+    assert "C" in text and "DCS LSO: GRADE:C : LNFIW  WIRE# 3" in text and "wire #3" in text
+    # Our remarks are in plain English on the card (DCS's own line stays as DCS wrote it).
+    assert "Landed nose first" in text and "A little fast" not in text and "Fast" in text
     tracks = [e for e in root.iter(f"{SVG}polyline") if "tc-track" in e.get("class", "")]
     assert len(tracks) >= 2  # side and top views (split into AOA-coloured runs)
     assert any("tc-wire-caught" in e.get("class", "") for e in root.iter(f"{SVG}line"))
+    assert "Cut · 0 pts" in text
     # Plot areas are clipped with clipPath (nested <svg> viewports didn't render in browsers).
     assert not [e for e in root.iter(f"{SVG}svg") if e is not root]
     assert {c.get("id") for c in root.iter(f"{SVG}clipPath")} == {"tc-side", "tc-top"}
@@ -55,3 +58,12 @@ def test_cards_command_writes_svgs_and_index(tmp_path):
     # Inlined cards need distinct clipPath ids.
     ids = [f'id="c{i}-side"' for i in range(len(passes))]
     assert all(index.count(i) == 1 for i in ids)
+
+
+def test_no_grade_is_labelled_not_blank():
+    from dcs_lso.acmi import load_recording
+    (p,) = find_passes(load_recording(FIXTURES / "passes" / "20260928-025423_New_callsign_86s.zip.acmi"))
+    root = ET.fromstring(render_card(p, grade_pass(p)))
+    texts = [t.text or "" for t in root.iter(f"{SVG}text")]
+    assert "NG" in texts and "---" not in texts
+    assert any(t.startswith("No Grade · 2 pts") for t in texts)

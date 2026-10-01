@@ -306,6 +306,31 @@ def _upload(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def _collect(args: argparse.Namespace) -> int:
+    import logging
+
+    from .edge.collector import Collector, CollectorConfig
+
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
+    dcs_log = Path(args.dcs_log) if args.dcs_log else None
+    debrief = Path(args.debrief) if args.debrief else (dcs_log.with_name("debrief.log") if dcs_log else None)
+    config = CollectorConfig(
+        work_dir=Path(args.work_dir), tacview_host=args.tacview_host, tacview_port=args.tacview_port,
+        tacview_password=args.tacview_password, dcs_log=dcs_log, debrief=debrief,
+        url=args.url, token=args.token or os.environ.get("DCS_LSO_TOKEN"),
+    )
+
+    async def run() -> None:
+        await Collector(config).run_forever()
+
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dcs-lso")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -416,6 +441,20 @@ def main(argv: list[str] | None = None) -> int:
     upload.add_argument("--debrief", metavar="PATH",
                         help="DCS debrief.log for all recordings (default: <name>.debrief.log next to each one)")
     upload.set_defaults(func=_upload)
+
+    from .acmi.stream import DEFAULT_PORT as TACVIEW_PORT
+
+    collect = sub.add_parser("collect", help="edge collector: live Tacview stream -> passes -> central")
+    collect.add_argument("--work-dir", default="collector", help="session archive and upload outbox")
+    collect.add_argument("--tacview-host", default="127.0.0.1")
+    collect.add_argument("--tacview-port", type=int, default=TACVIEW_PORT)
+    collect.add_argument("--tacview-password")
+    collect.add_argument("--dcs-log", metavar="PATH", help="DCS Logs/dcs.log, for the dcs-lso hook's events")
+    collect.add_argument("--debrief", metavar="PATH", help="DCS Logs/debrief.log (default: next to --dcs-log)")
+    collect.add_argument("--url", default=os.environ.get("DCS_LSO_URL"), help="central service URL [$DCS_LSO_URL]")
+    collect.add_argument("--token", help="upload token [$DCS_LSO_TOKEN]")
+    collect.add_argument("-v", "--verbose", action="store_true")
+    collect.set_defaults(func=_collect)
     args = parser.parse_args(argv)
     return args.func(args)
 
