@@ -127,6 +127,72 @@ def _srs_say(args: argparse.Namespace) -> int:
         return 1
 
 
+def _callouts(args: argparse.Namespace) -> int:
+    from .callouts.sim import replay
+
+    recording = load_recording(args.recording)
+    passes = list(find_passes(recording))
+    if not passes:
+        print("no carrier passes found")
+    for p in passes:
+        r = replay(recording, p, hz=args.hz, strip_aoa=args.derived_aoa)
+        aoa = "derived" if args.derived_aoa or p.samples[0].aoa_derived else "recorded"
+        print(f"{p.start_time:8.2f}s  {p.pilot or hex(p.aircraft_id)}  {p.outcome.value}  "
+              f"({r.rate_hz:.1f} Hz, {aoa} AOA)")
+        for c in r.calls:
+            st = c.state
+            aoa_txt = f"{st.aoa:4.1f}" if st.aoa is not None else "   -"
+            print(f"    {c.time:8.2f}s {c.along / 1852:5.2f} nm  {c.call.value:<17} "
+                  f"gs {st.glideslope_deg:+5.2f}deg  lineup {st.lineup_deg:+5.2f}deg  aoa {aoa_txt}")
+        if not r.calls:
+            print("    (no calls)")
+    return 0
+
+
+def _slice(args: argparse.Namespace) -> int:
+    from .slices import write_pass_slice
+
+    recording = load_recording(args.recording)
+    passes = list(find_passes(recording))
+    if args.debrief:
+        attach_dcs_grades(passes, recording, load_debrief(args.debrief))
+    if not passes:
+        print("no carrier passes found")
+    for p in passes:
+        acmi, meta = write_pass_slice(args.recording, recording, p, args.out_dir)
+        print(f"{p.start_time:8.2f}s  {p.outcome.value:<8} -> {acmi} ({acmi.stat().st_size / 1024:.0f} KiB) + {meta.name}")
+    return 0
+
+
+def _grade(args: argparse.Namespace) -> int:
+    from .grading import grade_pass
+
+    recording = load_recording(args.recording)
+    passes = list(find_passes(recording))
+    if args.debrief:
+        attach_dcs_grades(passes, recording, load_debrief(args.debrief))
+    results = [(p, grade_pass(p)) for p in passes]
+    if args.json:
+        json.dump([{"pass": {k: v for k, v in p.to_dict().items() if k != "samples"}, "grade": g.to_dict()}
+                   for p, g in results], sys.stdout, indent=2, default=str)
+        print()
+        return 0
+    if not results:
+        print("no carrier passes found")
+    for p, g in results:
+        wire = f" wire #{p.wire}" if p.wire else ""
+        print(f"{p.start_time:8.2f}s  {p.pilot or hex(p.aircraft_id):<16} {g.text}  [{g.points:g} pts, v{g.version}]{wire}")
+        if p.dcs_grade:
+            print(f"{'':10}{'DCS LSO:':<17}{p.dcs_grade.raw}")
+        if args.verbose:
+            for st in g.positions:
+                if st.samples:
+                    aoa = f"{st.aoa:4.1f}" if st.aoa is not None else "  - "
+                    print(f"{'':12}{st.position.value:<3} n={st.samples:<3} glideslope {st.glideslope_deg:+5.2f}deg  "
+                          f"lineup {st.lineup_deg:+5.2f}deg ({st.lateral_m:+5.1f} m)  aoa {aoa}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dcs-lso")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -184,6 +250,25 @@ def main(argv: list[str] | None = None) -> int:
     srs_say.add_argument("--interactive", "-i", action="store_true",
                          help="stay connected and transmit each time Enter is pressed")
     srs_say.set_defaults(func=_srs_say)
+
+    callouts = sub.add_parser("callouts", help="replay a recording through the live callout engine")
+    callouts.add_argument("recording")
+    callouts.add_argument("--hz", type=float, help="thin samples to this rate (mimic remote aircraft)")
+    callouts.add_argument("--derived-aoa", action="store_true", help="ignore recorded AOA and derive it")
+    callouts.set_defaults(func=_callouts)
+
+    slice_cmd = sub.add_parser("slice", help="write a standalone ACMI slice (+ JSON sidecar) for every pass")
+    slice_cmd.add_argument("recording")
+    slice_cmd.add_argument("--out-dir", "-o", default="slices")
+    slice_cmd.add_argument("--debrief", metavar="PATH", help="DCS debrief.log, to record DCS's grade and wire")
+    slice_cmd.set_defaults(func=_slice)
+
+    grade = sub.add_parser("grade", help="grade every carrier pass in a recording (grading v1)")
+    grade.add_argument("recording")
+    grade.add_argument("--debrief", metavar="PATH", help="DCS debrief.log, to show DCS's own grade and wire")
+    grade.add_argument("--json", action="store_true")
+    grade.add_argument("-v", "--verbose", action="store_true", help="show per-position deviations")
+    grade.set_defaults(func=_grade)
     args = parser.parse_args(argv)
     return args.func(args)
 

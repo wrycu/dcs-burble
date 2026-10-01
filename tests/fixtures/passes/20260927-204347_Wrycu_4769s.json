@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "collector_version": "0.1.0",
+  "source": "Tacview-20260927-134347-DCS-Host-wrycu_training_syria_v1.11.zip.acmi",
+  "recording": {
+    "Title": "wrycu_training_syria_v1.11",
+    "RecordingTime": "2026-09-27T20:43:47.811Z",
+    "ReferenceTime": "2016-06-21T05:00:00Z",
+    "DataRecorder": "DCS2ACMI 1.9.5.201",
+    "DataSource": "DCS 2.9.29.27468"
+  },
+  "window": {
+    "start": 4738.69,
+    "end": 4821.5
+  },
+  "objects": [
+    258,
+    11522
+  ],
+  "pass": {
+    "carrier_id": 258,
+    "carrier_type": "CVN_75",
+    "carrier_unit": "CVN-75 Harry S. Truman",
+    "aircraft_id": 11522,
+    "aircraft_type": "FA-18C_hornet",
+    "pilot": "Wrycu",
+    "outcome": "trap",
+    "start_time": 4768.69,
+    "end_time": 4811.5,
+    "sample_rate_hz": 7.14,
+    "aoa_recorded": true
+  },
+  "dcs": {
+    "wire": null,
+    "grade": null
+  }
+}
