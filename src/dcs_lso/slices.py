@@ -55,6 +55,13 @@ def slice_objects(recording: Recording, p: PassResult) -> set[int]:
     return ids
 
 
+def first_frame_time(recording: Recording) -> float | None:
+    """Sim time of the recording's first sample. `RecordingTime` is the wall-clock time at that
+    moment (for live streams, when the connection started), so a pass happened at
+    RecordingTime + (pass time - first frame time)."""
+    return recording.first_frame
+
+
 def sidecar(recording: Recording, p: PassResult, source: str | Path, object_ids: set[int]) -> dict:
     start, end = window(p)
     samples = p.samples
@@ -64,7 +71,8 @@ def sidecar(recording: Recording, p: PassResult, source: str | Path, object_ids:
         "schema": SIDECAR_SCHEMA,
         "collector_version": _collector_version(),
         "source": Path(source).name,
-        "recording": {k: g.get(k) for k in ("Title", "RecordingTime", "ReferenceTime", "DataRecorder", "DataSource")},
+        "recording": {**{k: g.get(k) for k in ("Title", "RecordingTime", "ReferenceTime", "DataRecorder", "DataSource")},
+                      "first_frame_time": first_frame_time(recording)},
         "window": {"start": start, "end": end},
         "objects": sorted(object_ids),
         "pass": {

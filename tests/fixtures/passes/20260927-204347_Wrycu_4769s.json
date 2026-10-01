@@ -7,7 +7,8 @@
     "RecordingTime": "2026-09-27T20:43:47.811Z",
     "ReferenceTime": "2016-06-21T05:00:00Z",
     "DataRecorder": "DCS2ACMI 1.9.5.201",
-    "DataSource": "DCS 2.9.29.27468"
+    "DataSource": "DCS 2.9.29.27468",
+    "first_frame_time": 0.78
   },
   "window": {
     "start": 4738.69,

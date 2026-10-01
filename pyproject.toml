@@ -4,7 +4,12 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
     "constantly>=23.10.4",
+    "fastapi>=0.142.2",
+    "httpx>=0.28.1",
     "pyacmi>=1.2.4",
+    "python-multipart>=0.0.32",
+    "sqlalchemy>=2.1.1",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]

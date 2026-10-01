@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .parser import AcmiParser, ObjectRemoved, ObjectUpdate, Transform
+from .parser import AcmiParser, Frame, ObjectRemoved, ObjectUpdate, Transform
 
 
 def iter_lines(path: str | Path) -> Iterator[str]:
@@ -56,15 +56,21 @@ class ObjectTrack:
 class Recording:
     globals: dict[str, str]
     objects: dict[int, ObjectTrack]
+    # Time of the first `#` frame line (objects declared before it carry time 0).
+    first_frame: float | None = None
 
 
 def load_recording(path: str | Path) -> Recording:
     """Parse a whole recording into per-object sample histories."""
     parser = AcmiParser()
     tracks: dict[int, ObjectTrack] = {}
+    first_frame: float | None = None
     for line in iter_lines(path):
         for record in parser.feed(line):
-            if isinstance(record, ObjectUpdate):
+            if isinstance(record, Frame):
+                if first_frame is None:
+                    first_frame = record.time
+            elif isinstance(record, ObjectUpdate):
                 track = tracks.get(record.id)
                 if track is None:
                     track = tracks[record.id] = ObjectTrack(record.id)
@@ -76,4 +82,4 @@ def load_recording(path: str | Path) -> Recording:
                     )
             elif isinstance(record, ObjectRemoved) and record.id in tracks:
                 tracks[record.id].removed_at = record.time
-    return Recording(dict(parser.globals), tracks)
+    return Recording(dict(parser.globals), tracks, first_frame)

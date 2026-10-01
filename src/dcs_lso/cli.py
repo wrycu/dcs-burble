@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from .acmi import load_recording
@@ -193,6 +195,117 @@ def _grade(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sibling_debrief(recording: str) -> Path | None:
+    """`<name>.debrief.log` next to `<name>.zip.acmi` / `.txt.acmi` / `.acmi`, if present."""
+    path = Path(recording)
+    stem = path.name
+    for suffix in (".zip.acmi", ".txt.acmi", ".acmi"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    candidate = path.with_name(f"{stem}.debrief.log")
+    return candidate if candidate.is_file() else None
+
+
+def _cards(args: argparse.Namespace) -> int:
+    from .cards import CardEntry, render_card, render_index
+    from .grading import GRADING_VERSION, grade_pass
+    from .slices import slice_name
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for path in args.recordings:
+        recording = load_recording(path)
+        passes = list(find_passes(recording))
+        debrief = args.debrief or _sibling_debrief(path)
+        if debrief:
+            attach_dcs_grades(passes, recording, load_debrief(debrief))
+        for p in passes:
+            grade = grade_pass(p)
+            stem = slice_name(recording, p)
+            svg = render_card(p, grade, recording.globals.get("Title", ""), uid=f"c{len(entries)}")
+            (out_dir / f"{stem}.svg").write_text(svg, encoding="utf-8")
+            name = f"{stem}.svg"
+            entries.append(CardEntry(name, svg, p.pilot or hex(p.aircraft_id), grade.grade.value, grade.text,
+                                     grade.points, p.outcome.value, Path(path).name, p.start_time,
+                                     p.dcs_grade.raw if p.dcs_grade else None))
+            print(f"{p.start_time:8.2f}s  {grade.text:<40} -> {out_dir / name}")
+    index = out_dir / "index.html"
+    index.write_text(render_index(entries, GRADING_VERSION), encoding="utf-8")
+    print(f"{len(entries)} cards; open {index}")
+    return 0
+
+
+def _central(args: argparse.Namespace):
+    from .central.service import Central
+
+    data_dir = Path(args.data_dir)
+    url = args.database_url or f"sqlite:///{(data_dir / 'lso.db').resolve()}"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return Central(url, data_dir)
+
+
+def _central_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from .central.app import create_app
+
+    uvicorn.run(create_app(_central(args)), host=args.host, port=args.port)
+    return 0
+
+
+def _central_add_source(args: argparse.Namespace) -> int:
+    token = _central(args).add_source(args.name, args.kind)
+    print(f"source {args.name!r} ({args.kind}) created. Its upload token (shown once, keep it secret):")
+    print(token)
+    return 0
+
+
+def _central_regrade(args: argparse.Namespace) -> int:
+    done, skipped = _central(args).regrade(force=args.force)
+    print(f"regraded {done} passes; {skipped} already had the current grading version")
+    return 0
+
+
+def _upload(args: argparse.Namespace) -> int:
+    import httpx
+
+    from .slices import write_pass_slice
+
+    token = args.token or os.environ.get("DCS_LSO_TOKEN")
+    if not token:
+        print("error: no token (use --token or DCS_LSO_TOKEN)", file=sys.stderr)
+        return 2
+    failures = 0
+    with httpx.Client(base_url=args.url, headers={"Authorization": f"Bearer {token}"}, timeout=60) as client, \
+            tempfile.TemporaryDirectory() as tmp:
+        for path in args.recordings:
+            recording = load_recording(path)
+            passes = list(find_passes(recording))
+            debrief = args.debrief or _sibling_debrief(path)
+            if debrief:
+                attach_dcs_grades(passes, recording, load_debrief(debrief))
+            for p in passes:
+                acmi, meta = write_pass_slice(path, recording, p, tmp)
+                try:
+                    r = client.post("/api/v1/passes", files={"slice": (acmi.name, acmi.read_bytes(), "application/zip")},
+                                    data={"sidecar": meta.read_text()})
+                except httpx.HTTPError as exc:
+                    print(f"{p.start_time:8.2f}s  upload failed: {exc}", file=sys.stderr)
+                    failures += 1
+                    continue
+                if r.status_code in (200, 201):
+                    b = r.json()
+                    state = "new" if b["created"] else "already uploaded"
+                    print(f"{p.start_time:8.2f}s  {p.pilot or hex(p.aircraft_id):<16} {b['text']:<40} "
+                          f"({state}) {args.url.rstrip('/')}{b['url']}")
+                else:
+                    print(f"{p.start_time:8.2f}s  rejected ({r.status_code}): {r.text}", file=sys.stderr)
+                    failures += 1
+    return 1 if failures else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dcs-lso")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -269,6 +382,40 @@ def main(argv: list[str] | None = None) -> int:
     grade.add_argument("--json", action="store_true")
     grade.add_argument("-v", "--verbose", action="store_true", help="show per-position deviations")
     grade.set_defaults(func=_grade)
+
+    cards = sub.add_parser("cards", help="write SVG trap cards and an index.html for every pass")
+    cards.add_argument("recordings", nargs="+")
+    cards.add_argument("--out-dir", "-o", default="cards")
+    cards.add_argument("--debrief", metavar="PATH",
+                       help="DCS debrief.log for all recordings (default: <name>.debrief.log next to each one)")
+    cards.set_defaults(func=_cards)
+
+    central = sub.add_parser("central", help="run or manage the central service")
+    central.add_argument("--data-dir", default=os.environ.get("DCS_LSO_DATA_DIR", "data"),
+                         help="where slices (and the default SQLite database) live [$DCS_LSO_DATA_DIR]")
+    central.add_argument("--database-url", default=os.environ.get("DCS_LSO_DATABASE_URL"),
+                         help="SQLAlchemy URL; default sqlite in the data dir [$DCS_LSO_DATABASE_URL]")
+    central_sub = central.add_subparsers(dest="central_command", required=True)
+    serve = central_sub.add_parser("serve", help="serve the API, greenie board and pass pages")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.set_defaults(func=_central_serve)
+    add_source = central_sub.add_parser("add-source", help="create an upload source and print its token")
+    add_source.add_argument("name")
+    add_source.add_argument("--kind", choices=["server", "pilot"], default="server")
+    add_source.set_defaults(func=_central_add_source)
+    regrade = central_sub.add_parser("regrade", help="grade every stored pass with the current grading version")
+    regrade.add_argument("--force", action="store_true", help="also redo passes already at the current version")
+    regrade.set_defaults(func=_central_regrade)
+
+    upload = sub.add_parser("upload", help="slice recordings and upload every pass to the central service")
+    upload.add_argument("recordings", nargs="+")
+    upload.add_argument("--url", default=os.environ.get("DCS_LSO_URL", "http://127.0.0.1:8000"),
+                        help="central service URL [$DCS_LSO_URL]")
+    upload.add_argument("--token", help="upload token [$DCS_LSO_TOKEN]")
+    upload.add_argument("--debrief", metavar="PATH",
+                        help="DCS debrief.log for all recordings (default: <name>.debrief.log next to each one)")
+    upload.set_defaults(func=_upload)
     args = parser.parse_args(argv)
     return args.func(args)
 
