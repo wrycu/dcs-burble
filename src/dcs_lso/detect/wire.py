@@ -5,6 +5,11 @@ whatever its speed: on FA-18C traps with DCS's own wire known, stop point minus 
 within 0.8 m of the caught wire every time (wires are 12.5 m apart), at 8 Hz or thinned to 4.8 Hz
 (the jet is standing still, so the sample rate hardly matters).
 
+Only from a track recorded on the PC that flew it (the local player's own jet, recognisable by its
+recorded AOA): a server's copy of a client's jet is smoothed through the sudden arrestment and
+overshoots the stop by about a wire (12 m on a wire-2 trap read as wire 3). A pilot's own track against
+the server's carrier (a merged landing) is accurate (that same trap: 0.2 m from wire 2).
+
 Always an *estimate*: DCS's own wire (its LSO grade, or the carrier's wire animation) takes priority
 wherever it's known. No estimate is given when the stop point isn't clearly at one wire's runout.
 """
@@ -26,8 +31,8 @@ MAX_ERROR_M = 3.5
 def estimate_wire(samples: Sequence[PassSample], frame: DeckFrame) -> int | None:
     """The wire (1-4) a trapped jet caught, or None if it can't be told."""
     runout = frame.aircraft.arrest_runout_m
-    if runout is None or not samples:
-        return None
+    if runout is None or not samples or any(s.aoa_derived for s in samples):
+        return None  # unmeasured aircraft, or not the recording PC's own jet (see above)
     touchdown = next((i for i, s in enumerate(samples) if s.hook_height <= 0.0 and s.along < 60.0), None)
     if touchdown is None:
         return None

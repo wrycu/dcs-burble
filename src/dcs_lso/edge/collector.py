@@ -19,7 +19,7 @@ import threading
 import time
 import zipfile
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -173,12 +173,16 @@ class _Pending:
     result: PassResult
     objects: set[int]
     due: float  # sim time at which the slice window is complete
+    # Wall clock when the pass ended (it was detected then). Mission time stops while DCS pauses an
+    # empty server, so wall times can't be derived from mission time across a session.
+    ended_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
 class _PendingApproach:
     approach: Approach
     due: float
+    ended_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -359,7 +363,7 @@ class Collector:
         for item in pending:
             await self._slice(session, item)
         for waiting in approaches:
-            await self._slice_approach(session, waiting.approach)
+            await self._slice_approach(session, waiting.approach, waiting.ended_at)
 
     async def _line(self, session: Session, line: str) -> None:
         session.archive.write(line)
@@ -379,7 +383,7 @@ class Collector:
                 if ready:
                     session.approaches = [a for a in session.approaches if a.due > record.time]
                     for pending in ready:
-                        await self._slice_approach(session, pending.approach)
+                        await self._slice_approach(session, pending.approach, pending.ended_at)
             for result in session.detector.feed(record):
                 self._queue(session, result)
             if session.segmenters is not None:
@@ -426,7 +430,7 @@ class Collector:
             session.names.append(name)
             self._wake_uploader.set()
 
-    async def _slice_approach(self, session: Session, approach: Approach) -> None:
+    async def _slice_approach(self, session: Session, approach: Approach, ended_at: datetime) -> None:
         """Upload the own track around an approach, unless it was already handled as a full pass
         (the pilot's data had a carrier)."""
         start, end = approach_window(approach)
@@ -434,14 +438,15 @@ class Collector:
             return
         session.archive.flush()
         try:
-            name = await asyncio.get_running_loop().run_in_executor(None, self._make_track_slice, session, approach)
+            name = await asyncio.get_running_loop().run_in_executor(None, self._make_track_slice, session, approach,
+                                                                    ended_at)
         except Exception:  # never let one bad approach take the collector down
             log.exception("could not slice approach at %.1fs", approach.start_time)
             return
         session.names.append(name)
         self._wake_uploader.set()
 
-    def _make_track_slice(self, session: Session, approach: Approach) -> str:
+    def _make_track_slice(self, session: Session, approach: Approach, ended_at: datetime) -> str:
         start, end = approach_window(approach)
         start = max(start, session.first_frame or 0.0)
         end = min(end, session.now - 1e-3)
@@ -451,6 +456,7 @@ class Collector:
             meta = track_sidecar(recording, approach, session.archive.path.name)
             meta["recording"]["first_frame_time"] = session.first_frame
             meta["window"] = {"start": start, "end": end}
+            meta["pass"]["occurred_at"] = (ended_at - timedelta(seconds=approach.end_time - approach.start_time)).isoformat()
             name = track_slice_name(recording, approach)
             self.outbox.put(name, path, meta)
         log.info("queued %s (own track; central grades it with the server's report of this landing)", name)
@@ -490,6 +496,7 @@ class Collector:
             meta["window"] = {"start": start, "end": end}
             if calls is not None:
                 meta["calls"] = calls
+            meta["pass"]["occurred_at"] = (item.ended_at - timedelta(seconds=live.end_time - p.start_time)).isoformat()
             name = slice_name(recording, p)
             self.outbox.put(name, path, meta)
         log.info("queued %s (%s%s%s)", name, p.outcome.value, f", wire #{p.wire}" if p.wire else "",

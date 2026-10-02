@@ -210,8 +210,14 @@ def test_pass_is_sliced_when_the_server_pauses_after_it(tmp_path, monkeypatch):
         async with server:
             await collector.run_session()
 
+    from datetime import UTC, datetime
+    started = datetime.now(UTC)
     asyncio.run(run())
     assert len(queued_while_paused) == 1
+    # Stamped with the wall clock (mission time says nothing about how long the server was paused).
+    (item,) = Collector(CollectorConfig(work_dir=tmp_path / "edge")).outbox.pending()
+    stamped = datetime.fromisoformat(item.meta()["pass"]["occurred_at"])
+    assert abs((stamped - started).total_seconds()) < 120
 
 
 def test_wire_from_carrier_animation_without_dcs_grade(tmp_path):

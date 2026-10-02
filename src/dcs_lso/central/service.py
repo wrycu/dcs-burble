@@ -52,6 +52,10 @@ def pass_key(sidecar: dict) -> str:
 
 def occurred_at(sidecar: dict) -> datetime | None:
     rec, p = sidecar.get("recording") or {}, sidecar["pass"]
+    # Collectors record the wall clock time of each pass (mission time stops while DCS pauses an
+    # empty server, so the recording's start time plus mission time can be hours off).
+    if (stamped := _parse_time(p.get("occurred_at"))) is not None:
+        return stamped
     start = _parse_time(rec.get("RecordingTime"))
     if start is None:
         return None
