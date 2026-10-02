@@ -7,8 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from sqlalchemy import select
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from ..cards import render_card
@@ -55,13 +55,17 @@ def create_app(central: Central) -> FastAPI:
 
     def _passes(days: int, pilot: str | None, source: str | None) -> list[Pass]:
         with central.sessions() as s:
-            q = select(Pass).options(selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.source))
+            # Landings only: reports merged into another (same landing) and lone track reports are hidden.
+            q = (select(Pass).where(Pass.merged_into_id.is_(None), or_(Pass.kind.is_(None), Pass.kind != "track"))
+                 .options(selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.source)))
             if days:
                 q = q.where(Pass.occurred_at >= datetime.now(UTC) - timedelta(days=days))
             if pilot:
                 q = q.join(Pass.pilot).where(Pilot.name == pilot)
             if source:
-                q = q.join(Pass.source).where(Source.name == source)
+                # A landing belongs to every source that reported it.
+                theirs = select(Pass.merged_into_id).join(Pass.source).where(Source.name == source)
+                q = q.join(Pass.source).where(or_(Source.name == source, Pass.id.in_(theirs)))
             return list(s.scalars(q))
 
     @app.get("/api/v1/config")
@@ -74,7 +78,9 @@ def create_app(central: Central) -> FastAPI:
         out = []
         for p in _passes(days, pilot, source):
             g = p.grade
+            reports = central.reports(p)
             out.append({"id": p.id, "pilot": p.pilot.name, "source": p.source.name,
+                        "reports": [{"id": r.id, "source": r.source.name, "kind": r.kind or "pass"} for r in reports],
                         "occurred_at": p.occurred_at.isoformat() if p.occurred_at else None,
                         "mission": p.mission, "carrier": p.carrier_unit, "aircraft": p.aircraft_type,
                         "outcome": p.outcome, "wire": p.wire, "dcs_grade": p.dcs_grade, "calls": p.calls,
@@ -103,12 +109,15 @@ def create_app(central: Central) -> FastAPI:
     @app.get("/passes/{pass_id}", response_class=HTMLResponse)
     def pass_detail(pass_id: int) -> str:
         p = _get(pass_id)
+        if p.merged_into_id is not None:
+            return RedirectResponse(f"/passes/{p.merged_into_id}", status_code=307)
+        reports = central.reports(p)
         try:
-            result = central.load_pass(p)
+            result = central.load_pass(p, reports)
             svg = render_card(result, grade_pass(result), p.mission or "", uid=f"p{p.id}", calls=p.calls)
-            return pages.pass_page(p, svg)
+            return pages.pass_page(p, svg, reports=reports, track_source=result.track_source)
         except (IngestError, OSError) as exc:
-            return pages.pass_page(p, None, f"Trap card unavailable: {exc}")
+            return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports)
 
     @app.get("/passes/{pass_id}/acmi")
     def pass_acmi(pass_id: int) -> FileResponse:

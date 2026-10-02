@@ -75,6 +75,12 @@ class Pass(Base):
     dcs_grade: Mapped[str | None] = mapped_column(String(200))
     # Live LSO calls the collector made during this pass: [{"time", "along", "call"}].
     calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # "pass" (None in older rows): a gradable report with the carrier. "track": one aircraft's own
+    # track, no carrier (a multiplayer client's recording), graded only as part of a landing.
+    kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Another report of the same landing (e.g. the pilot's own and the server's) is merged into the
+    # landing's first gradable report, which is the one shown; see `Central.ingest`.
+    merged_into_id: Mapped[int | None] = mapped_column(ForeignKey("passes.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     pilot: Mapped[Pilot] = relationship()
@@ -82,6 +88,10 @@ class Pass(Base):
     slice: Mapped[Slice] = relationship()
     grades: Mapped[list[Grade]] = relationship(back_populates="pass_", order_by="Grade.id",
                                                cascade="all, delete-orphan")
+
+    @property
+    def is_track(self) -> bool:
+        return self.kind == "track"
 
     @property
     def grade(self) -> Grade | None:

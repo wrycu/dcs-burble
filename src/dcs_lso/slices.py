@@ -18,10 +18,14 @@ from pathlib import Path
 from .acmi import Recording
 from .acmi.writer import write_slice
 from .detect import CarrierTimeline, PassResult
+from .detect.approaches import Approach
 
 NM = 1852.0
 LEAD_S = 30.0
 TAIL_S = 10.0
+# A track report (own jet only, see `detect.approaches`) starts this long before the jet dropped
+# below approach height, so it covers the whole pass as the server detects it.
+APPROACH_LEAD_S = 45.0
 NEARBY_M = 2 * NM
 SIDECAR_SCHEMA = 1
 
@@ -69,6 +73,7 @@ def sidecar(recording: Recording, p: PassResult, source: str | Path, object_ids:
     g = recording.globals
     return {
         "schema": SIDECAR_SCHEMA,
+        "kind": "pass",
         "collector_version": _collector_version(),
         "source": Path(source).name,
         "recording": {**{k: g.get(k) for k in ("Title", "RecordingTime", "ReferenceTime", "DataRecorder", "DataSource")},
@@ -91,6 +96,46 @@ def sidecar(recording: Recording, p: PassResult, source: str | Path, object_ids:
         "dcs": {"wire": p.wire, "grade": asdict(p.dcs_grade) if p.dcs_grade else None},
         "wind": p.wind.to_dict() if p.wind else None,
     }
+
+
+def approach_window(a: Approach) -> tuple[float, float]:
+    return a.start_time - APPROACH_LEAD_S, a.end_time + TAIL_S
+
+
+def track_sidecar(recording: Recording, a: Approach, source: str | Path) -> dict:
+    """Sidecar of a track report: one aircraft's own track around an approach, no carrier. Central
+    grades it against the carrier from another report of the same landing."""
+    start, end = approach_window(a)
+    plane = recording.objects[a.aircraft_id]
+    samples = [s for s in plane.samples if start <= s.time <= end]
+    dts = sorted(b.time - x.time for x, b in zip(samples, samples[1:]))
+    g = recording.globals
+    return {
+        "schema": SIDECAR_SCHEMA,
+        "kind": "track",
+        "collector_version": _collector_version(),
+        "source": Path(source).name,
+        "recording": {**{k: g.get(k) for k in ("Title", "RecordingTime", "ReferenceTime", "DataRecorder", "DataSource")},
+                      "first_frame_time": first_frame_time(recording)},
+        "window": {"start": start, "end": end},
+        "objects": [a.aircraft_id],
+        "pass": {
+            "aircraft_id": a.aircraft_id,
+            "aircraft_type": plane.name,
+            "pilot": plane.pilot,
+            "outcome": "track",
+            "start_time": a.start_time,
+            "end_time": a.end_time,
+            "sample_rate_hz": round(1 / dts[len(dts) // 2], 2) if dts else None,
+            "aoa_recorded": any(s.aoa is not None for s in samples),
+        },
+    }
+
+
+def track_slice_name(recording: Recording, a: Approach) -> str:
+    stamp = (recording.globals.get("RecordingTime") or "")[:19].replace("-", "").replace(":", "").replace("T", "-")
+    pilot = re.sub(r"[^A-Za-z0-9]+", "_", recording.objects[a.aircraft_id].pilot or f"id{a.aircraft_id:x}").strip("_")
+    return f"{stamp or 'recording'}_{pilot}_{a.start_time:.0f}s_track"
 
 
 def slice_name(recording: Recording, p: PassResult) -> str:

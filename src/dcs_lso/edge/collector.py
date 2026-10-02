@@ -24,14 +24,16 @@ from pathlib import Path
 
 import httpx
 
-from ..acmi import AcmiParser, Frame, load_recording
+from ..acmi import AcmiParser, Frame, ObjectRemoved, ObjectUpdate, load_recording
 from ..acmi.stream import DEFAULT_PORT, HandshakeError, TelemetryClient
 from ..acmi.writer import write_slice
 from ..dcslog import Debrief, DcsEvent, HookEvent, attach_dcs_grades, follow, load_debrief, parse_hook_line
 from ..dcslog.match import tacview_id_hint
 from ..detect import PassResult, find_passes
-from ..geometry import WindProfile
-from ..slices import LEAD_S, TAIL_S, sidecar, slice_name, slice_objects
+from ..detect.approaches import Approach, ApproachSegmenter
+from ..geometry import AIRCRAFT, WindProfile
+from ..slices import (LEAD_S, TAIL_S, approach_window, sidecar, slice_name, slice_objects, track_sidecar,
+                      track_slice_name)
 from ..callouts.voice import ClipLibrary
 from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink
 from .live import LivePassDetector
@@ -168,6 +170,12 @@ class _Pending:
 
 
 @dataclass
+class _PendingApproach:
+    approach: Approach
+    due: float
+
+
+@dataclass
 class Session:
     archive: SessionArchive
     detector: LivePassDetector
@@ -178,6 +186,10 @@ class Session:
     pending: list[_Pending] = field(default_factory=list)
     names: list[str] = field(default_factory=list)  # outbox items produced by this session
     frames: int = 0
+    # Pilot mode: the own jet's approaches, found without a carrier (see `detect.approaches`).
+    segmenters: dict[int, ApproachSegmenter] | None = None
+    approaches: list[_PendingApproach] = field(default_factory=list)
+    pass_windows: list[tuple[int, float, float]] = field(default_factory=list)  # (aircraft, start, end)
 
 
 class Collector:
@@ -285,7 +297,8 @@ class Collector:
         info = await client.connect()
         await self.refresh_config()
         callouts = self._callouts()
-        session = Session(SessionArchive(self.archive_dir), LivePassDetector(callouts), callouts)
+        session = Session(SessionArchive(self.archive_dir), LivePassDetector(callouts), callouts,
+                          segmenters={} if c.mode == "pilot" else None)
         if callouts is not None:
             await callouts.sink.start()
         log.info("connected to Tacview stream from %r; archiving to %s%s", info.name, session.archive.path,
@@ -299,9 +312,15 @@ class Collector:
             await client.close()
             for result in session.detector.flush():
                 self._queue(session, result)
+            for segmenter in (session.segmenters or {}).values():
+                if (approach := segmenter.flush()) is not None:
+                    session.approaches.append(_PendingApproach(approach, approach.end_time + TAIL_S))
             for item in session.pending:
                 await self._slice(session, item)
             session.pending.clear()
+            for pending in session.approaches:
+                await self._slice_approach(session, pending.approach)
+            session.approaches.clear()
             if session.callouts is not None:
                 await session.callouts.drain()
                 await session.callouts.sink.close()
@@ -337,12 +356,39 @@ class Collector:
                     session.pending = [p for p in session.pending if p.due > record.time]
                     for item in due:
                         await self._slice(session, item)
+                ready = [a for a in session.approaches if a.due <= record.time]
+                if ready:
+                    session.approaches = [a for a in session.approaches if a.due > record.time]
+                    for pending in ready:
+                        await self._slice_approach(session, pending.approach)
             for result in session.detector.feed(record):
                 self._queue(session, result)
+            if session.segmenters is not None:
+                self._own_track(session, record)
+
+    def _own_track(self, session: Session, record) -> None:
+        """Pilot mode: follow the own jet (the aircraft with recorded AOA) for approaches."""
+        assert session.segmenters is not None
+        if isinstance(record, ObjectRemoved):
+            segmenter = session.segmenters.pop(record.id, None)
+            approach = segmenter.flush() if segmenter else None
+        elif isinstance(record, ObjectUpdate) and record.moved and "AOA" in record.props:
+            track = session.detector.tracks.get(record.id)
+            if track is None or track.name not in AIRCRAFT or not track.samples:
+                return
+            segmenter = session.segmenters.setdefault(record.id, ApproachSegmenter(record.id))
+            approach = segmenter.feed(track.samples[-1])
+        else:
+            return
+        if approach is not None:
+            session.approaches.append(_PendingApproach(approach, approach.end_time + TAIL_S))
+            log.info("approach detected (own track): %.0fs-%.0fs; slicing in %.0fs",
+                     approach.start_time, approach.end_time, TAIL_S)
 
     def _queue(self, session: Session, result: PassResult) -> None:
         objects = slice_objects(session.detector.recording(dict(session.parser.globals)), result)
         session.pending.append(_Pending(result, objects, result.end_time + TAIL_S))
+        session.pass_windows.append((result.aircraft_id, result.start_time - LEAD_S, result.end_time + TAIL_S))
         log.info("pass detected: %s %s, %s; slicing in %.0fs", result.pilot or hex(result.aircraft_id),
                  result.aircraft_type, result.outcome.value, TAIL_S)
 
@@ -360,6 +406,36 @@ class Collector:
         if name:
             session.names.append(name)
             self._wake_uploader.set()
+
+    async def _slice_approach(self, session: Session, approach: Approach) -> None:
+        """Upload the own track around an approach, unless it was already handled as a full pass
+        (the pilot's data had a carrier)."""
+        start, end = approach_window(approach)
+        if any(aircraft == approach.aircraft_id and s < end and start < e for aircraft, s, e in session.pass_windows):
+            return
+        session.archive.flush()
+        try:
+            name = await asyncio.get_running_loop().run_in_executor(None, self._make_track_slice, session, approach)
+        except Exception:  # never let one bad approach take the collector down
+            log.exception("could not slice approach at %.1fs", approach.start_time)
+            return
+        session.names.append(name)
+        self._wake_uploader.set()
+
+    def _make_track_slice(self, session: Session, approach: Approach) -> str:
+        start, end = approach_window(approach)
+        start = max(start, session.first_frame or 0.0)
+        end = min(end, session.now - 1e-3)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_slice(session.archive.path, Path(tmp) / "track.zip.acmi", start, end, {approach.aircraft_id})
+            recording = load_recording(path)
+            meta = track_sidecar(recording, approach, session.archive.path.name)
+            meta["recording"]["first_frame_time"] = session.first_frame
+            meta["window"] = {"start": start, "end": end}
+            name = track_slice_name(recording, approach)
+            self.outbox.put(name, path, meta)
+        log.info("queued %s (own track; central grades it with the server's report of this landing)", name)
+        return name
 
     def _make_slice(self, session: Session, item: _Pending, calls: list[dict] | None = None) -> str | None:
         live = item.result

@@ -77,6 +77,8 @@ class PassResult:
     dcs_grade: LsoGrade | None = None
     # The mission's wind at the carrier (from the dcs-lso hook), when known; used for derived AOA.
     wind: WindProfile | None = None
+    # Which report's aircraft track this result was built from, when central merged several.
+    track_source: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

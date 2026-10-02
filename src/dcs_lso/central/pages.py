@@ -129,7 +129,18 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
     return _page("Greenie Board", body)
 
 
-def pass_page(p: Pass, card_svg: str | None, error: str | None = None) -> str:
+def _report(r: Pass, used: bool) -> str:
+    info = (r.slice.sidecar or {}).get("pass") or {}
+    rate = info.get("sample_rate_hz")
+    detail = ", ".join(x for x in (f"{rate:g} Hz" if rate else "", "AOA" if info.get("aoa_recorded") else "",
+                                   "own track only" if r.is_track else "") if x)
+    text = f"{r.source.name} ({r.source.kind}{', ' + detail if detail else ''})"
+    return (f'<a href="/passes/{r.id}/acmi">{escape(text)}</a>'
+            + (" <strong>track used</strong>" if used else ""))
+
+
+def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: list[Pass] | None = None,
+              track_source: str | None = None) -> str:
     g = p.grade
     facts = [
         ("Pilot", p.pilot.name),
@@ -141,9 +152,12 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None) -> str:
         ("Grade", f"{grade_name(g.grade)}: {g.text} ({g.points:g} pts, grading v{g.version})" if g else "not graded"),
         ("DCS LSO", p.dcs_grade or "–"),
         ("Wire", f"#{p.wire}" if p.wire else "–"),
-        ("Source", p.source.name),
     ]
     dl = "".join(f"<dt>{escape(k)}</dt><dd>{escape(v)}</dd>" for k, v in facts)
+    reports = reports or [p]
+    used = track_source or p.source.name
+    listed = "<br>".join(_report(r, len(reports) > 1 and r.source.name == used) for r in reports)
+    dl += f"<dt>{'Reports' if len(reports) > 1 else 'Source'}</dt><dd>{listed}</dd>"
     card = f'<div class="panel card">{card_svg}</div>' if card_svg else f'<p class="empty-state">{escape(error or "")}</p>'
     body = (f'<p class="sub"><a href="/">← Greenie board</a> · <a href="/passes/{p.id}/acmi">Download ACMI</a></p>'
             f"<h1>{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}</h1>"
