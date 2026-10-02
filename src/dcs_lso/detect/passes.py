@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from ..acmi import ObjectTrack, Recording, Sample, Transform
 from ..geometry import AIRCRAFT, CARRIERS, CarrierPose, DeckFrame, WindProfile, air_velocity, body_aoa, centred_velocity
+from .wire import estimate_wire
 
 if TYPE_CHECKING:
     from ..dcslog import LsoGrade
@@ -77,8 +78,17 @@ class PassResult:
     dcs_grade: LsoGrade | None = None
     # The mission's wind at the carrier (from the dcs-lso hook), when known; used for derived AOA.
     wind: WindProfile | None = None
+    # Estimated from where the jet stopped (detect.wire); DCS's `wire` takes priority when known.
+    wire_estimate: int | None = None
     # Which report's aircraft track this result was built from, when central merged several.
     track_source: str | None = None
+
+    @property
+    def wire_label(self) -> str | None:
+        """The wire to show: DCS's own when known, else the estimate, marked as such."""
+        if self.wire is not None:
+            return f"#{self.wire}"
+        return f"#{self.wire_estimate} (est.)" if self.wire_estimate is not None else None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -267,4 +277,5 @@ def _finish(carrier: ObjectTrack, plane: ObjectTrack, frame: DeckFrame,
         end_time=samples[-1].time,
         samples=samples,
         wind=tracker.wind,
+        wire_estimate=estimate_wire(samples, frame) if outcome is Outcome.TRAP else None,
     )

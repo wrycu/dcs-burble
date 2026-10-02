@@ -84,6 +84,8 @@ def create_app(central: Central) -> FastAPI:
                         "occurred_at": p.occurred_at.isoformat() if p.occurred_at else None,
                         "mission": p.mission, "carrier": p.carrier_unit, "aircraft": p.aircraft_type,
                         "outcome": p.outcome, "wire": p.wire, "dcs_grade": p.dcs_grade, "calls": p.calls,
+                        # DCS's wire (above) takes priority; this is estimated from where the jet stopped.
+                        "wire_estimated": ((g.detail or {}).get("wire_estimate") if g else None),
                         "grade": g.grade if g else None, "text": g.text if g else None,
                         "points": g.points if g else None, "grading_version": g.version if g else None})
         return out

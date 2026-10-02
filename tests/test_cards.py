@@ -66,7 +66,8 @@ def test_no_grade_is_labelled_not_blank():
     root = ET.fromstring(render_card(p, grade_pass(p)))
     texts = [t.text or "" for t in root.iter(f"{SVG}text")]
     assert "NG" in texts and "---" not in texts
-    assert any(t.startswith("No Grade · 2 pts") for t in texts)
+    assert any("No Grade · 2 pts" in t for t in texts)
+    assert any(t.startswith("wire #") and "(est.)" in t for t in texts)  # no DCS wire: the estimate, marked
 
 
 def test_lineup_calls_go_on_the_lineup_plot():

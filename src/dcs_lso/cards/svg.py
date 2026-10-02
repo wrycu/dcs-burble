@@ -260,8 +260,9 @@ def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Ax
         py = y(ft * FT)
         out.append(f'<text class="tc-muted" x="{PAD_L - 6}" y="{_f(py + 4)}" font-size="11" text-anchor="end">{ft} ft</text>')
     if wire:
+        label = f"#{wire}" if p.wire is not None else f"#{wire} est."
         out.append(f'<text class="tc-muted" x="{_f(x(frame.wire_along[wire - 1]))}" y="{_f(y(0) - 9)}" font-size="11" '
-                   f'text-anchor="middle">#{wire}</text>')
+                   f'text-anchor="middle">{label}</text>')
 
 
 def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float], uid: str, out: list[str],
@@ -351,15 +352,16 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     out.append(f'<text class="{_grade_class(grade.grade.value)}" x="{gx}" y="36" font-size="26" font-weight="700" '
                f'text-anchor="end">{escape(grade_short(grade.grade.value))}</text>')
     detail = f"{grade_name(grade.grade.value)} · {grade.points:g} pts · grading v{grade.version}"
-    if p.wire:
-        detail = f"wire #{p.wire} · " + detail
+    if p.wire_label:
+        detail = f"wire {p.wire_label} · " + detail
     out.append(f'<text class="tc-muted" x="{gx}" y="56" font-size="12" text-anchor="end">{escape(detail)}</text>')
     if p.dcs_grade:
         dcs = p.dcs_grade.raw.removeprefix("LSO:").strip()
         out.append(f'<text class="tc-muted" x="{gx}" y="72" font-size="11" text-anchor="end">'
                    f'DCS LSO: {escape(dcs)}</text>')
     _legend(aircraft.on_speed_aoa, out)
-    _side_view(p, frame, samples, x, p.wire, aircraft.on_speed_aoa, uid, out, calls)
+    _side_view(p, frame, samples, x, p.wire if p.wire is not None else p.wire_estimate, aircraft.on_speed_aoa,
+               uid, out, calls)
     _top_view(samples, x, aircraft.on_speed_aoa, uid, out, calls)
     _table(grade, out)
     for i, line in enumerate(listed):

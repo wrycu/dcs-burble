@@ -32,6 +32,9 @@ class AircraftInfo:
     glideslope: float
     # On-speed AOA band (inclusive lower, exclusive upper), degrees.
     on_speed_aoa: tuple[float, float]
+    # How far past the caught wire DCS's arresting gear stops this aircraft (hook point, meters), for
+    # estimating the wire; None where unmeasured. See detect.wire.
+    arrest_runout_m: float | None = None
 
 
 NIMITZ = CarrierInfo(
@@ -53,6 +56,8 @@ FA18C = AircraftInfo(
     glideslope=3.6,
     # lso's "on speed" band: 7.4 < aoa < 8.8.
     on_speed_aoa=(7.4, 8.8),
+    # Measured on six DCS 2.9 traps with DCS's own wire known (wires 1-3, 61-70 m/s): 89.3-90.2 m.
+    arrest_runout_m=90.1,
 )
 
 CARRIERS: dict[str, CarrierInfo] = {

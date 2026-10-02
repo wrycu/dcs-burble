@@ -28,11 +28,11 @@ def _analyze(args: argparse.Namespace) -> int:
         print("no carrier passes found")
         return 0
     for p in passes:
-        wire = f"#{p.wire}" if p.wire else "-"
+        wire = p.wire_label or "-"
         pilot = p.pilot or f"id {p.aircraft_id:x}"
         grade = p.dcs_grade.raw if p.dcs_grade else "no DCS grade"
         print(f"{p.start_time:8.2f}s  {pilot:<24} {p.aircraft_type:<14} {p.carrier_type:<8} "
-              f"{p.outcome.value:<10} wire {wire:<3} {grade}  ({len(p.samples)} samples)")
+              f"{p.outcome.value:<10} wire {wire:<9} {grade}  ({len(p.samples)} samples)")
     return 0
 
 
@@ -187,7 +187,7 @@ def _grade(args: argparse.Namespace) -> int:
     if not results:
         print("no carrier passes found")
     for p, g in results:
-        wire = f" wire #{p.wire}" if p.wire else ""
+        wire = f" wire {p.wire_label}" if p.wire_label else ""
         print(f"{p.start_time:8.2f}s  {p.pilot or hex(p.aircraft_id):<16} {g.text}  [{g.points:g} pts, v{g.version}]{wire}")
         if p.dcs_grade:
             print(f"{'':10}{'DCS LSO:':<17}{p.dcs_grade.raw}")

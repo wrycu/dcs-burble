@@ -129,6 +129,14 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
     return _page("Greenie Board", body)
 
 
+def _wire(p: Pass) -> str:
+    """DCS's own wire when known; otherwise the estimate from the stop point, marked as one."""
+    if p.wire is not None:
+        return f"#{p.wire} (DCS)"
+    estimate = ((p.grade.detail or {}) if p.grade else {}).get("wire_estimate")
+    return f"#{estimate} (estimated from where the jet stopped)" if estimate is not None else "–"
+
+
 def _report(r: Pass, used: bool) -> str:
     info = (r.slice.sidecar or {}).get("pass") or {}
     rate = info.get("sample_rate_hz")
@@ -151,7 +159,7 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
         ("Outcome", p.outcome),
         ("Grade", f"{grade_name(g.grade)}: {g.text} ({g.points:g} pts, grading v{g.version})" if g else "not graded"),
         ("DCS LSO", p.dcs_grade or "–"),
-        ("Wire", f"#{p.wire}" if p.wire else "–"),
+        ("Wire", _wire(p)),
     ]
     dl = "".join(f"<dt>{escape(k)}</dt><dd>{escape(v)}</dd>" for k, v in facts)
     reports = reports or [p]

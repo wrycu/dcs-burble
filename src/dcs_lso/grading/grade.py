@@ -19,7 +19,7 @@ from enum import IntEnum, StrEnum
 from ..detect import Outcome, PassResult
 from ..geometry import AIRCRAFT
 
-GRADING_VERSION = "2"  # 2: 3.6 deg glideslope (as DCS); AOA derived from motion in the aircraft frame, with wind, not graded at AR
+GRADING_VERSION = "3"  # 3: wire estimated from the stop point; 2: 3.6 deg glideslope (as DCS); AOA derived from motion in the aircraft frame, with wind, not graded at AR
 NM = 1852.0
 
 
@@ -163,6 +163,9 @@ class GradeResult:
     remarks: list[Remark] = field(default_factory=list)
     positions: list[PositionStats] = field(default_factory=list)
     not_counted: list[Position] = field(default_factory=list)
+    # The wire estimated from the track (not a grade input; kept with the grade so it's versioned
+    # and rebuilt by regrading). DCS's own wire, when known, is stored with the pass and wins.
+    wire_estimate: int | None = None
 
     @property
     def text(self) -> str:
@@ -286,4 +289,4 @@ def grade_pass(p: PassResult) -> GradeResult:
         grade = Grade.WAVE_OFF
     else:
         grade = Grade.NO_GRADE
-    return GradeResult(GRADING_VERSION, grade, POINTS[grade], remarks, stats, not_counted)
+    return GradeResult(GRADING_VERSION, grade, POINTS[grade], remarks, stats, not_counted, p.wire_estimate)
