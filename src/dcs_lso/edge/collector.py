@@ -48,6 +48,12 @@ MATCH_START_TOLERANCE_S = 5.0
 # Warn when a connection delivers no frames for this long (Tacview's exporter isn't
 # getting data from DCS, e.g. Export.lua lost its Tacview line, or the sim is paused).
 NO_FRAMES_WARNING_S = 30.0
+NO_FRAMES_REPEAT_S = 600.0  # repeat the warning this rarely while frames stay away
+# Passes waiting to be sliced are due in mission time, which only advances with frames. DCS pauses an
+# empty dedicated server (e.g. the pilot leaves right after landing), so after this long without
+# frames, slice them anyway from what was recorded.
+STALLED_SLICE_S = 10.0
+WATCH_INTERVAL_S = 2.0
 CONFIG_REFRESH_S = 60.0
 
 
@@ -186,6 +192,7 @@ class Session:
     pending: list[_Pending] = field(default_factory=list)
     names: list[str] = field(default_factory=list)  # outbox items produced by this session
     frames: int = 0
+    last_frame_at: float = field(default_factory=time.monotonic)  # wall clock (monotonic) of the last frame
     # Pilot mode: the own jet's approaches, found without a carrier (see `detect.approaches`).
     segmenters: dict[int, ApproachSegmenter] | None = None
     approaches: list[_PendingApproach] = field(default_factory=list)
@@ -315,12 +322,7 @@ class Collector:
             for segmenter in (session.segmenters or {}).values():
                 if (approach := segmenter.flush()) is not None:
                     session.approaches.append(_PendingApproach(approach, approach.end_time + TAIL_S))
-            for item in session.pending:
-                await self._slice(session, item)
-            session.pending.clear()
-            for pending in session.approaches:
-                await self._slice_approach(session, pending.approach)
-            session.approaches.clear()
+            await self._slice_waiting(session)
             if session.callouts is not None:
                 await session.callouts.drain()
                 await session.callouts.sink.close()
@@ -332,22 +334,39 @@ class Collector:
         return session
 
     async def _watch_frames(self, session: Session) -> None:
-        """Warn (repeatedly) while a connection delivers no frames."""
-        last = -1
+        """While frames stop: slice waiting passes after `STALLED_SLICE_S`, and warn now and then."""
+        warned_at: float | None = None
         while True:
-            await asyncio.sleep(NO_FRAMES_WARNING_S)
-            if session.frames == last:
+            await asyncio.sleep(WATCH_INTERVAL_S)
+            idle = time.monotonic() - session.last_frame_at
+            if idle < WATCH_INTERVAL_S:
+                warned_at = None
+                continue
+            if idle >= STALLED_SLICE_S and (session.pending or session.approaches):
+                log.info("no frames for %.0fs (DCS pauses an empty server); slicing %d waiting pass(es) now",
+                         idle, len(session.pending) + len(session.approaches))
+                await self._slice_waiting(session)
+            if idle >= NO_FRAMES_WARNING_S and (warned_at is None or time.monotonic() - warned_at >= NO_FRAMES_REPEAT_S):
+                warned_at = time.monotonic()
                 log.warning(
-                    "connected to Tacview but no new frames for %.0fs. Is the mission paused? Does DCS's "
-                    "Saved Games/DCS/Scripts/Export.lua load Scripts/TacviewGameExport.lua? (SRS's installer "
-                    "can replace Export.lua without it.)", NO_FRAMES_WARNING_S)
-            last = session.frames
+                    "connected to Tacview but no new frames for %.0fs. Usually the mission is paused (a dedicated "
+                    "server pauses with no players); otherwise check that DCS's Saved Games/DCS/Scripts/Export.lua "
+                    "loads Scripts/TacviewGameExport.lua (SRS's installer can replace Export.lua without it).", idle)
+
+    async def _slice_waiting(self, session: Session) -> None:
+        pending, session.pending = session.pending, []
+        approaches, session.approaches = session.approaches, []
+        for item in pending:
+            await self._slice(session, item)
+        for waiting in approaches:
+            await self._slice_approach(session, waiting.approach)
 
     async def _line(self, session: Session, line: str) -> None:
         session.archive.write(line)
         for record in session.parser.feed(line):
             if isinstance(record, Frame):
                 session.frames += 1
+                session.last_frame_at = time.monotonic()
                 session.now = record.time
                 if session.first_frame is None:
                     session.first_frame = record.time

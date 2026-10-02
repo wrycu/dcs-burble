@@ -155,6 +155,7 @@ def test_warns_when_connection_has_no_frames(tmp_path, monkeypatch, caplog):
     import dcs_lso.edge.collector as collector_mod
 
     monkeypatch.setattr(collector_mod, "NO_FRAMES_WARNING_S", 0.2)
+    monkeypatch.setattr(collector_mod, "WATCH_INTERVAL_S", 0.05)
     header_only = tmp_path / "header.txt.acmi"
     header_only.write_text("FileType=text/acmi/tacview\nFileVersion=2.2\n0,ReferenceTime=2026-01-01T00:00:00Z\n")
 
@@ -175,6 +176,42 @@ def test_warns_when_connection_has_no_frames(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="dcs_lso.edge.collector"):
         asyncio.run(run())
     assert any("no new frames" in r.message and "Export.lua" in r.message for r in caplog.records)
+
+
+def test_pass_is_sliced_when_the_server_pauses_after_it(tmp_path, monkeypatch):
+    """The pilot leaves right after trapping, DCS pauses the empty server, and frames stop while the
+    connection stays open: the waiting pass is still sliced, from what was recorded."""
+    import dcs_lso.edge.collector as collector_mod
+
+    monkeypatch.setattr(collector_mod, "STALLED_SLICE_S", 0.3)
+    monkeypatch.setattr(collector_mod, "WATCH_INTERVAL_S", 0.05)
+    (trap,) = find_passes(load_recording(AI_TRAP))
+    lines, parser = [], AcmiParser()
+    for line in iter_lines(AI_TRAP):
+        if any(getattr(r, "time", 0.0) > trap.end_time + 2.0 for r in parser.feed(line)) and line.startswith("#"):
+            break  # the server pauses 2 s after the pass ended: well before the 10 s slicing delay
+        lines.append(line if line.endswith("\n") else line + "\n")
+    queued_while_paused = []
+
+    async def run():
+        collector = Collector(CollectorConfig(work_dir=tmp_path / "edge", tacview_port=0))
+
+        async def handle(reader, writer):
+            writer.write(b"XtraLib.Stream.0\nTacview.RealTimeTelemetry.0\nhost\n\0")
+            await reader.readuntil(b"\0")
+            writer.write("".join(lines).encode())
+            await writer.drain()
+            await asyncio.sleep(1.0)  # paused: connected, no frames
+            queued_while_paused.extend(i.name for i in collector.outbox.pending())
+            writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        collector.config.tacview_port = server.sockets[0].getsockname()[1]
+        async with server:
+            await collector.run_session()
+
+    asyncio.run(run())
+    assert len(queued_while_paused) == 1
 
 
 def test_wire_from_carrier_animation_without_dcs_grade(tmp_path):
