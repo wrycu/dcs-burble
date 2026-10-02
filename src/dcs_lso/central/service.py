@@ -76,6 +76,13 @@ class Central:
             s.add(Source(name=name, kind=kind, token_hash=_hash_token(token)))
         return token
 
+    def set_config(self, name: str, config: dict) -> None:
+        with self.sessions.begin() as s:
+            source = s.scalar(select(Source).where(Source.name == name))
+            if source is None:
+                raise ValueError(f"no source named {name!r}")
+            source.config = config
+
     def authenticate(self, token: str) -> Source | None:
         with self.sessions() as s:
             return s.scalar(select(Source).where(Source.token_hash == _hash_token(token)))
@@ -134,6 +141,7 @@ class Central:
                 start_time=float(info["start_time"]), end_time=float(info["end_time"]),
                 outcome=info["outcome"], wire=dcs.get("wire"),
                 dcs_grade=(dcs.get("grade") or {}).get("raw"),
+                calls=sidecar.get("calls"),
             )
             try:
                 result = grade_pass(self.load_pass(row))

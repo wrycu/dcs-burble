@@ -91,6 +91,11 @@ def _hook_listen(args: argparse.Namespace) -> int:
             place = event.place or {}
             t = f"{event.time:9.3f}" if event.time is not None else "        -"
             detail = ""
+            if "wires" in event.raw:
+                w = event.raw.get("wires") or {}
+                detail = (f"  +{event.raw.get('delay', 0)}s after {event.raw.get('source')}: "
+                          + " ".join(f"{k}={w.get(k)}" for k in ("w1", "w2", "w3", "w4")))
+                place = {"name": event.raw.get("carrier")}
             if event.comment:
                 grade = LsoGrade.parse(event.comment)
                 detail = f"  grade={grade.grade} wire={grade.wire} remarks={grade.remarks!r}"
@@ -262,6 +267,24 @@ def _central_add_source(args: argparse.Namespace) -> int:
     return 0
 
 
+def _central_set_config(args: argparse.Namespace) -> int:
+    config = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    _central(args).set_config(args.name, config)
+    print(f"configuration for {args.name!r} updated; its collector applies it when the next mission starts")
+    return 0
+
+
+def _voice_build(args: argparse.Namespace) -> int:
+    from .callouts.voice import ClipLibrary, build_clips
+
+    out = build_clips(args.model, args.out_dir, speed=args.speed)
+    lib = ClipLibrary.load(out)
+    for call, clip in lib.clips.items():
+        print(f"  {call.value:<17} {clip.seconds:4.2f}s  {clip.text!r}")
+    print(f"clips written to {out}")
+    return 0
+
+
 def _central_regrade(args: argparse.Namespace) -> int:
     done, skipped = _central(args).regrade(force=args.force)
     print(f"regraded {done} passes; {skipped} already had the current grading version")
@@ -313,12 +336,15 @@ def _collect(args: argparse.Namespace) -> int:
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
+    if not args.verbose:
+        logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per request is just noise
     dcs_log = Path(args.dcs_log) if args.dcs_log else None
     debrief = Path(args.debrief) if args.debrief else (dcs_log.with_name("debrief.log") if dcs_log else None)
     config = CollectorConfig(
         work_dir=Path(args.work_dir), tacview_host=args.tacview_host, tacview_port=args.tacview_port,
         tacview_password=args.tacview_password, dcs_log=dcs_log, debrief=debrief,
         url=args.url, token=args.token or os.environ.get("DCS_LSO_TOKEN"),
+        mode=args.mode, voice_dir=Path(args.voice_dir) if args.voice_dir else None,
     )
 
     async def run() -> None:
@@ -432,6 +458,18 @@ def main(argv: list[str] | None = None) -> int:
     regrade = central_sub.add_parser("regrade", help="grade every stored pass with the current grading version")
     regrade.add_argument("--force", action="store_true", help="also redo passes already at the current version")
     regrade.set_defaults(func=_central_regrade)
+    set_config = central_sub.add_parser("set-config", help="set a source's collector configuration (JSON file)")
+    set_config.add_argument("name")
+    set_config.add_argument("file")
+    set_config.set_defaults(func=_central_set_config)
+
+    voice = sub.add_parser("voice", help="LSO voice clips")
+    voice_sub = voice.add_subparsers(dest="voice_command", required=True)
+    build = voice_sub.add_parser("build", help="render the LSO phrases with a Piper voice model")
+    build.add_argument("model", help="Piper .onnx voice (e.g. from `python -m piper.download_voices en_US-ryan-high`)")
+    build.add_argument("--out-dir", "-o", default="voice")
+    build.add_argument("--speed", type=float, default=1.15, help="speaking speed (1 = Piper's normal pace)")
+    build.set_defaults(func=_voice_build)
 
     upload = sub.add_parser("upload", help="slice recordings and upload every pass to the central service")
     upload.add_argument("recordings", nargs="+")
@@ -453,6 +491,10 @@ def main(argv: list[str] | None = None) -> int:
     collect.add_argument("--debrief", metavar="PATH", help="DCS Logs/debrief.log (default: next to --dcs-log)")
     collect.add_argument("--url", default=os.environ.get("DCS_LSO_URL"), help="central service URL [$DCS_LSO_URL]")
     collect.add_argument("--token", help="upload token [$DCS_LSO_TOKEN]")
+    collect.add_argument("--mode", choices=["server", "pilot"], default="server",
+                         help="server: live callouts over SRS when enabled in central's config; "
+                              "pilot: record and upload only, never transmit")
+    collect.add_argument("--voice-dir", metavar="DIR", help="LSO voice clips (from `dcs-lso voice build`)")
     collect.add_argument("-v", "--verbose", action="store_true")
     collect.set_defaults(func=_collect)
     args = parser.parse_args(argv)

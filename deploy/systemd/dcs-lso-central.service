@@ -1,0 +1,15 @@
+# dcs-lso central service (greenie board, grading, slice archive) as a systemd *user* service.
+# Listens on 127.0.0.1:8000 only; publish it through a reverse proxy (e.g. Caddy).
+# Install: cp deploy/systemd/*.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#          systemctl --user enable --now dcs-lso-central
+[Unit]
+Description=dcs-lso central (greenie board, grading, ACMI archive)
+
+[Install]
+WantedBy=default.target
+
+[Service]
+WorkingDirectory=%h/dcs-lso
+ExecStart=%h/.local/bin/uv run --frozen dcs-lso central --data-dir %h/dcs-lso-data/central serve --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5

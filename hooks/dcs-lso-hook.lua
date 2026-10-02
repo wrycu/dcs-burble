@@ -70,17 +70,47 @@ watch(world.event.S_EVENT_TAKEOFF, 'takeoff')
 watch(world.event.S_EVENT_RUNWAY_TAKEOFF, 'runway_takeoff')
 
 DCSLSO_HANDLER = {}
+-- Arresting wire animation arguments (wire 1..4), from CoreMods/tech/USS_Nimitz/Database/USS_CVN_7x.lua:
+-- GT.animation_arguments.arresting_wires = {141, 142, 143, 144}
+local WIRE_ARGS = { 141, 142, 143, 144 }
+
+local function wire_args(carrier_name)
+  local unit = try(function() return Unit.getByName(carrier_name) end)
+  if not unit then return nil end
+  local values = {}
+  for i, arg in ipairs(WIRE_ARGS) do
+    values['w' .. i] = try(function() return unit:getDrawArgumentValue(arg) end)
+  end
+  return values
+end
+
+local function log_event(fields)
+  local ok, line = pcall(encode, fields)
+  env.info('DCSLSO ' .. (ok and line or encode({ event = 'encode_error', error = tostring(line) })))
+end
+
+-- Sample the carrier's wire animation now and shortly after (the cable is fully paid out by the
+-- time the aircraft stops), to find out which wire was caught without DCS's LSO grade.
+local function sample_wires(source_event, carrier_name, initiator)
+  for _, delay in ipairs({ 0, 0.5, 1.5, 3.0 }) do
+    local function sample()
+      log_event({ event = 'wire_sample', source = source_event, delay = delay, t = timer.getTime(),
+                  carrier = carrier_name, initiator = initiator, wires = wire_args(carrier_name) })
+    end
+    if delay == 0 then sample() else timer.scheduleFunction(function() sample() return nil end, nil,
+                                                             timer.getTime() + delay) end
+  end
+end
+
 function DCSLSO_HANDLER:onEvent(e)
   local name = names[e.id]
   if not name then return end
-  local ok, line = pcall(encode, {
-    event = name,
-    t = e.time,
-    comment = e.comment,
-    initiator = describe(e.initiator),
-    place = describe(e.place),
-  })
-  env.info('DCSLSO ' .. (ok and line or encode({ event = 'encode_error', error = tostring(line) })))
+  local place = describe(e.place)
+  local initiator = describe(e.initiator)
+  log_event({ event = name, t = e.time, comment = e.comment, initiator = initiator, place = place })
+  if (name == 'runway_touch' or name == 'land') and place and place.name then
+    pcall(sample_wires, name, place.name, initiator)
+  end
 end
 world.addEventHandler(DCSLSO_HANDLER)
 env.info('DCSLSO {"event":"handler_installed","t":' .. string.format('%.17g', timer.getTime()) .. '}')

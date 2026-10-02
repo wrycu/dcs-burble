@@ -20,7 +20,15 @@ DCS = { setUserCallbacks = function(c) callbacks = c end }
 function a_do_script(code) assert(loadstring(code))() end
 net = { dostring_in = function(state, code) assert(state == 'mission'); assert(loadstring(code))(); return '', true end }
 env = { info = function(msg) print('2026-09-28 12:00:00.123 INFO    SCRIPTING (Main): ' .. msg) end }
-timer = { getTime = function() return 12.5 end }
+local scheduled = {}
+timer = { getTime = function() return 12.5 end,
+          scheduleFunction = function(fn, arg, at) scheduled[#scheduled + 1] = function() fn(arg, at) end end }
+local CarrierUnit = {}
+CarrierUnit.__index = CarrierUnit
+function CarrierUnit:getDrawArgumentValue(arg) if arg == 143 then return 0.82 end return 0 end
+Unit = { getByName = function(name)
+  if name == 'CVN-75 Harry S. Truman' then return setmetatable({}, CarrierUnit) end
+end }
 local handlers = {}
 world = {
   event = { S_EVENT_TAKEOFF = 3, S_EVENT_LAND = 4, S_EVENT_LANDING_QUALITY_MARK = 36,
@@ -46,6 +54,7 @@ callbacks.onMissionLoadEnd()
 callbacks.onMissionLoadEnd() -- second load must not double-install
 for _, h in ipairs(handlers) do
   h:onEvent({ id = 55, time = 4806.84, initiator = plane, place = carrier })
+  for _, f in ipairs(scheduled) do f() end
   h:onEvent({ id = 1, time = 4807.0, initiator = plane })
   h:onEvent({ id = 36, time = 4809.469, initiator = plane, place = carrier,
               comment = 'LSO: GRADE:C : EGIW  WIRE# 2[BC]' })
@@ -75,7 +84,13 @@ def test_hook_installs_once_and_logs_injection(lua_output):
 def test_hook_events_round_trip(lua_output):
     events = [e for e in map(parse_hook_line, lua_output) if e and e.event not in
               ("handler_installed", "handler_already_installed")]
+    samples = [e for e in events if e.event == "wire_sample"]
+    events = [e for e in events if e.event != "wire_sample"]
     assert [e.event for e in events] == ["runway_touch", "landing_quality_mark"]  # S_EVENT_SHOT ignored
+    # runway_touch -> wire animation sampled now and at +0.5/+1.5/+3 s; wire 3 (arg 143) deflected.
+    assert [s.raw["delay"] for s in samples] == [0, 0.5, 1.5, 3.0]
+    assert all(s.raw["wires"] == {"w1": 0, "w2": 0, "w3": 0.82, "w4": 0} for s in samples)
+    assert samples[0].raw["carrier"] == "CVN-75 Harry S. Truman"
     touch, mark = events
     assert touch.time == pytest.approx(4806.84)
     assert touch.initiator["player"] == 'Wrycu "Test"'

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from sqlalchemy import (JSON, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, create_engine,
-                        event)
+                        event, inspect, text)
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -30,6 +30,8 @@ class Source(Base):
     name: Mapped[str] = mapped_column(String(100), unique=True)
     kind: Mapped[str] = mapped_column(String(16), default="server")  # server | pilot
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    # Settings the source's collector fetches (e.g. callouts: SRS server, LSO frequencies).
+    config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -71,6 +73,8 @@ class Pass(Base):
     outcome: Mapped[str] = mapped_column(String(16))
     wire: Mapped[int | None] = mapped_column(Integer)  # from DCS's LSO only
     dcs_grade: Mapped[str | None] = mapped_column(String(200))
+    # Live LSO calls the collector made during this pass: [{"time", "along", "call"}].
+    calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     pilot: Mapped[Pilot] = relationship()
@@ -110,7 +114,19 @@ def make_engine(url: str) -> Engine:
             cur.execute("PRAGMA journal_mode=WAL")
             cur.close()
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     return engine
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    """Minimal forward migration: add nullable columns that newer versions introduced."""
+    existing = {t: {c["name"] for c in inspect(engine).get_columns(t)} for t in Base.metadata.tables}
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            for column in table.columns:
+                if column.name not in existing[table.name] and column.nullable:
+                    ddl = column.type.compile(engine.dialect)
+                    conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{column.name}" {ddl}'))
 
 
 def make_sessionmaker(engine: Engine) -> sessionmaker:

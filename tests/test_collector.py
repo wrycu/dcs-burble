@@ -40,6 +40,9 @@ def test_live_detection_matches_offline(path):
 class StubHooks:
     """Stands in for HookFeed: DCS's grade for the AI trap, as the hook reports it."""
 
+    def wire_for(self, tacview_id, start, end):
+        return None
+
     def debrief(self) -> Debrief:
         event = HookEvent("landing_quality_mark", 294.655, "LSO: GRADE:C : LNFIW  WIRE# 3",
                           {"name": "Aerial-1-1", "type": "FA-18C_hornet", "object_id": 16777728},
@@ -166,3 +169,55 @@ def test_warns_when_connection_has_no_frames(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="dcs_lso.edge.collector"):
         asyncio.run(run())
     assert any("no new frames" in r.message and "Export.lua" in r.message for r in caplog.records)
+
+
+def test_wire_from_carrier_animation_without_dcs_grade(tmp_path):
+    """No DCS comms: the hook's wire-animation samples still give the wire."""
+    from dcs_lso.edge.collector import HookFeed
+
+    feed = HookFeed.__new__(HookFeed)
+    import threading
+    feed._events, feed._lock = [], threading.Lock()
+    me = {"object_id": 16777728, "type": "FA-18C_hornet"}  # -> Tacview 0x201, the AI trap's aircraft
+    other = {"object_id": 16777984, "type": "FA-18C_hornet"}
+    for t, wires, who in [(292.4, {"w1": 0, "w2": 0, "w3": 1, "w4": 0}, me),
+                          (292.9, {"w1": 0, "w2": 0, "w3": 1, "w4": 0}, me),
+                          (292.9, {"w1": 0, "w2": 1, "w3": 0, "w4": 0}, other),   # someone else's trap
+                          (900.0, {"w1": 1, "w2": 0, "w3": 0, "w4": 0}, me)]:      # outside this pass
+        feed.add(HookEvent("wire_sample", t, None, who, None, None, {"initiator": who, "wires": wires}))
+    assert feed.wire_for(0x201, 264.0, 306.0) == 3
+    assert feed.wire_for(0x201, 0.0, 100.0) is None
+
+    async def run():
+        server = await serve_recording(AI_TRAP, port=0, speed=0)
+        port = server.sockets[0].getsockname()[1]
+        async with server:
+            collector = Collector(CollectorConfig(work_dir=tmp_path / "edge", tacview_port=port))
+            collector.hooks = feed
+            await collector.run_session()
+        return collector
+
+    collector = asyncio.run(run())
+    (item,) = collector.outbox.pending()
+    meta = item.meta()
+    assert meta["dcs"]["wire"] == 3 and meta["dcs"]["grade"] is None and meta["wire_source"] == "carrier-animation"
+
+
+def test_hook_events_are_scoped_to_the_current_mission():
+    """Mission time restarts at 0, so a previous mission's grade/wire must not match a new pass."""
+    import threading
+
+    from dcs_lso.edge.collector import HookFeed
+
+    feed = HookFeed.__new__(HookFeed)
+    feed._events, feed._lock = [], threading.Lock()
+    me = {"object_id": 16777728, "type": "FA-18C_hornet"}
+    old_mission = [HookEvent("handler_installed", 0.0, None, None, None, None, {}),
+                   HookEvent("wire_sample", 300.0, None, me, None, None, {"initiator": me, "wires": {"w3": 1}}),
+                   HookEvent("landing_quality_mark", 300.2, "LSO: GRADE:C : WIRE# 3", me, {"name": "CVN"}, None, {})]
+    for e in old_mission:
+        feed.add(e)
+    assert feed.wire_for(0x201, 290.0, 310.0) == 3
+    feed.add(HookEvent("handler_installed", 0.0, None, None, None, None, {}))  # next mission loads
+    assert feed.wire_for(0x201, 290.0, 310.0) is None
+    assert feed.debrief().landing_marks() == []

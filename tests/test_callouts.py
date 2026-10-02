@@ -13,17 +13,28 @@ FIXTURE = Path(__file__).parent / "fixtures" / "ai_hornet_trap_cvn75.zip.acmi"
 
 
 def state(t=0.0, along=0.5 * NM, gs=0.0, gs_rate=0.0, lineup=0.0, lineup_rate=0.0, lateral=0.0, aoa=8.1,
-          heading_error=0.0, roll=0.0) -> GrooveState:
-    return GrooveState(t, along, gs, gs_rate, lineup, lineup_rate, lateral, aoa, False, heading_error, roll, 5)
+          heading_error=0.0, roll=0.0, pitch_rate=0.0, gear=None) -> GrooveState:
+    return GrooveState(t, along, gs, gs_rate, lineup, lineup_rate, lateral, aoa, False, heading_error, roll, 5,
+                       pitch_rate=pitch_rate, gear=gear)
 
 
 def test_conditions_zones():
     th = Thresholds()
-    assert conditions(state(gs=0.7), th) == {Call.HIGH}
-    assert conditions(state(gs=-0.6, gs_rate=0.1), th) == {Call.LOW}  # low but correcting
-    assert conditions(state(gs=-0.6, gs_rate=-0.1), th) == {Call.POWER}
+    assert conditions(state(gs=0.8), th) == {Call.HIGH}
+    assert conditions(state(gs=0.5), th) == {Call.LITTLE_HIGH}
+    assert conditions(state(gs=-0.8, gs_rate=0.1), th) == {Call.LOW}  # low but correcting
+    assert conditions(state(gs=-0.8, gs_rate=-0.1), th) == {Call.POWER}
+    assert conditions(state(gs=-0.5), th) == {Call.LITTLE_LOW}
+    assert conditions(state(gs=-0.5, gs_rate=-0.4), th) == {Call.POWER}  # a little low and sinking
+    assert conditions(state(along=0.2 * NM, gs=-1.1), th) == {Call.POWER_X3}
+    assert conditions(state(gs=0.0, gs_rate=-0.2), th) == {Call.GOING_LOW}
+    assert conditions(state(gs=0.0, gs_rate=0.8), th, recent_power=True) == {Call.EASY_WITH_IT}
     assert conditions(state(lineup=-1.5), th) == {Call.RIGHT_FOR_LINEUP}
-    assert conditions(state(aoa=6.0), th) == {Call.FAST}
+    assert conditions(state(lineup=0.7), th) == {Call.LITTLE_LEFT}
+    assert conditions(state(lineup=0.0, lineup_rate=0.3), th) == {Call.DRIFTING_RIGHT}
+    assert conditions(state(roll=25.0), th) == {Call.EASY_WINGS}
+    assert conditions(state(aoa=7.0), th) == {Call.FAST}
+    assert conditions(state(aoa=9.0), th) == {Call.SLOW}
     assert Call.WAVE_OFF in conditions(state(along=0.2 * NM, gs=-1.5), th)
     assert Call.WAVE_OFF not in conditions(state(along=0.5 * NM, gs=-1.5), th)  # too far out to wave off
     assert conditions(state(along=100.0, gs=-3.0), th) == set()  # at the ramp: too late for any call
@@ -31,8 +42,21 @@ def test_conditions_zones():
 
 def test_hysteresis_keeps_call_active_near_threshold():
     th = Thresholds()
-    assert conditions(state(gs=0.45), th) == set()
-    assert conditions(state(gs=0.45), th, frozenset({Call.HIGH})) == {Call.HIGH}
+    assert conditions(state(gs=0.3), th) == set()
+    assert conditions(state(gs=0.3), th, frozenset({Call.LITTLE_HIGH})) == {Call.LITTLE_HIGH}
+    assert conditions(state(aoa=7.6), th) == set()
+    assert conditions(state(aoa=7.6), th, frozenset({Call.FAST})) == {Call.FAST}
+
+
+def test_power_escalates_and_lineup_needs_three_seconds():
+    engine = CalloutEngine()
+    low = [state(t=i * 0.1, along=0.35 * NM - i * 7, gs=-0.8, gs_rate=-0.05) for i in range(60)]
+    calls = feed(engine, low)
+    assert calls[:2] == [Call.POWER, Call.POWER_X2]
+    engine = CalloutEngine()
+    left = [state(t=i * 0.1, along=0.35 * NM - i * 3, lineup=-1.5) for i in range(40)]
+    calls = [(c, i) for i, s in enumerate(left) if (e := engine.update(s)) and (c := e.call)]
+    assert calls and calls[0][0] is Call.RIGHT_FOR_LINEUP and calls[0][1] >= 30  # held 3 s first
 
 
 def feed(engine, states):

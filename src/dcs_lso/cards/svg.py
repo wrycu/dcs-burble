@@ -31,6 +31,7 @@ SIDE_TOP, SIDE_H = HEADER_H + 18, 250
 TOP_TOP, TOP_H = SIDE_TOP + SIDE_H + 44, 170
 TABLE_TOP = TOP_TOP + TOP_H + 40
 HEIGHT = TABLE_TOP + 132
+CALLS_H = 24  # extra height when the card lists live calls
 
 # AOA bands relative to the aircraft's on-speed band (lso's FA-18C bands are on-speed
 # 7.4-8.8 with 0.5 deg "slightly" margins).
@@ -64,6 +65,8 @@ STYLE = """
 .tc-grade-mid { fill: #9a6700; }
 .tc-grade-good { fill: #1a7f37; }
 .tc-rule { stroke: #d0d7de; stroke-width: 1; }
+.tc-call { fill: #ffffff; stroke: #1f2328; stroke-width: 2; }
+.tc-call-label { fill: #1f2328; font-weight: 600; }
 @media (prefers-color-scheme: dark) {
   .tc-bg { fill: #0d1117; }
   .tc-text { fill: #e6edf3; }
@@ -88,6 +91,8 @@ STYLE = """
   .tc-grade-mid { fill: #d29922; }
   .tc-grade-good { fill: #3fb950; }
   .tc-rule { stroke: #30363d; }
+  .tc-call { fill: #0d1117; stroke: #e6edf3; }
+  .tc-call-label { fill: #e6edf3; }
 }
 """
 
@@ -168,7 +173,7 @@ def _clip(clip_id: str, top: float, height: float, out: list[str]) -> None:
 
 
 def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Axis, wire: int | None,
-               on_speed: tuple[float, float], uid: str, out: list[str]) -> None:
+               on_speed: tuple[float, float], uid: str, out: list[str], calls: list[dict]) -> None:
     top, h = SIDE_TOP, SIDE_H
     glide = frame.aircraft.glideslope
     ideal_far = X_MAX_M * math.tan(math.radians(glide))
@@ -192,6 +197,15 @@ def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Ax
         out.append(f'<line class="{cls}" x1="{_f(x(along))}" y1="{_f(y(0) - 5)}" x2="{_f(x(along))}" y2="{_f(y(0) + 3)}"/>')
     for cls, run in _runs(samples, on_speed):
         out.append(f'<polyline class="tc-track tc-{cls}" points="{_poly([(x(s.along), y(s.hook_height)) for s in run])}"/>')
+    # Live calls the LSO made: a marker on the track where each was given, labels staggered.
+    for i, call in enumerate(c for c in calls if samples):
+        near = min((s for s in samples if s.along >= 0), key=lambda s: abs(s.along - call["along"]), default=samples[0])
+        cx, cy = x(near.along), y(near.hook_height)
+        ly = cy - 14 - (i % 2) * 14
+        out.append(f'<line class="tc-axis" x1="{_f(cx)}" y1="{_f(cy)}" x2="{_f(cx)}" y2="{_f(ly + 3)}"/>')
+        out.append(f'<circle class="tc-call" cx="{_f(cx)}" cy="{_f(cy)}" r="4"/>')
+        out.append(f'<text class="tc-call-label" x="{_f(cx)}" y="{_f(ly)}" font-size="11" '
+                   f'text-anchor="middle">{escape(call["call"].capitalize())}</text>')
     out.append("</g>")
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top + h}" x2="{PAD_L + PLOT_W}" y2="{top + h}"/>')
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top}" x2="{PAD_L}" y2="{top + h}"/>')
@@ -262,17 +276,21 @@ def _legend(on_speed: tuple[float, float], out: list[str]) -> None:
         out.append(f'<text class="tc-muted" x="{lx + 18}" y="{SIDE_TOP - 11}" font-size="11">{AOA_LABELS[cls]}</text>')
 
 
-def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc") -> str:
-    """`uid` prefixes element ids, so several cards can be inlined in one page."""
+def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc",
+                calls: list[dict] | None = None) -> str:
+    """`uid` prefixes element ids, so several cards can be inlined in one page. `calls` are the
+    live LSO calls made during the pass ({"time", "along", "call"}), if any."""
+    calls = sorted(calls or [], key=lambda c: c["time"])
+    height = HEIGHT + (CALLS_H if calls else 0)
     aircraft = AIRCRAFT[p.aircraft_type]
     frame = DeckFrame(CARRIERS[p.carrier_type], aircraft)
     samples = [s for s in p.samples if X_MIN_M <= s.along <= X_MAX_M * 1.05]
     x = Axis(X_MAX_M, X_MIN_M, PAD_L, PAD_L + PLOT_W)
     out: list[str] = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" class="tc" viewBox="0 0 {WIDTH} {HEIGHT}" '
-        f'width="{WIDTH}" height="{HEIGHT}" role="img" aria-label="Trap card: {escape(p.pilot)} {escape(grade.text)}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="tc" viewBox="0 0 {WIDTH} {height}" '
+        f'width="{WIDTH}" height="{height}" role="img" aria-label="Trap card: {escape(p.pilot)} {escape(grade.text)}">',
         f"<style>{STYLE}</style>",
-        f'<rect class="tc-bg" width="{WIDTH}" height="{HEIGHT}" rx="10"/>',
+        f'<rect class="tc-bg" width="{WIDTH}" height="{height}" rx="10"/>',
     ]
     pilot = escape(p.pilot or f"id {p.aircraft_id:x}")
     out.append(f'<text class="tc-text" x="{PAD_L}" y="34" font-size="20" font-weight="700">{pilot}</text>')
@@ -292,8 +310,12 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
         out.append(f'<text class="tc-muted" x="{gx}" y="72" font-size="11" text-anchor="end">'
                    f'DCS LSO: {escape(dcs)}</text>')
     _legend(aircraft.on_speed_aoa, out)
-    _side_view(p, frame, samples, x, p.wire, aircraft.on_speed_aoa, uid, out)
+    _side_view(p, frame, samples, x, p.wire, aircraft.on_speed_aoa, uid, out, calls)
     _top_view(samples, x, aircraft.on_speed_aoa, uid, out)
     _table(grade, out)
+    if calls:
+        listed = ", ".join(f"{c['call'].capitalize()} ({c['along'] / NM:.2f} nm)" for c in calls)
+        out.append(f'<text class="tc-text" x="{PAD_L}" y="{HEIGHT + 4}" font-size="12">'
+                   f'<tspan font-weight="600">LSO calls:</tspan> {escape(listed)}</text>')
     out.append("</svg>")
     return "\n".join(out)

@@ -8,6 +8,8 @@ analysed with the same offline code as everything else.
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from ..acmi import ObjectRemoved, ObjectTrack, ObjectUpdate, Record, Recording, Sample
 from ..detect import PassResult, PassTracker, is_recovery_attempt
 from ..detect.passes import _finish
@@ -29,8 +31,18 @@ def _extrapolate(a: tuple[float, CarrierPose], b: tuple[float, CarrierPose], t: 
 HISTORY_S = 600.0
 
 
+class PassListener(Protocol):
+    """Told about every sample of an aircraft in a pass (e.g. live callouts)."""
+
+    def on_sample(self, carrier: ObjectTrack, plane: ObjectTrack, pose: CarrierPose, sample: Sample,
+                  frame: DeckFrame) -> object: ...
+
+    def pass_ended(self, carrier_id: int, aircraft_id: int) -> None: ...
+
+
 class LivePassDetector:
-    def __init__(self) -> None:
+    def __init__(self, listener: PassListener | None = None) -> None:
+        self.listener = listener
         self.tracks: dict[int, ObjectTrack] = {}
         self._trackers: dict[tuple[int, int], tuple[PassTracker, DeckFrame]] = {}
         # Last two (time, pose) samples per carrier, for extrapolating to aircraft sample times.
@@ -86,13 +98,17 @@ class LivePassDetector:
                 carrier = self.tracks[carrier_id]
                 frame = DeckFrame(CARRIERS[carrier.name], AIRCRAFT[plane.name])
                 entry = self._trackers[key] = (PassTracker(frame), frame)
-            tracker, _ = entry
+            tracker, frame = entry
             if not tracker.feed(sample.time, pose, sample.transform, sample.aoa):
                 finished.extend(self._finish(key))
+            elif self.listener is not None:
+                self.listener.on_sample(self.tracks[carrier_id], plane, pose, sample, frame)
         return finished
 
     def _finish(self, key: tuple[int, int]) -> list[PassResult]:
         tracker, frame = self._trackers.pop(key)
+        if self.listener is not None:
+            self.listener.pass_ended(*key)
         carrier, plane = self.tracks.get(key[0]), self.tracks.get(key[1])
         if carrier is None or plane is None:
             return []

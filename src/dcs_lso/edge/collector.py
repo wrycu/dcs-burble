@@ -28,8 +28,11 @@ from ..acmi import AcmiParser, Frame, load_recording
 from ..acmi.stream import DEFAULT_PORT, HandshakeError, TelemetryClient
 from ..acmi.writer import write_slice
 from ..dcslog import Debrief, DcsEvent, HookEvent, attach_dcs_grades, follow, load_debrief, parse_hook_line
+from ..dcslog.match import tacview_id_hint
 from ..detect import PassResult, find_passes
 from ..slices import LEAD_S, TAIL_S, sidecar, slice_name, slice_objects
+from ..callouts.voice import ClipLibrary
+from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink
 from .live import LivePassDetector
 from .outbox import Outbox
 
@@ -42,6 +45,7 @@ MATCH_START_TOLERANCE_S = 5.0
 # Warn when a connection delivers no frames for this long (Tacview's exporter isn't
 # getting data from DCS, e.g. Export.lua lost its Tacview line, or the sim is paused).
 NO_FRAMES_WARNING_S = 30.0
+CONFIG_REFRESH_S = 60.0
 
 
 @dataclass
@@ -54,6 +58,10 @@ class CollectorConfig:
     debrief: Path | None = None
     url: str | None = None
     token: str | None = None
+    # "server": live callouts over SRS (if enabled in central's config); "pilot": record and upload
+    # only, never transmit (a pilot's collector would be talking on someone else's server).
+    mode: str = "server"
+    voice_dir: Path | None = None  # clip set from `dcs-lso voice build`
 
 
 class HookFeed:
@@ -68,14 +76,32 @@ class HookFeed:
     def _run(self) -> None:
         for line in follow(self.path):
             if (event := parse_hook_line(line)) is not None:
-                with self._lock:
-                    self._events.append(event)
+                self.add(event)
                 if event.event == "landing_quality_mark":
                     log.info("DCS LSO: %s", event.comment)
 
     def add(self, event: HookEvent) -> None:
         with self._lock:
+            if event.event == "handler_installed":
+                # A new mission: its times restart at 0, so the previous mission's events would
+                # otherwise match this mission's passes.
+                self._events.clear()
             self._events.append(event)
+
+    def wire_for(self, tacview_id: int, start: float, end: float) -> int | None:
+        """The wire caught by this aircraft between `start` and `end` (mission time), from the hook's
+        samples of the carrier's arresting-wire animation (1 on the caught wire, 0 elsewhere)."""
+        with self._lock:
+            events = [e for e in self._events if e.event == "wire_sample"]
+        counts: dict[int, int] = {}
+        for e in events:
+            who = (e.raw.get("initiator") or {}).get("object_id")
+            if who is None or tacview_id_hint(int(who)) != tacview_id or not start <= (e.time or 0.0) <= end:
+                continue
+            caught = [n for n in (1, 2, 3, 4) if ((e.raw.get("wires") or {}).get(f"w{n}") or 0) > 0.5]
+            if len(caught) == 1:
+                counts[caught[0]] = counts.get(caught[0], 0) + 1
+        return max(counts, key=counts.get) if counts else None
 
     def debrief(self) -> Debrief:
         """The hook's landing grades in debrief.log form, for `attach_dcs_grades`."""
@@ -124,8 +150,9 @@ class _Pending:
 @dataclass
 class Session:
     archive: SessionArchive
+    detector: LivePassDetector
+    callouts: LiveCallouts | None = None
     parser: AcmiParser = field(default_factory=AcmiParser)
-    detector: LivePassDetector = field(default_factory=LivePassDetector)
     first_frame: float | None = None
     now: float = 0.0
     pending: list[_Pending] = field(default_factory=list)
@@ -144,6 +171,52 @@ class Collector:
                                        timeout=60)
         self.client = client
         self._wake_uploader = asyncio.Event()
+        self.config_path = config.work_dir / "config.json"
+        self.remote_config: dict = self._load_cached_config()
+        self.clips = ClipLibrary.load(config.voice_dir) if config.voice_dir else None
+        # Overridable for tests; by default calls go to the SRS server named in the config.
+        self.sink_factory = lambda settings: SrsSink(settings.srs, _radios(settings))
+
+    # -- configuration from central -------------------------------------------------------------
+
+    def _load_cached_config(self) -> dict:
+        try:
+            return json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    async def refresh_config(self) -> None:
+        """Fetch this source's configuration from central; keep the cached copy if that fails."""
+        if self.client is None:
+            return
+        try:
+            r = await self.client.get("/api/v1/config")
+        except httpx.HTTPError as exc:
+            log.debug("config fetch failed: %s", exc)
+            return
+        if r.status_code != 200:
+            log.warning("config fetch refused (%s)", r.status_code)
+            return
+        config = r.json()
+        if config != self.remote_config:
+            self.remote_config = config
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            self.config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+            log.info("configuration updated from central (applies from the next session)")
+
+    def _callouts(self) -> LiveCallouts | None:
+        if self.config.mode != "server":
+            log.info("live callouts OFF (pilot mode)")
+            return None
+        settings = CalloutSettings.from_config(self.remote_config)
+        if not settings.enabled:
+            log.info("live callouts OFF (not enabled in this source's config on central; "
+                     "see `dcs-lso central set-config`)")
+            return None
+        if self.clips is None:
+            log.warning("live callouts OFF: enabled in central's config, but no --voice-dir was given")
+            return None
+        return LiveCallouts(settings, self.clips, self.sink_factory(settings))
 
     # -- top level ----------------------------------------------------------------------------
 
@@ -166,7 +239,11 @@ class Collector:
         if self.client is None:
             log.warning("no central URL/token: passes stay in %s", self.outbox.pending_dir)
             return
+        last_config = 0.0
         while True:
+            if time.monotonic() - last_config >= CONFIG_REFRESH_S:
+                await self.refresh_config()
+                last_config = time.monotonic()
             await self.upload_once()
             try:
                 await asyncio.wait_for(self._wake_uploader.wait(), UPLOAD_INTERVAL_S)
@@ -185,8 +262,13 @@ class Collector:
         c = self.config
         client = TelemetryClient(c.tacview_host, c.tacview_port, password=c.tacview_password)
         info = await client.connect()
-        session = Session(SessionArchive(self.archive_dir))
-        log.info("connected to Tacview stream from %r; archiving to %s", info.name, session.archive.path)
+        await self.refresh_config()
+        callouts = self._callouts()
+        session = Session(SessionArchive(self.archive_dir), LivePassDetector(callouts), callouts)
+        if callouts is not None:
+            await callouts.sink.start()
+        log.info("connected to Tacview stream from %r; archiving to %s%s", info.name, session.archive.path,
+                 "; live callouts ON" if callouts else "")
         watchdog = asyncio.create_task(self._watch_frames(session))
         try:
             async for line in client.lines():
@@ -199,6 +281,9 @@ class Collector:
             for item in session.pending:
                 await self._slice(session, item)
             session.pending.clear()
+            if session.callouts is not None:
+                await session.callouts.drain()
+                await session.callouts.sink.close()
             archive = session.archive.close()
             log.info("session ended; archive saved as %s", archive)
             self._wake_uploader.set()
@@ -242,9 +327,12 @@ class Collector:
 
     async def _slice(self, session: Session, item: _Pending) -> None:
         session.archive.flush()
+        live = item.result
+        calls = (session.callouts.calls_for(live.aircraft_id, live.start_time - LEAD_S, live.end_time + TAIL_S)
+                 if session.callouts else None)
         loop = asyncio.get_running_loop()
         try:
-            name = await loop.run_in_executor(None, self._make_slice, session, item)
+            name = await loop.run_in_executor(None, self._make_slice, session, item, calls)
         except Exception:  # never let one bad pass take the collector down
             log.exception("could not slice pass at %.1fs", item.result.start_time)
             return
@@ -252,7 +340,7 @@ class Collector:
             session.names.append(name)
             self._wake_uploader.set()
 
-    def _make_slice(self, session: Session, item: _Pending) -> str | None:
+    def _make_slice(self, session: Session, item: _Pending, calls: list[dict] | None = None) -> str | None:
         live = item.result
         start = max(live.start_time - LEAD_S, session.first_frame or 0.0)
         # Stop just before the frame currently being received: its lines may still be arriving
@@ -267,14 +355,27 @@ class Collector:
                 log.warning("pass at %.1fs not found again in its slice; skipped", live.start_time)
                 return None
             p = min(candidates, key=lambda c: abs(c.start_time - live.start_time))
+            wire_source = None
             if self.hooks is not None:
                 attach_dcs_grades([p], recording, self.hooks.debrief())
+                if p.wire is not None:
+                    wire_source = "dcs-lso"
+                animated = self.hooks.wire_for(p.aircraft_id, p.start_time, end)
+                if animated is not None:
+                    if p.wire is not None and p.wire != animated:
+                        log.warning("wire disagreement: carrier animation says #%d, DCS's LSO says #%d (using #%d)",
+                                    animated, p.wire, animated)
+                    p.wire, wire_source = animated, "carrier-animation"
             meta = sidecar(recording, p, session.archive.path.name, item.objects)
+            meta["wire_source"] = wire_source
             meta["recording"]["first_frame_time"] = session.first_frame
             meta["window"] = {"start": start, "end": end}
+            if calls is not None:
+                meta["calls"] = calls
             name = slice_name(recording, p)
             self.outbox.put(name, path, meta)
-        log.info("queued %s (%s%s)", name, p.outcome.value, f", DCS: {p.dcs_grade.raw}" if p.dcs_grade else "")
+        log.info("queued %s (%s%s%s)", name, p.outcome.value, f", wire #{p.wire}" if p.wire else "",
+                 f", DCS: {p.dcs_grade.raw}" if p.dcs_grade else "")
         return name
 
     # -- debrief.log at session end -----------------------------------------------------------
@@ -325,3 +426,13 @@ class Collector:
                 item.sidecar.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
             updated += 1
         return updated
+
+
+def _radios(settings: CalloutSettings):
+    """Every LSO frequency this collector may transmit on (the SRS client announces them)."""
+    radios = [settings.radio_for("")]
+    for unit in settings.carriers:
+        r = settings.radio_for(unit)
+        if r not in radios:
+            radios.append(r)
+    return radios

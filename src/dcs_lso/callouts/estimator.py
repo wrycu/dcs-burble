@@ -30,6 +30,7 @@ class LiveInput:
     aoa: float | None  # recorded AOA in degrees, if the exporter provides it
     heading_error: float = 0.0  # aircraft heading minus landing-area heading, degrees
     roll: float = 0.0  # degrees
+    gear: float | None = None  # landing gear position 0 (up) .. 1 (down), when the exporter provides it
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,8 @@ class GrooveState:
     heading_error: float
     roll: float
     samples_in_window: int
+    pitch_rate: float = 0.0  # deg/s
+    gear: float | None = None
 
 
 def _fit(points: list[tuple[float, float]], at: float) -> tuple[float, float]:
@@ -106,6 +109,7 @@ class LiveEstimator:
         gs, gs_rate = _fit([(s.time, angle_deg(s.hook_height, s.along, m) - self.glideslope_deg) for s in w], x.time)
         lu, lu_rate = _fit([(s.time, angle_deg(s.lateral, s.along, m)) for s in w], x.time)
         lateral, _ = _fit([(s.time, s.lateral) for s in w], x.time)
+        _, pitch_rate = _fit([(s.time, s.pitch) for s in w], x.time)
 
         recorded = [s for s in w if s.aoa is not None]
         if recorded:
@@ -117,4 +121,5 @@ class LiveEstimator:
             time=x.time, along=x.along, glideslope_deg=gs, glideslope_rate=gs_rate,
             lineup_deg=lu, lineup_rate=lu_rate, lateral_m=lateral, aoa=aoa, aoa_derived=derived,
             heading_error=x.heading_error, roll=x.roll, samples_in_window=len(w),
+            pitch_rate=pitch_rate, gear=x.gear,
         )

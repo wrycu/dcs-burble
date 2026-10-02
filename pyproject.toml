@@ -6,6 +6,7 @@ dependencies = [
     "constantly>=23.10.4",
     "fastapi>=0.142.2",
     "httpx>=0.28.1",
+    "piper-tts>=1.8.0",
     "pyacmi>=1.2.4",
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.1.1",

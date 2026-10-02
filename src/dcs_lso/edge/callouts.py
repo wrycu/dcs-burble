@@ -1,0 +1,247 @@
+"""Live LSO callouts in the server-mode collector.
+
+For every aircraft in a pass (as tracked by `LivePassDetector`), a `LiveEstimator` +
+`CalloutEngine` decide calls from the live stream; calls are spoken through a `CallSink`
+(normally the persistent SRS client) on the carrier's LSO frequency, and recorded so
+they can be uploaded with the pass.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass, field, fields, replace
+from typing import Protocol
+
+from ..acmi import ObjectTrack, Sample
+from ..callouts import CallEvent, CalloutEngine, LiveEstimator, LiveInput, Thresholds
+from ..callouts.rules import WAVE_OFFS, Call
+from ..callouts.voice import Clip, ClipLibrary
+from ..geometry import CarrierPose, DeckFrame
+from ..srs import Modulation, Radio, SrsClient
+
+log = logging.getLogger(__name__)
+
+# A call that couldn't be spoken within this long is dropped: late calls are worse than none.
+MAX_CALL_AGE_S = 1.5
+
+# Bolter: the hook touched the landing area, and the jet is then this far past the last wire
+# still holding at least this fraction of its touchdown speed (an arrestment has taken about
+# 30% off by then; a bolter at full power holds or gains speed).
+BOLTER_PAST_LAST_WIRE_M = 60.0
+BOLTER_SPEED_RATIO = 0.85
+TOUCHDOWN_HOOK_HEIGHT_M = 0.5
+KEEP_CALLS_S = 900.0
+
+
+@dataclass(frozen=True, slots=True)
+class SrsSettings:
+    host: str = "127.0.0.1"
+    port: int = 5002
+    coalition: int = 2
+    name: str = "LSO"
+
+
+@dataclass(frozen=True, slots=True)
+class CalloutSettings:
+    """Callout configuration (normally fetched from central; see `from_config`)."""
+
+    enabled: bool = False
+    srs: SrsSettings = SrsSettings()
+    frequency_mhz: float = 127.5  # default LSO frequency
+    modulation: Modulation = Modulation.AM
+    # Per-carrier overrides, keyed by the carrier's unit name: (frequency MHz, modulation).
+    carriers: dict[str, tuple[float, Modulation]] = field(default_factory=dict)
+    calls: frozenset[Call] = frozenset(Call)
+    thresholds: Thresholds = Thresholds()
+
+    @classmethod
+    def from_config(cls, config: dict) -> CalloutSettings:
+        c = (config or {}).get("callouts") or {}
+        srs = c.get("srs") or {}
+        known = {f.name for f in fields(Thresholds)}
+        overrides = {k: float(v) for k, v in (c.get("thresholds") or {}).items() if k in known}
+        return cls(
+            enabled=bool(c.get("enabled", False)),
+            srs=SrsSettings(host=srs.get("host", "127.0.0.1"), port=int(srs.get("port", 5002)),
+                            coalition=int(srs.get("coalition", 2)), name=srs.get("name", "LSO")),
+            frequency_mhz=float(c.get("frequency_mhz", 127.5)),
+            modulation=Modulation[c.get("modulation", "AM")],
+            carriers={name: (float(v["frequency_mhz"]), Modulation[v.get("modulation", "AM")])
+                      for name, v in (c.get("carriers") or {}).items()},
+            calls=frozenset(Call(x) for x in c["calls"]) if "calls" in c else frozenset(Call),
+            thresholds=replace(Thresholds(), **overrides),
+        )
+
+    def radio_for(self, carrier_unit: str) -> Radio:
+        freq, mod = self.carriers.get(carrier_unit, (self.frequency_mhz, self.modulation))
+        return Radio(freq, mod)
+
+
+class CallSink(Protocol):
+    async def start(self) -> None: ...
+
+    async def say(self, call: Call, clip: Clip, radio: Radio, issued_at: float) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+class SrsSink:
+    """Speaks calls through one persistent SRS connection. A wave-off cuts off whatever is
+    being said; other calls queue, and are dropped if they can no longer be said in time."""
+
+    def __init__(self, settings: SrsSettings, radios: list[Radio]) -> None:
+        self.settings = settings
+        self.radios = radios
+        self._client: SrsClient | None = None
+        self._lock = asyncio.Lock()
+        self._current: asyncio.Task | None = None
+
+    async def _connected(self) -> SrsClient:
+        if self._client is None or not self._client.connected:
+            s = self.settings
+            client = SrsClient(s.host, s.port, name=s.name, coalition=s.coalition, radios=tuple(self.radios[:10]))
+            await client.connect()
+            log.info("SRS connected: %s:%d as %r on %s", s.host, s.port, s.name,
+                     ", ".join(f"{r.frequency_mhz:.3f} {r.modulation.name}" for r in self.radios))
+            self._client = client
+        return self._client
+
+    async def start(self) -> None:
+        """Connect ahead of the first call. SRS clients drop audio from a sender they haven't been
+        told about yet (SRS 2.3.8.2 throws a NullReferenceException decoding it), so the LSO must be
+        on the server well before it speaks."""
+        try:
+            async with self._lock:
+                await self._connected()
+        except OSError as exc:
+            log.warning("SRS unavailable at session start (%s); will retry on the first call", exc)
+
+    async def say(self, call: Call, clip: Clip, radio: Radio, issued_at: float) -> None:
+        if call in WAVE_OFFS and self._current is not None:
+            self._current.cancel()
+        async with self._lock:
+            if call not in WAVE_OFFS and time.monotonic() - issued_at > MAX_CALL_AGE_S:
+                log.info("dropped stale call %r", call.value)
+                return
+            try:
+                client = await self._connected()
+                self._current = asyncio.current_task()
+                await client.transmit(clip.frames, radios=(radio,))
+            except asyncio.CancelledError:
+                if call in WAVE_OFFS:
+                    raise
+                log.info("call %r cut off", call.value)
+            except OSError as exc:
+                log.warning("SRS unavailable (%s); call %r not spoken", exc, call.value)
+                self._client = None
+            finally:
+                self._current = None
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.close()
+
+
+def _gear(plane: ObjectTrack) -> float | None:
+    """Landing gear position from Tacview's `LandingGear` property (only exported for some aircraft,
+    in practice the recording player's own)."""
+    try:
+        return float(plane.props["LandingGear"])
+    except (KeyError, ValueError):
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class MadeCall:
+    aircraft_id: int
+    time: float  # sim time
+    along: float  # meters short of the aim point
+    call: Call
+
+    def to_dict(self) -> dict:
+        return {"time": self.time, "along": round(self.along, 1), "call": self.call.value}
+
+
+class LiveCallouts:
+    """Plugged into `LivePassDetector` as its sample listener."""
+
+    def __init__(self, settings: CalloutSettings, clips: ClipLibrary, sink: CallSink) -> None:
+        self.settings = settings
+        self.clips = clips
+        self.sink = sink
+        self._engines: dict[tuple[int, int], tuple[LiveEstimator, CalloutEngine]] = {}
+        self.made: list[MadeCall] = []
+        self._tasks: set[asyncio.Task] = set()
+        # Per (carrier, aircraft): recent (time, along, lateral) and the deck-relative speed at touchdown.
+        self._track: dict[tuple[int, int], list[tuple[float, float, float]]] = {}
+        self._touchdown_speed: dict[tuple[int, int], float] = {}
+        self._bolter_called: set[tuple[int, int]] = set()
+
+    def on_sample(self, carrier: ObjectTrack, plane: ObjectTrack, pose: CarrierPose, sample: Sample,
+                  frame: DeckFrame) -> CallEvent | None:
+        key = (carrier.id, plane.id)
+        entry = self._engines.get(key)
+        if entry is None:
+            entry = self._engines[key] = (LiveEstimator(frame.aircraft.glideslope),
+                                          CalloutEngine(self.settings.thresholds))
+        estimator, engine = entry
+        t = sample.transform
+        pos = frame.position(pose, t)
+        heading_error = ((t.heading or 0.0) - (pose.heading - frame.carrier.deck_angle) + 180.0) % 360.0 - 180.0
+        state = estimator.update(LiveInput(
+            time=sample.time, along=pos.along, lateral=pos.lateral, hook_height=pos.hook_height,
+            pitch=t.pitch or 0.0, alt=t.alt or 0.0, u=t.u or 0.0, v=t.v or 0.0, aoa=sample.aoa,
+            heading_error=heading_error, roll=t.roll or 0.0, gear=_gear(plane)))
+        event = engine.update(state)
+        bolter = self._bolter(key, sample.time, pos, frame)
+        if bolter:
+            event = CallEvent(sample.time, pos.along, Call.BOLTER, state)
+        if event is None or event.call not in self.settings.calls or event.call not in self.clips:
+            return None
+        self.made.append(MadeCall(plane.id, event.time, event.along, event.call))
+        radio = self.settings.radio_for(carrier.pilot)
+        log.info("CALL %s -> %s (%.2f nm, %s)", event.call.value, plane.pilot or hex(plane.id),
+                 event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}")
+        task = asyncio.get_running_loop().create_task(
+            self.sink.say(event.call, self.clips[event.call], radio, time.monotonic()))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return event
+
+    def _bolter(self, key: tuple[int, int], t: float, pos, frame: DeckFrame) -> bool:
+        """True once per pass, when the jet has touched down and then rolled past the wires at speed."""
+        track = self._track.setdefault(key, [])
+        track.append((t, pos.along, pos.lateral))
+        del track[:-4]
+        if len(track) < 4 or key in self._bolter_called:
+            return False
+        (t0, a0, l0), (t1, a1, l1) = track[0], track[-1]
+        speed = ((a1 - a0) ** 2 + (l1 - l0) ** 2) ** 0.5 / (t1 - t0) if t1 > t0 else 0.0
+        on_deck = pos.hook_height < TOUCHDOWN_HOOK_HEIGHT_M and abs(pos.lateral) < 25.0 and -250.0 < pos.along < 40.0
+        if on_deck and key not in self._touchdown_speed:
+            self._touchdown_speed[key] = speed
+        touchdown = self._touchdown_speed.get(key)
+        if touchdown and pos.along < min(frame.wire_along) - BOLTER_PAST_LAST_WIRE_M \
+                and speed >= BOLTER_SPEED_RATIO * touchdown:
+            self._bolter_called.add(key)
+            return True
+        return False
+
+    def pass_ended(self, carrier_id: int, aircraft_id: int) -> None:
+        key = (carrier_id, aircraft_id)
+        self._engines.pop(key, None)
+        self._track.pop(key, None)
+        self._touchdown_speed.pop(key, None)
+        self._bolter_called.discard(key)
+
+    def calls_for(self, aircraft_id: int, start: float, end: float) -> list[dict]:
+        if self.made:
+            newest = self.made[-1].time
+            self.made = [c for c in self.made if newest - c.time <= KEEP_CALLS_S]
+        return [c.to_dict() for c in self.made if c.aircraft_id == aircraft_id and start <= c.time <= end]
+
+    async def drain(self) -> None:
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)

@@ -64,6 +64,11 @@ def create_app(central: Central) -> FastAPI:
                 q = q.join(Pass.source).where(Source.name == source)
             return list(s.scalars(q))
 
+    @app.get("/api/v1/config")
+    def get_config(source: Annotated[Source, Depends(source_from_token)]) -> dict:
+        """Settings for this source's collector (callouts etc.)."""
+        return source.config or {}
+
     @app.get("/api/v1/passes")
     def list_passes(days: int = 30, pilot: str | None = None, source: str | None = None) -> list[dict]:
         out = []
@@ -72,7 +77,7 @@ def create_app(central: Central) -> FastAPI:
             out.append({"id": p.id, "pilot": p.pilot.name, "source": p.source.name,
                         "occurred_at": p.occurred_at.isoformat() if p.occurred_at else None,
                         "mission": p.mission, "carrier": p.carrier_unit, "aircraft": p.aircraft_type,
-                        "outcome": p.outcome, "wire": p.wire, "dcs_grade": p.dcs_grade,
+                        "outcome": p.outcome, "wire": p.wire, "dcs_grade": p.dcs_grade, "calls": p.calls,
                         "grade": g.grade if g else None, "text": g.text if g else None,
                         "points": g.points if g else None, "grading_version": g.version if g else None})
         return out
@@ -100,7 +105,7 @@ def create_app(central: Central) -> FastAPI:
         p = _get(pass_id)
         try:
             result = central.load_pass(p)
-            svg = render_card(result, grade_pass(result), p.mission or "", uid=f"p{p.id}")
+            svg = render_card(result, grade_pass(result), p.mission or "", uid=f"p{p.id}", calls=p.calls)
             return pages.pass_page(p, svg)
         except (IngestError, OSError) as exc:
             return pages.pass_page(p, None, f"Trap card unavailable: {exc}")
