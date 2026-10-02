@@ -12,6 +12,7 @@ import math
 from dataclasses import dataclass
 from html import escape
 
+from ..callouts.rules import LINEUP_CALLS
 from ..detect import PassResult, PassSample
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
 from ..grading import GradeResult, grade_name, grade_short
@@ -31,7 +32,8 @@ SIDE_TOP, SIDE_H = HEADER_H + 18, 250
 TOP_TOP, TOP_H = SIDE_TOP + SIDE_H + 44, 170
 TABLE_TOP = TOP_TOP + TOP_H + 40
 HEIGHT = TABLE_TOP + 132
-CALLS_H = 24  # extra height when the card lists live calls
+CALLS_LINE_H = 18  # each line of the live-calls list below the table
+CHAR_W = 0.56  # rough glyph width as a fraction of the font size, for laying out text
 
 # AOA bands relative to the aircraft's on-speed band (lso's FA-18C bands are on-speed
 # 7.4-8.8 with 0.5 deg "slightly" margins).
@@ -95,6 +97,10 @@ STYLE = """
   .tc-call-label { fill: #e6edf3; }
 }
 """
+
+
+# Live calls about lineup go on the lineup plot; the rest on the glideslope plot.
+LINEUP_VALUES = frozenset(c.value for c in LINEUP_CALLS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +178,52 @@ def _clip(clip_id: str, top: float, height: float, out: list[str]) -> None:
     out.append(f'<g clip-path="url(#{clip_id})">')
 
 
+def _text_w(text: str, size: float) -> float:
+    return len(text) * size * CHAR_W
+
+
+def _call_markers(calls: list[dict], samples: list[PassSample], x: Axis, y_of, top: float, height: float,
+                  out: list[str]) -> None:
+    """Live calls the LSO made: a marker on the track where each was given, with its label on the
+    nearest free row above (or else below) the track, so labels never overlap each other."""
+    if not samples:
+        return
+    size, row = 11, 14
+    placed: list[tuple[float, float, float, float]] = []  # label boxes: x0, y0, x1, y1
+    for call in calls:
+        near = min((s for s in samples if s.along >= 0), key=lambda s: abs(s.along - call["along"]), default=samples[0])
+        cx, cy = x(near.along), y_of(near)
+        label = call["call"].capitalize()
+        half = _text_w(label, size) / 2 + 3
+        lx = min(max(cx, PAD_L + half), PAD_L + PLOT_W - half)  # keep the label inside the plot
+        candidates = [cy - 14 - i * row for i in range(5)] + [cy + 24 + i * row for i in range(5)]
+        fits = [ly for ly in candidates if top + size <= ly <= top + height - 2]
+        free = [ly for ly in fits
+                if not any(lx - half < x1 and x0 < lx + half and ly - size < y1 and y0 < ly + 2
+                           for x0, y0, x1, y1 in placed)]
+        ly = (free or fits or candidates)[0]
+        placed.append((lx - half, ly - size, lx + half, ly + 2))
+        tip = ly + 3 if ly < cy else ly - size
+        out.append(f'<line class="tc-axis" x1="{_f(cx)}" y1="{_f(cy)}" x2="{_f(lx)}" y2="{_f(tip)}"/>')
+        out.append(f'<circle class="tc-call" cx="{_f(cx)}" cy="{_f(cy)}" r="4"/>')
+        out.append(f'<text class="tc-call-label" x="{_f(lx)}" y="{_f(ly)}" font-size="{size}" '
+                   f'text-anchor="middle">{escape(label)}</text>')
+
+
+def _wrap(prefix: str, items: list[str], size: float, width: float) -> list[list[str]]:
+    """Split `items` (joined with ", ") into lines that fit `width`; the first line starts with `prefix`."""
+    lines: list[list[str]] = [[]]
+    used = _text_w(prefix + " ", size)
+    for item in items:
+        w = _text_w(item + ", ", size)
+        if lines[-1] and used + w > width:
+            lines.append([])
+            used = 0.0
+        lines[-1].append(item)
+        used += w
+    return lines
+
+
 def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Axis, wire: int | None,
                on_speed: tuple[float, float], uid: str, out: list[str], calls: list[dict]) -> None:
     top, h = SIDE_TOP, SIDE_H
@@ -197,15 +249,8 @@ def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Ax
         out.append(f'<line class="{cls}" x1="{_f(x(along))}" y1="{_f(y(0) - 5)}" x2="{_f(x(along))}" y2="{_f(y(0) + 3)}"/>')
     for cls, run in _runs(samples, on_speed):
         out.append(f'<polyline class="tc-track tc-{cls}" points="{_poly([(x(s.along), y(s.hook_height)) for s in run])}"/>')
-    # Live calls the LSO made: a marker on the track where each was given, labels staggered.
-    for i, call in enumerate(c for c in calls if samples):
-        near = min((s for s in samples if s.along >= 0), key=lambda s: abs(s.along - call["along"]), default=samples[0])
-        cx, cy = x(near.along), y(near.hook_height)
-        ly = cy - 14 - (i % 2) * 14
-        out.append(f'<line class="tc-axis" x1="{_f(cx)}" y1="{_f(cy)}" x2="{_f(cx)}" y2="{_f(ly + 3)}"/>')
-        out.append(f'<circle class="tc-call" cx="{_f(cx)}" cy="{_f(cy)}" r="4"/>')
-        out.append(f'<text class="tc-call-label" x="{_f(cx)}" y="{_f(ly)}" font-size="11" '
-                   f'text-anchor="middle">{escape(call["call"].capitalize())}</text>')
+    _call_markers([c for c in calls if c["call"] not in LINEUP_VALUES], samples, x,
+                  lambda s: y(s.hook_height), top, h, out)
     out.append("</g>")
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top + h}" x2="{PAD_L + PLOT_W}" y2="{top + h}"/>')
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top}" x2="{PAD_L}" y2="{top + h}"/>')
@@ -219,7 +264,8 @@ def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Ax
                    f'text-anchor="middle">#{wire}</text>')
 
 
-def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float], uid: str, out: list[str]) -> None:
+def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float], uid: str, out: list[str],
+              calls: list[dict]) -> None:
     top, h = TOP_TOP, TOP_H
     reach = max([abs(s.lateral) for s in samples if s.along > 0] + [0.0])
     half = min(max(reach * 1.1, X_MAX_M * math.tan(math.radians(LINEUP_DEG[2])) * 1.2), 200.0)
@@ -233,6 +279,7 @@ def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float],
     out.append(f'<line class="tc-ideal" x1="{_f(x(X_MIN_M))}" y1="{_f(y(0))}" x2="{_f(x(X_MAX_M))}" y2="{_f(y(0))}"/>')
     for cls, run in _runs(samples, on_speed):
         out.append(f'<polyline class="tc-track tc-{cls}" points="{_poly([(x(s.along), y(s.lateral)) for s in run])}"/>')
+    _call_markers([c for c in calls if c["call"] in LINEUP_VALUES], samples, x, lambda s: y(s.lateral), top, h, out)
     out.append("</g>")
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top + h}" x2="{PAD_L + PLOT_W}" y2="{top + h}"/>')
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top}" x2="{PAD_L}" y2="{top + h}"/>')
@@ -281,7 +328,9 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     """`uid` prefixes element ids, so several cards can be inlined in one page. `calls` are the
     live LSO calls made during the pass ({"time", "along", "call"}), if any."""
     calls = sorted(calls or [], key=lambda c: c["time"])
-    height = HEIGHT + (CALLS_H if calls else 0)
+    listed = _wrap("LSO calls:", [f"{c['call'].capitalize()} ({c['along'] / NM:.2f} nm)" for c in calls],
+                   12, PLOT_W) if calls else []
+    height = HEIGHT + (len(listed) * CALLS_LINE_H + 8 if listed else 0)
     aircraft = AIRCRAFT[p.aircraft_type]
     frame = DeckFrame(CARRIERS[p.carrier_type], aircraft)
     samples = [s for s in p.samples if X_MIN_M <= s.along <= X_MAX_M * 1.05]
@@ -311,11 +360,12 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
                    f'DCS LSO: {escape(dcs)}</text>')
     _legend(aircraft.on_speed_aoa, out)
     _side_view(p, frame, samples, x, p.wire, aircraft.on_speed_aoa, uid, out, calls)
-    _top_view(samples, x, aircraft.on_speed_aoa, uid, out)
+    _top_view(samples, x, aircraft.on_speed_aoa, uid, out, calls)
     _table(grade, out)
-    if calls:
-        listed = ", ".join(f"{c['call'].capitalize()} ({c['along'] / NM:.2f} nm)" for c in calls)
-        out.append(f'<text class="tc-text" x="{PAD_L}" y="{HEIGHT + 4}" font-size="12">'
-                   f'<tspan font-weight="600">LSO calls:</tspan> {escape(listed)}</text>')
+    for i, line in enumerate(listed):
+        text = escape(", ".join(line)) + ("," if i < len(listed) - 1 else "")
+        lead = '<tspan font-weight="600">LSO calls:</tspan> ' if i == 0 else ""
+        out.append(f'<text class="tc-text" x="{PAD_L}" y="{HEIGHT + 4 + i * CALLS_LINE_H}" font-size="12">'
+                   f'{lead}{text}</text>')
     out.append("</svg>")
     return "\n".join(out)

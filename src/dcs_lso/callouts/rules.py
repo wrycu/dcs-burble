@@ -48,6 +48,8 @@ class Call(StrEnum):
 PRIORITY = {call: i for i, call in enumerate(Call)}
 POWER_CALLS = frozenset({Call.POWER, Call.POWER_X2, Call.POWER_X3})
 WAVE_OFFS = frozenset({Call.WAVE_OFF, Call.WAVE_OFF_GEAR})
+LINEUP_CALLS = frozenset({Call.RIGHT_FOR_LINEUP, Call.COME_LEFT, Call.LITTLE_RIGHT, Call.LITTLE_LEFT,
+                          Call.DRIFTING_LEFT, Call.DRIFTING_RIGHT})
 
 
 @dataclass(frozen=True, slots=True)

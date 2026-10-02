@@ -67,3 +67,15 @@ def test_no_grade_is_labelled_not_blank():
     texts = [t.text or "" for t in root.iter(f"{SVG}text")]
     assert "NG" in texts and "---" not in texts
     assert any(t.startswith("No Grade · 2 pts") for t in texts)
+
+
+def test_lineup_calls_go_on_the_lineup_plot():
+    from dcs_lso.cards.svg import SIDE_H, SIDE_TOP, TOP_H, TOP_TOP
+    recording = load_recording(FIXTURES / "ai_hornet_trap_cvn75.zip.acmi")
+    (p,) = find_passes(recording)
+    calls = [{"time": 1.0, "along": 900.0, "call": "you're high"},
+             {"time": 2.0, "along": 700.0, "call": "a little come left"}]
+    root = ET.fromstring(render_card(p, grade_pass(p), calls=calls))
+    y = {t.text: float(t.get("y")) for t in root.iter(f"{SVG}text") if "tc-call-label" in t.get("class", "")}
+    assert SIDE_TOP - 30 < y["You're high"] < SIDE_TOP + SIDE_H
+    assert TOP_TOP - 30 < y["A little come left"] < TOP_TOP + TOP_H
