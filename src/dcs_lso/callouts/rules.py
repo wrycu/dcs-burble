@@ -20,6 +20,8 @@ class Call(StrEnum):
     WAVE_OFF = "wave off"
     WAVE_OFF_GEAR = "wave off, gear"
     BOLTER = "bolter"  # decided by the bolter detector in the live collector, not by CalloutEngine
+    TRAPPED = "welcome aboard"  # likewise (arrestment detected); spoken as one of several variants
+    TRAPPED_WAVED_OFF = "welcome aboard, despite the wave off"  # trapped after ignoring our wave-off
     POWER_X3 = "power, power, power"
     POWER_X2 = "power, power"
     POWER = "power"
@@ -93,10 +95,13 @@ class Thresholds:
     hold_s: float = 0.4
     lineup_hold_s: float = 3.0
     speed_hold_s: float = 4.0
-    # ...the same call is not repeated within this time (and never while being corrected)...
+    # ...the same call is not repeated until this long after it finished being said (and never
+    # while being corrected)...
     repeat_s: float = 2.5
-    # ...and no two calls are made closer together than this (a call takes time to say).
-    spacing_s: float = 1.2
+    # ...and a new call waits at least this long after the previous one finished being said.
+    spacing_s: float = 0.5
+    # Assumed length of a spoken call when the real clip length isn't known (e.g. replays).
+    default_call_s: float = 0.8
 
     def hold_for(self, call: Call) -> float:
         if call in (Call.RIGHT_FOR_LINEUP, Call.COME_LEFT):
@@ -201,18 +206,20 @@ def correcting(call: Call, s: GrooveState, th: Thresholds) -> bool:
 @dataclass
 class CalloutEngine:
     thresholds: Thresholds = field(default_factory=Thresholds)
+    # How long each call takes to say (seconds), so gaps are measured from the end of a phrase.
+    durations: dict[Call, float] = field(default_factory=dict)
     # Condition flips seen (a measure of chatter, before persistence smooths it out).
     toggles: int = 0
 
     def __post_init__(self) -> None:
         self._since: dict[Call, float] = {}
-        self._last_said: dict[Call, float] = {}
+        self._said_until: dict[Call, float] = {}  # when each call last finished being said
         self._last_power: float | None = None
-        self._last_any = float("-inf")
+        self._busy_until = float("-inf")  # when the last call (of any kind) finishes
         self._previous: frozenset[Call] = frozenset()
         self._aligned_since: float | None = None
         self.in_groove = False
-        self._waved_off = False
+        self.waved_off = False
 
     def _update_groove(self, s: GrooveState) -> None:
         th = self.thresholds
@@ -246,29 +253,30 @@ class CalloutEngine:
                 del self._since[call]
         for call in active:
             self._since.setdefault(call, s.time)
-        if self._waved_off:
+        if self.waved_off:
             return None
         ready = []
         for c in active:
             if s.time - self._since[c] < th.hold_for(c):
                 continue
-            said = self._last_said.get(c)
-            if said is not None and (s.time - said < th.repeat_s or correcting(c, s, th)):
+            said_until = self._said_until.get(c)
+            if said_until is not None and (s.time - said_until < th.repeat_s or correcting(c, s, th)):
                 continue
             ready.append(c)
         if not ready:
             return None
         call = min(ready, key=PRIORITY.__getitem__)
         # A wave-off interrupts anything; other calls wait for the previous one to finish.
-        if call not in WAVE_OFFS and s.time - self._last_any < th.spacing_s:
+        if call not in WAVE_OFFS and s.time - self._busy_until < th.spacing_s:
             return None
         said_as = call
         if call is Call.POWER and self._last_power is not None and s.time - self._last_power <= th.power_escalate_s:
             said_as = Call.POWER_X2  # DCS: a second power call, "with more annoyed inflection"
-        self._last_said[call] = s.time
-        self._last_any = s.time
+        ends = s.time + self.durations.get(said_as, th.default_call_s)
+        self._said_until[call] = ends
+        self._busy_until = ends
         if said_as in POWER_CALLS:
             self._last_power = s.time
         if said_as in WAVE_OFFS:
-            self._waved_off = True
+            self.waved_off = True
         return CallEvent(s.time, s.along, said_as, s)

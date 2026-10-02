@@ -31,6 +31,9 @@ MAX_CALL_AGE_S = 1.5
 # 30% off by then; a bolter at full power holds or gains speed).
 BOLTER_PAST_LAST_WIRE_M = 60.0
 BOLTER_SPEED_RATIO = 0.85
+# Trap: after touchdown, the deck-relative speed falls below this fraction of the touchdown
+# speed (only an arresting wire stops a jet that quickly; a bolter or touch-and-go keeps it).
+TRAP_SPEED_RATIO = 0.5
 TOUCHDOWN_HOOK_HEIGHT_M = 0.5
 KEEP_CALLS_S = 900.0
 
@@ -177,7 +180,7 @@ class LiveCallouts:
         # Per (carrier, aircraft): recent (time, along, lateral) and the deck-relative speed at touchdown.
         self._track: dict[tuple[int, int], list[tuple[float, float, float]]] = {}
         self._touchdown_speed: dict[tuple[int, int], float] = {}
-        self._bolter_called: set[tuple[int, int]] = set()
+        self._outcome_called: set[tuple[int, int]] = set()  # bolter or trap already called
 
     def on_sample(self, carrier: ObjectTrack, plane: ObjectTrack, pose: CarrierPose, sample: Sample,
                   frame: DeckFrame) -> CallEvent | None:
@@ -185,7 +188,7 @@ class LiveCallouts:
         entry = self._engines.get(key)
         if entry is None:
             entry = self._engines[key] = (LiveEstimator(frame.aircraft.glideslope),
-                                          CalloutEngine(self.settings.thresholds))
+                                          CalloutEngine(self.settings.thresholds, self.clips.durations()))
         estimator, engine = entry
         t = sample.transform
         pos = frame.position(pose, t)
@@ -195,9 +198,11 @@ class LiveCallouts:
             pitch=t.pitch or 0.0, alt=t.alt or 0.0, u=t.u or 0.0, v=t.v or 0.0, aoa=sample.aoa,
             heading_error=heading_error, roll=t.roll or 0.0, gear=_gear(plane)))
         event = engine.update(state)
-        bolter = self._bolter(key, sample.time, pos, frame)
-        if bolter:
-            event = CallEvent(sample.time, pos.along, Call.BOLTER, state)
+        outcome = self._outcome(key, sample.time, pos, frame)
+        if outcome is Call.TRAPPED and engine.waved_off:
+            outcome = Call.TRAPPED_WAVED_OFF  # landed through our wave-off: a saltier welcome
+        if outcome is not None:
+            event = CallEvent(sample.time, pos.along, outcome, state)
         if event is None or event.call not in self.settings.calls or event.call not in self.clips:
             return None
         self.made.append(MadeCall(plane.id, event.time, event.along, event.call))
@@ -205,36 +210,41 @@ class LiveCallouts:
         log.info("CALL %s -> %s (%.2f nm, %s)", event.call.value, plane.pilot or hex(plane.id),
                  event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}")
         task = asyncio.get_running_loop().create_task(
-            self.sink.say(event.call, self.clips[event.call], radio, time.monotonic()))
+            self.sink.say(event.call, self.clips.pick(event.call), radio, time.monotonic()))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return event
 
-    def _bolter(self, key: tuple[int, int], t: float, pos, frame: DeckFrame) -> bool:
-        """True once per pass, when the jet has touched down and then rolled past the wires at speed."""
+    def _outcome(self, key: tuple[int, int], t: float, pos, frame: DeckFrame) -> Call | None:
+        """Once per pass, after touchdown: BOLTER when the jet rolls past the wires at speed, TRAPPED
+        when it is stopped quickly by a wire."""
         track = self._track.setdefault(key, [])
         track.append((t, pos.along, pos.lateral))
         del track[:-4]
-        if len(track) < 4 or key in self._bolter_called:
-            return False
+        if len(track) < 4 or key in self._outcome_called:
+            return None
         (t0, a0, l0), (t1, a1, l1) = track[0], track[-1]
         speed = ((a1 - a0) ** 2 + (l1 - l0) ** 2) ** 0.5 / (t1 - t0) if t1 > t0 else 0.0
         on_deck = pos.hook_height < TOUCHDOWN_HOOK_HEIGHT_M and abs(pos.lateral) < 25.0 and -250.0 < pos.along < 40.0
         if on_deck and key not in self._touchdown_speed:
             self._touchdown_speed[key] = speed
         touchdown = self._touchdown_speed.get(key)
-        if touchdown and pos.along < min(frame.wire_along) - BOLTER_PAST_LAST_WIRE_M \
-                and speed >= BOLTER_SPEED_RATIO * touchdown:
-            self._bolter_called.add(key)
-            return True
-        return False
+        if not touchdown:
+            return None
+        if pos.along < min(frame.wire_along) - BOLTER_PAST_LAST_WIRE_M and speed >= BOLTER_SPEED_RATIO * touchdown:
+            self._outcome_called.add(key)
+            return Call.BOLTER
+        if on_deck and speed < TRAP_SPEED_RATIO * touchdown:
+            self._outcome_called.add(key)
+            return Call.TRAPPED
+        return None
 
     def pass_ended(self, carrier_id: int, aircraft_id: int) -> None:
         key = (carrier_id, aircraft_id)
         self._engines.pop(key, None)
         self._track.pop(key, None)
         self._touchdown_speed.pop(key, None)
-        self._bolter_called.discard(key)
+        self._outcome_called.discard(key)
 
     def calls_for(self, aircraft_id: int, start: float, end: float) -> list[dict]:
         if self.made:

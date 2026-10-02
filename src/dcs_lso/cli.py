@@ -279,8 +279,9 @@ def _voice_build(args: argparse.Namespace) -> int:
 
     out = build_clips(args.model, args.out_dir, speed=args.speed)
     lib = ClipLibrary.load(out)
-    for call, clip in lib.clips.items():
-        print(f"  {call.value:<17} {clip.seconds:4.2f}s  {clip.text!r}")
+    for call, clips in lib.clips.items():
+        for clip in clips:
+            print(f"  {call.value:<17} {clip.seconds:4.2f}s  {clip.text!r}")
     print(f"clips written to {out}")
     return 0
 

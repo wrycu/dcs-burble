@@ -10,7 +10,7 @@ import pytest
 
 from dcs_lso.acmi.stream import serve_recording
 from dcs_lso.callouts.rules import Call
-from dcs_lso.callouts.voice import PHRASES, ClipLibrary, clip_name
+from dcs_lso.callouts.voice import PHRASES, ClipLibrary, clip_name, variants
 from dcs_lso.central.app import create_app
 from dcs_lso.central.service import Central
 from dcs_lso.edge.callouts import CalloutSettings, SrsSink
@@ -31,13 +31,15 @@ def clips(tmp_path) -> Path:
     d = tmp_path / "voice"
     d.mkdir()
     manifest = {"voice": "test-tones", "clips": {}}
-    for call, text in PHRASES.items():
-        with wave.open(str(d / clip_name(call)), "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(tone(0.2).tobytes())
-        manifest["clips"][call.name] = {"file": clip_name(call), "text": text}
+    for call in PHRASES:
+        manifest["clips"][call.name] = []
+        for i, text in enumerate(variants(call)):
+            with wave.open(str(d / clip_name(call, i)), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(tone(0.2).tobytes())
+            manifest["clips"][call.name].append({"file": clip_name(call, i), "text": text})
     (d / "manifest.json").write_text(json.dumps(manifest))
     return d
 
@@ -109,10 +111,11 @@ def test_live_calls_are_spoken_and_uploaded(tmp_path, clips):
     sink, listed, page = asyncio.run(run())
     assert sink.started  # connected at session start, not on the first call
     said = [call for call, _ in sink.said]
-    # The flat, low pass: power calls (escalating), then a wave-off (and nothing after it).
+    # The flat, low pass: power calls (escalating), a wave-off, and (as the pilot trapped anyway)
+    # nothing after it but the salty welcome.
     from dcs_lso.callouts.rules import POWER_CALLS
     assert said[0] is Call.POWER and Call.POWER_X2 in said
-    assert sum(c in POWER_CALLS for c in said) >= 2 and said[-1] is Call.WAVE_OFF
+    assert sum(c in POWER_CALLS for c in said) >= 2 and said[-2:] == [Call.WAVE_OFF, Call.TRAPPED_WAVED_OFF]
     assert all(radio == Radio(127.6, Modulation.AM) for _, radio in sink.said)  # the Truman's frequency
     (row,) = listed
     assert [c["call"] for c in row["calls"]] == [c.value for c in said]
@@ -227,15 +230,30 @@ def srs_server_port(tmp_path_factory):
     proc.wait(timeout=10)
 
 
-@pytest.mark.parametrize(("name", "bolter"), [
-    ("20260927-204347_Wrycu_3209s", True),
-    ("20260927-204347_Wrycu_3348s", True),
-    ("20260927-204347_Wrycu_4013s", False),
-    ("20260927-204347_Wrycu_4769s", False),
-    ("20260928-025423_New_callsign_86s", False),
+@pytest.mark.parametrize(("name", "outcome"), [
+    ("20260927-204347_Wrycu_3209s", Call.BOLTER),
+    ("20260927-204347_Wrycu_3348s", Call.BOLTER),
+    ("20260927-204347_Wrycu_4013s", Call.TRAPPED),
+    ("20260927-204347_Wrycu_4769s", Call.TRAPPED_WAVED_OFF),  # trapped through our wave-off
+    ("20260928-025423_New_callsign_86s", Call.TRAPPED),
 ])
-def test_bolter_is_called_only_for_bolters(tmp_path, clips, name, bolter):
+def test_bolter_or_welcome_is_called_once(tmp_path, clips, name, outcome):
     _, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / f"{name}.zip.acmi", tmp_path / "edge", clips))
     said = [call for call, _ in sink.said]
-    assert (Call.BOLTER in said) is bolter
-    assert said.count(Call.BOLTER) <= 1
+    called = [c for c in said if c in (Call.BOLTER, Call.TRAPPED, Call.TRAPPED_WAVED_OFF)]
+    assert called == [outcome] and said[-1] is outcome
+
+
+def test_variants_are_picked_at_random(clips):
+    lib = ClipLibrary.load(clips)
+    assert len(lib.clips[Call.TRAPPED]) > 1
+    assert {lib.pick(Call.TRAPPED).text for _ in range(200)} == set(PHRASES[Call.TRAPPED])
+    assert lib.durations()[Call.POWER] == pytest.approx(0.2)
+
+
+def test_old_single_clip_manifest_still_loads(clips):
+    manifest = json.loads((clips / "manifest.json").read_text())
+    manifest["clips"] = {k: v[0] for k, v in manifest["clips"].items()}
+    (clips / "manifest.json").write_text(json.dumps(manifest))
+    lib = ClipLibrary.load(clips)
+    assert lib[Call.POWER].text == "Power." and len(lib.clips[Call.TRAPPED]) == 1

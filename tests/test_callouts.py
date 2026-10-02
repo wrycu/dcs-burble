@@ -97,3 +97,16 @@ def test_live_estimate_tracks_hindsight(hz):
     r = replay(recording, p, hz=hz)
     rms, worst = r.errors["glideslope_deg"]
     assert rms < 0.05 and worst < 0.2
+
+
+def test_spacing_and_repeats_count_from_the_end_of_the_phrase():
+    # High from t=0 and never correcting: HIGH is called at 0.4 s and repeated only after it has
+    # finished being said (0.4 + duration) plus the repeat interval.
+    th = Thresholds()
+    for duration in (0.5, 2.0):
+        engine = CalloutEngine(th, {Call.HIGH: duration})
+        times = [e.time for i in range(100)
+                 if (e := engine.update(state(t=i * 0.1, along=0.35 * NM - i * 3, gs=0.8))) is not None]
+        assert len(times) >= 2
+        assert times[1] - times[0] >= duration + th.repeat_s - 1e-9
+        assert times[1] - times[0] < duration + th.repeat_s + 0.2
