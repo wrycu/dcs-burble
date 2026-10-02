@@ -19,7 +19,7 @@ from enum import IntEnum, StrEnum
 from ..detect import Outcome, PassResult
 from ..geometry import AIRCRAFT
 
-GRADING_VERSION = "2"  # 2: AOA derived from motion in the aircraft frame, with wind; not graded at AR
+GRADING_VERSION = "2"  # 2: 3.6 deg glideslope (as DCS); AOA derived from motion in the aircraft frame, with wind, not graded at AR
 NM = 1852.0
 
 

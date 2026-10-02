@@ -49,7 +49,8 @@ NIMITZ = CarrierInfo(
 FA18C = AircraftInfo(
     name="FA-18C",
     hook=(-2.240897, -7.237348),
-    glideslope=3.5,
+    # DCS's own LSO directs to a 3.6 deg glidepath (DCS Supercarrier Operations Guide, "Inside 3/4 Mile").
+    glideslope=3.6,
     # lso's "on speed" band: 7.4 < aoa < 8.8.
     on_speed_aoa=(7.4, 8.8),
 )
