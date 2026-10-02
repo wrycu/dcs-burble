@@ -11,7 +11,7 @@ from dcs_lso.central.app import create_app
 from dcs_lso.central.service import Central
 from dcs_lso.dcslog import Debrief, HookEvent
 from dcs_lso.detect import find_passes
-from dcs_lso.edge.collector import Collector, CollectorConfig, to_dcs_event
+from dcs_lso.edge.collector import Collector, CollectorConfig, to_dcs_event, wind_profile
 from dcs_lso.edge.live import LivePassDetector
 from dcs_lso.slices import TAIL_S
 
@@ -42,6 +42,11 @@ class StubHooks:
 
     def wire_for(self, tacview_id, start, end):
         return None
+
+    def wind_for(self, carrier_unit):
+        # As logged by the hook (Lua arrays arrive keyed "1", "2", ...).
+        return wind_profile({"carrier": carrier_unit, "levels": {"2": {"alt": 100, "east": 1.0, "north": -6.0},
+                                                                  "1": {"alt": 10, "east": 0.5, "north": -4.0}}})
 
     def debrief(self) -> Debrief:
         event = HookEvent("landing_quality_mark", 294.655, "LSO: GRADE:C : LNFIW  WIRE# 3",
@@ -93,6 +98,7 @@ def test_stream_to_central_with_hook_grade(tmp_path, central):
     (sent,) = collector.outbox.sent()
     meta = sent.meta()
     assert meta["recording"]["first_frame_time"] == pytest.approx(0.04)
+    assert meta["wind"] == {"levels": [{"alt": 10.0, "east": 0.5, "north": -4.0}, {"alt": 100.0, "east": 1.0, "north": -6.0}]}
     # The archived session is a complete recording: it still yields the same pass.
     assert [p.outcome.value for p in find_passes(load_recording(archives[0]))] == ["trap"]
 

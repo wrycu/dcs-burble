@@ -30,6 +30,7 @@ from ..acmi.writer import write_slice
 from ..dcslog import Debrief, DcsEvent, HookEvent, attach_dcs_grades, follow, load_debrief, parse_hook_line
 from ..dcslog.match import tacview_id_hint
 from ..detect import PassResult, find_passes
+from ..geometry import WindProfile
 from ..slices import LEAD_S, TAIL_S, sidecar, slice_name, slice_objects
 from ..callouts.voice import ClipLibrary
 from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink
@@ -103,11 +104,30 @@ class HookFeed:
                 counts[caught[0]] = counts.get(caught[0], 0) + 1
         return max(counts, key=counts.get) if counts else None
 
+    def wind_for(self, carrier_unit: str | None) -> WindProfile | None:
+        """The latest wind the hook logged at this carrier (by unit name) in the current mission."""
+        if not carrier_unit:
+            return None
+        with self._lock:
+            events = [e for e in self._events if e.event == "wind" and e.raw.get("carrier") == carrier_unit]
+        return wind_profile(events[-1].raw) if events else None
+
     def debrief(self) -> Debrief:
         """The hook's landing grades in debrief.log form, for `attach_dcs_grades`."""
         with self._lock:
             events = list(self._events)
         return Debrief(None, [to_dcs_event(e) for e in events if e.event == "landing_quality_mark"])
+
+
+def wind_profile(raw: dict) -> WindProfile | None:
+    """From a hook `wind` event. Lua arrays arrive as objects keyed "1", "2", ..."""
+    levels = raw.get("levels") or []
+    if isinstance(levels, dict):
+        levels = [levels[k] for k in sorted(levels, key=lambda k: int(k))]
+    try:
+        return WindProfile.from_dict({"levels": levels})
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def to_dcs_event(e: HookEvent) -> DcsEvent:
@@ -216,7 +236,8 @@ class Collector:
         if self.clips is None:
             log.warning("live callouts OFF: enabled in central's config, but no --voice-dir was given")
             return None
-        return LiveCallouts(settings, self.clips, self.sink_factory(settings))
+        return LiveCallouts(settings, self.clips, self.sink_factory(settings),
+                            wind_for=self.hooks.wind_for if self.hooks is not None else None)
 
     # -- top level ----------------------------------------------------------------------------
 
@@ -349,7 +370,9 @@ class Collector:
         with tempfile.TemporaryDirectory() as tmp:
             path = write_slice(session.archive.path, Path(tmp) / "pass.zip.acmi", start, end, item.objects)
             recording = load_recording(path)
-            candidates = [p for p in find_passes(recording) if p.aircraft_id == live.aircraft_id
+            carrier = recording.objects.get(live.carrier_id)
+            wind = self.hooks.wind_for(carrier.pilot) if self.hooks is not None and carrier else None
+            candidates = [p for p in find_passes(recording, wind) if p.aircraft_id == live.aircraft_id
                           and abs(p.start_time - live.start_time) <= MATCH_START_TOLERANCE_S]
             if not candidates:
                 log.warning("pass at %.1fs not found again in its slice; skipped", live.start_time)

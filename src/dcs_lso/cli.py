@@ -70,18 +70,6 @@ def _replay(args: argparse.Namespace) -> int:
 DEFAULT_DCS_LOG = Path.home() / "Saved Games" / "DCS" / "Logs" / "dcs.log"
 
 
-def _export_rate(args: argparse.Namespace) -> int:
-    from .exportprobe import analyse_file
-
-    reports = analyse_file(args.csv)
-    if not reports:
-        print("no aircraft with enough frames near a carrier in that file")
-        return 1
-    for r in sorted(reports, key=lambda r: (r.session, -r.frames)):
-        print(r.describe())
-    return 0
-
-
 def _hook_listen(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime
 
@@ -403,10 +391,6 @@ def main(argv: list[str] | None = None) -> int:
     hook.add_argument("--log", default=str(DEFAULT_DCS_LOG), help="path to dcs.log")
     hook.add_argument("--from-start", action="store_true", help="also show events already in the file")
     hook.set_defaults(func=_hook_listen)
-
-    export_rate = sub.add_parser("export-rate", help="measure the real position update rate from the export probe's CSV")
-    export_rate.add_argument("csv", help="Logs/dcs-lso-probe.csv written by hooks/dcs-lso-export-probe.lua")
-    export_rate.set_defaults(func=_export_rate)
 
     def srs_args(p: argparse.ArgumentParser) -> None:
         p.add_argument("--host", default="127.0.0.1", help="SRS server address")

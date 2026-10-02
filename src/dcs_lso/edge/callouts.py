@@ -12,13 +12,14 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field, fields, replace
+from collections.abc import Callable
 from typing import Protocol
 
 from ..acmi import ObjectTrack, Sample
 from ..callouts import CallEvent, CalloutEngine, LiveEstimator, LiveInput, Thresholds
 from ..callouts.rules import WAVE_OFFS, Call
 from ..callouts.voice import Clip, ClipLibrary
-from ..geometry import CarrierPose, DeckFrame
+from ..geometry import CarrierPose, DeckFrame, WindProfile
 from ..srs import Modulation, Radio, SrsClient
 
 log = logging.getLogger(__name__)
@@ -170,8 +171,10 @@ class MadeCall:
 class LiveCallouts:
     """Plugged into `LivePassDetector` as its sample listener."""
 
-    def __init__(self, settings: CalloutSettings, clips: ClipLibrary, sink: CallSink) -> None:
+    def __init__(self, settings: CalloutSettings, clips: ClipLibrary, sink: CallSink,
+                 wind_for: Callable[[str], WindProfile | None] | None = None) -> None:
         self.settings = settings
+        self.wind_for = wind_for  # the mission's wind at a carrier (by unit name), from the hook
         self.clips = clips
         self.sink = sink
         self._engines: dict[tuple[int, int], tuple[LiveEstimator, CalloutEngine]] = {}
@@ -193,10 +196,12 @@ class LiveCallouts:
         t = sample.transform
         pos = frame.position(pose, t)
         heading_error = ((t.heading or 0.0) - (pose.heading - frame.carrier.deck_angle) + 180.0) % 360.0 - 180.0
+        wind = self.wind_for(carrier.pilot) if self.wind_for else None
         state = estimator.update(LiveInput(
             time=sample.time, along=pos.along, lateral=pos.lateral, hook_height=pos.hook_height,
             pitch=t.pitch or 0.0, alt=t.alt or 0.0, u=t.u or 0.0, v=t.v or 0.0, aoa=sample.aoa,
-            heading_error=heading_error, roll=t.roll or 0.0, gear=_gear(plane)))
+            heading_error=heading_error, roll=t.roll or 0.0, gear=_gear(plane), heading=t.heading,
+            wind=wind.at(t.alt or 0.0) if wind else (0.0, 0.0)))
         event = engine.update(state)
         outcome = self._outcome(key, sample.time, pos, frame)
         if outcome is Call.TRAPPED and engine.waved_off:

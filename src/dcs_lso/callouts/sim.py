@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from ..acmi import Recording, Sample
 from ..detect import CarrierTimeline, PassResult
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
-from .estimator import DEFAULT_AOA_WINDOW_S, DEFAULT_WINDOW_S, GrooveState, LiveEstimator, LiveInput, _fit, angle_deg, derived_aoa
+from .estimator import DEFAULT_WINDOW_S, GrooveState, LiveEstimator, LiveInput, _fit, angle_deg, derived_aoa
 from .rules import CallEvent, CalloutEngine, Thresholds
 
 NM = 1852.0
@@ -58,17 +58,16 @@ def _inputs(recording: Recording, p: PassResult, hz: float | None, strip_aoa: bo
         out.append(LiveInput(time=s.time, along=pos.along, lateral=pos.lateral, hook_height=pos.hook_height,
                              pitch=t.pitch or 0.0, alt=t.alt or 0.0, u=t.u or 0.0, v=t.v or 0.0,
                              aoa=None if strip_aoa else s.aoa, heading_error=heading_error,
-                             roll=t.roll or 0.0))
+                             roll=t.roll or 0.0, heading=t.heading))
     return out
 
 
-def _hindsight(inputs: list[LiveInput], glideslope: float, window_s: float,
-               aoa_window_s: float = DEFAULT_AOA_WINDOW_S) -> list[GrooveState]:
+def _hindsight(inputs: list[LiveInput], glideslope: float, window_s: float) -> list[GrooveState]:
     """Centered-window estimate at each sample (uses the future; not possible live)."""
     states = []
     half = window_s / 2
     lo = 0
-    for x in inputs:
+    for i, x in enumerate(inputs):
         while inputs[lo].time < x.time - half:
             lo += 1
         w = [s for s in inputs[lo:] if s.time <= x.time + half]
@@ -77,9 +76,10 @@ def _hindsight(inputs: list[LiveInput], glideslope: float, window_s: float,
         recorded = [s.aoa for s in w if s.aoa is not None]
         if recorded:
             aoa = sum(recorded) / len(recorded)
+        elif 0 < i < len(inputs) - 1:
+            aoa = derived_aoa(inputs[i - 1], x, inputs[i + 1])
         else:
-            aw = [s for s in inputs if abs(s.time - x.time) <= aoa_window_s / 2]
-            aoa = derived_aoa(aw, x.time)
+            aoa = None
         states.append(GrooveState(x.time, x.along, gs, 0.0, lu, 0.0, x.lateral, aoa, not recorded,
                                   x.heading_error, x.roll, len(w), gear=x.gear))
     return states

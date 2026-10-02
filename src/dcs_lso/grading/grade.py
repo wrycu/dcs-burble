@@ -19,7 +19,7 @@ from enum import IntEnum, StrEnum
 from ..detect import Outcome, PassResult
 from ..geometry import AIRCRAFT
 
-GRADING_VERSION = "1"
+GRADING_VERSION = "2"  # 2: AOA derived from motion in the aircraft frame, with wind; not graded at AR
 NM = 1852.0
 
 
@@ -202,7 +202,9 @@ def position_stats(p: PassResult) -> list[PositionStats]:
             out.append(PositionStats(pos, len(s), None, None, None, None))
             continue
         n = len(s)
-        aoas = [x.aoa for x in s if x.aoa is not None]
+        # AOA derived from motion can't follow the pilot's last corrections at the ramp at the server's
+        # 4.8 Hz (checked against real AOA: 0.2 deg RMS before 150 m, 1-2 deg after), so it isn't graded there.
+        aoas = [x.aoa for x in s if x.aoa is not None and not (x.aoa_derived and pos is Position.AR)]
         out.append(PositionStats(
             position=pos,
             samples=n,

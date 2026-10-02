@@ -113,6 +113,44 @@ function DCSLSO_HANDLER:onEvent(e)
   end
 end
 world.addEventHandler(DCSLSO_HANDLER)
+
+-- The mission's wind at each carrier, by altitude, so AOA can be derived from motion for aircraft
+-- whose AOA the server doesn't have (all of them, on a dedicated server). DCS vectors: x north, z east.
+local CARRIER_TYPES = { 'CVN', 'Stennis', 'Forrestal', 'LHA', 'CV_1143' }
+local WIND_ALTITUDES = { 10, 50, 100, 200, 400, 600 }
+local WIND_INTERVAL_S = 30
+
+local function is_carrier(type_name)
+  for _, pattern in ipairs(CARRIER_TYPES) do
+    if type_name:find(pattern, 1, true) then return true end
+  end
+  return false
+end
+
+local function log_wind()
+  for _, side in ipairs({ coalition.side.NEUTRAL, coalition.side.RED, coalition.side.BLUE }) do
+    for _, group in ipairs(try(function() return coalition.getGroups(side, Group.Category.SHIP) end) or {}) do
+      for _, unit in ipairs(try(function() return group:getUnits() end) or {}) do
+        local type_name = try(function() return unit:getTypeName() end) or ''
+        local p = is_carrier(type_name) and try(function() return unit:getPoint() end)
+        if p then
+          local levels = {}
+          for _, alt in ipairs(WIND_ALTITUDES) do
+            local w = try(function() return atmosphere.getWind({ x = p.x, y = alt, z = p.z }) end)
+            if w then levels[#levels + 1] = { alt = alt, east = w.z, north = w.x } end
+          end
+          log_event({ event = 'wind', t = timer.getTime(), carrier = try(function() return unit:getName() end),
+                      type = type_name, levels = levels })
+        end
+      end
+    end
+  end
+end
+
+timer.scheduleFunction(function(_, now)
+  pcall(log_wind)
+  return now + WIND_INTERVAL_S
+end, nil, timer.getTime() + 1)
 env.info('DCSLSO {"event":"handler_installed","t":' .. string.format('%.17g', timer.getTime()) .. '}')
 ]==]
 

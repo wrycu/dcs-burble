@@ -12,9 +12,9 @@ import math
 from collections import deque
 from dataclasses import dataclass
 
+from ..geometry.aoa import air_velocity, body_aoa, centred_velocity
+
 DEFAULT_WINDOW_S = 0.8
-# Derived AOA (pitch minus flight path) is much noisier than position; average it longer.
-DEFAULT_AOA_WINDOW_S = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +31,8 @@ class LiveInput:
     heading_error: float = 0.0  # aircraft heading minus landing-area heading, degrees
     roll: float = 0.0  # degrees
     gear: float | None = None  # landing gear position 0 (up) .. 1 (down), when the exporter provides it
+    heading: float | None = None  # degrees, grid (same frame as u/v); for AOA from motion
+    wind: tuple[float, float] = (0.0, 0.0)  # (east, north) m/s at the aircraft, for AOA from motion
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,19 +69,14 @@ def _fit(points: list[tuple[float, float]], at: float) -> tuple[float, float]:
     return my + slope * (at - mt), slope
 
 
-def derived_aoa(window: list[LiveInput], at: float) -> float | None:
-    """AOA approximated as pitch minus flight path angle over `window` (world frame, so
-    ship motion doesn't matter; wind and sideslip are ignored)."""
-    if len(window) < 3:
+def derived_aoa(before: LiveInput, at: LiveInput, after: LiveInput) -> float | None:
+    """AOA at `at` from its motion (see `geometry.aoa`), using the samples either side of it.
+    Live, that means a sample's AOA is known when the next one arrives (0.2 s late at 4.8 Hz)."""
+    ground = centred_velocity(before.time, (before.u, before.v, before.alt), at.time, (at.u, at.v, at.alt),
+                              after.time, (after.u, after.v, after.alt))
+    if ground is None:
         return None
-    _, climb = _fit([(s.time, s.alt) for s in window], at)
-    dist = math.hypot(window[-1].u - window[0].u, window[-1].v - window[0].v)
-    dt = window[-1].time - window[0].time
-    if dt <= 0 or dist <= 0:
-        return None
-    fpa = math.degrees(math.atan2(climb, dist / dt))
-    pitch, _ = _fit([(s.time, s.pitch) for s in window], at)
-    return pitch - fpa
+    return body_aoa(air_velocity(ground, at.wind), at.heading, at.pitch, at.roll)
 
 
 def angle_deg(value: float, along: float, min_along_m: float = 30.0) -> float:
@@ -88,22 +85,23 @@ def angle_deg(value: float, along: float, min_along_m: float = 30.0) -> float:
 
 
 class LiveEstimator:
-    def __init__(self, glideslope_deg: float, window_s: float = DEFAULT_WINDOW_S,
-                 aoa_window_s: float = DEFAULT_AOA_WINDOW_S, min_along_m: float = 30.0) -> None:
+    def __init__(self, glideslope_deg: float, window_s: float = DEFAULT_WINDOW_S, min_along_m: float = 30.0) -> None:
         self.glideslope_deg = glideslope_deg
         self.window_s = window_s
-        self.aoa_window_s = aoa_window_s
         # Angles are meaningless right at the aim point; clamp the range used for them.
         self.min_along_m = min_along_m
         self._window: deque[LiveInput] = deque()
+        self._last3: deque[LiveInput] = deque(maxlen=3)
+        self._derived_aoa: float | None = None
 
     def update(self, x: LiveInput) -> GrooveState:
         self._window.append(x)
-        keep = max(self.window_s, self.aoa_window_s)
-        while self._window and x.time - self._window[0].time > keep:
+        while self._window and x.time - self._window[0].time > self.window_s:
             self._window.popleft()
-        w = [s for s in self._window if x.time - s.time <= self.window_s]
-        aoa_w = [s for s in self._window if x.time - s.time <= self.aoa_window_s]
+        w = list(self._window)
+        self._last3.append(x)
+        if len(self._last3) == 3:
+            self._derived_aoa = derived_aoa(*self._last3)
 
         m = self.min_along_m
         gs, gs_rate = _fit([(s.time, angle_deg(s.hook_height, s.along, m) - self.glideslope_deg) for s in w], x.time)
@@ -116,7 +114,7 @@ class LiveEstimator:
             aoa: float | None = sum(s.aoa for s in recorded) / len(recorded)
             derived = False
         else:
-            aoa, derived = derived_aoa(aoa_w, x.time), True
+            aoa, derived = self._derived_aoa, True
         return GrooveState(
             time=x.time, along=x.along, glideslope_deg=gs, glideslope_rate=gs_rate,
             lineup_deg=lu, lineup_rate=lu_rate, lateral_m=lateral, aoa=aoa, aoa_derived=derived,

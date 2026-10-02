@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..acmi import load_recording
 from ..dcslog import LsoGrade
 from ..detect import PassResult, find_passes
+from ..geometry import WindProfile
 from ..grading import GRADING_VERSION, GradeResult, grade_pass
 from .db import Grade, Pass, Pilot, Slice, Source, make_engine, make_sessionmaker
 from .storage import SliceStore
@@ -92,7 +93,8 @@ class Central:
     def load_pass(self, p: Pass) -> PassResult:
         """Rebuild the pass from its stored slice (plus DCS's grade, which may have arrived later)."""
         recording = load_recording(self.store.path(p.slice.sha256))
-        for candidate in find_passes(recording):
+        wind = WindProfile.from_dict((p.slice.sidecar or {}).get("wind"))
+        for candidate in find_passes(recording, wind):
             if (candidate.aircraft_id == p.aircraft_id
                     and abs(candidate.start_time - p.start_time) <= START_TIME_TOLERANCE_S):
                 candidate.dcs_grade = LsoGrade.parse(p.dcs_grade) if p.dcs_grade else None

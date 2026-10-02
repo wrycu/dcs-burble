@@ -14,7 +14,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ..acmi import ObjectTrack, Recording, Sample, Transform
-from ..geometry import AIRCRAFT, CARRIERS, CarrierPose, DeckFrame
+from ..geometry import AIRCRAFT, CARRIERS, CarrierPose, DeckFrame, WindProfile, air_velocity, body_aoa, centred_velocity
 
 if TYPE_CHECKING:
     from ..dcslog import LsoGrade
@@ -75,6 +75,8 @@ class PassResult:
     # From DCS's own LSO (never estimated from telemetry); see `dcslog.attach_dcs_grades`.
     wire: int | None = None
     dcs_grade: LsoGrade | None = None
+    # The mission's wind at the carrier (from the dcs-lso hook), when known; used for derived AOA.
+    wind: WindProfile | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -128,8 +130,9 @@ def is_recovery_attempt(carrier: CarrierPose, plane: Transform) -> bool:
 class PassTracker:
     """Accumulates one pass. Feed samples until `feed()` returns False."""
 
-    def __init__(self, frame: DeckFrame) -> None:
+    def __init__(self, frame: DeckFrame, wind: WindProfile | None = None) -> None:
         self.frame = frame
+        self.wind = wind
         self._raw: list[tuple[float, CarrierPose, Transform, float | None]] = []
         self._min_distance = math.inf
         self._stopped_since: float | None = None
@@ -165,18 +168,13 @@ class PassTracker:
             j, k = max(i - 1, 0), min(i + 1, len(raw) - 1)
             dt = raw[k][0] - raw[j][0]
             pj, pk = raw[j][2], raw[k][2]
-            if dt > 0:
-                ground_speed = math.hypot(positions[k].along - positions[j].along,
-                                          positions[k].lateral - positions[j].lateral) / dt
-                horiz = math.hypot((pk.u or 0) - (pj.u or 0), (pk.v or 0) - (pj.v or 0)) / dt
-                vert = ((pk.alt or 0) - (pj.alt or 0)) / dt
-                flight_path = math.degrees(math.atan2(vert, horiz))
-            else:
-                ground_speed, flight_path = 0.0, 0.0
+            ground_speed = math.hypot(positions[k].along - positions[j].along,
+                                      positions[k].lateral - positions[j].lateral) / dt if dt > 0 else 0.0
             pitch = plane.pitch or 0.0
-            # Without recorded AOA, approximate it as pitch minus flight path angle
-            # (ignores sideslip and wind).
+            # Without recorded AOA, derive it from the motion (see geometry.aoa).
             derived = aoa is None
+            if derived:
+                aoa = self._derived_aoa(raw[j], raw[i], raw[k]) if j < i < k else None
             out.append(PassSample(
                 time=t,
                 along=pos.along,
@@ -185,10 +183,20 @@ class PassTracker:
                 glideslope_deviation=pos.hook_height - self.frame.glideslope_height(pos.along),
                 ground_speed=ground_speed,
                 pitch=pitch,
-                aoa=(pitch - flight_path) if derived else aoa,
+                aoa=aoa,
                 aoa_derived=derived,
             ))
         return out
+
+    def _derived_aoa(self, before, at, after) -> float | None:
+        def where(p: Transform) -> tuple[float, float, float]:
+            return p.u or 0.0, p.v or 0.0, p.alt or 0.0
+        ground = centred_velocity(before[0], where(before[2]), at[0], where(at[2]), after[0], where(after[2]))
+        if ground is None:
+            return None
+        plane = at[2]
+        wind = self.wind.at(plane.alt or 0.0) if self.wind else (0.0, 0.0)
+        return body_aoa(air_velocity(ground, wind), plane.heading, plane.pitch or 0.0, plane.roll or 0.0)
 
 
 def _on_deck(s: PassSample) -> bool:
@@ -209,25 +217,26 @@ def classify(samples: list[PassSample], stopped: bool) -> Outcome:
     return Outcome.INCOMPLETE
 
 
-def find_passes(recording: Recording) -> Iterator[PassResult]:
+def find_passes(recording: Recording, wind: WindProfile | None = None) -> Iterator[PassResult]:
+    """Every carrier pass in `recording`. `wind` (at the carrier) refines AOA derived from motion."""
     carriers = [t for t in recording.objects.values() if t.name in CARRIERS and t.samples]
     aircraft = [t for t in recording.objects.values() if t.name in AIRCRAFT and t.samples]
     for carrier in carriers:
         timeline = CarrierTimeline(carrier.samples)
         for plane in aircraft:
             frame = DeckFrame(CARRIERS[carrier.name], AIRCRAFT[plane.name])
-            yield from _passes_for_pair(carrier, plane, timeline, frame)
+            yield from _passes_for_pair(carrier, plane, timeline, frame, wind)
 
 
 def _passes_for_pair(carrier: ObjectTrack, plane: ObjectTrack, timeline: CarrierTimeline,
-                     frame: DeckFrame) -> Iterator[PassResult]:
+                     frame: DeckFrame, wind: WindProfile | None = None) -> Iterator[PassResult]:
     tracker: PassTracker | None = None
     for sample in plane.samples:
         pose = timeline.at(sample.time)
         if tracker is None:
             if not is_recovery_attempt(pose, sample.transform):
                 continue
-            tracker = PassTracker(frame)
+            tracker = PassTracker(frame, wind)
         if not tracker.feed(sample.time, pose, sample.transform, sample.aoa):
             result = _finish(carrier, plane, frame, tracker)
             if result:
@@ -255,4 +264,5 @@ def _finish(carrier: ObjectTrack, plane: ObjectTrack, frame: DeckFrame,
         start_time=samples[0].time,
         end_time=samples[-1].time,
         samples=samples,
+        wind=tracker.wind,
     )

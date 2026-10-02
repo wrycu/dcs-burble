@@ -89,6 +89,7 @@ def sidecar(recording: Recording, p: PassResult, source: str | Path, object_ids:
             "aoa_recorded": bool(samples) and not samples[0].aoa_derived,
         },
         "dcs": {"wire": p.wire, "grade": asdict(p.dcs_grade) if p.dcs_grade else None},
+        "wind": p.wind.to_dict() if p.wind else None,
     }
 
 
