@@ -11,15 +11,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ..acmi import ObjectTrack, Recording, Sample, load_recording
 from ..dcslog import Debrief, LsoGrade, load_debrief
 from ..detect import PassResult, find_passes
-from ..geometry import WindProfile
+from ..geometry import AIRCRAFT, WindProfile
 from ..slices import own_pilots, slice_recording
-from ..grading import GRADING_VERSION, GradeResult, grade_pass
+from ..cards.overlay import OverlayPass
+from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
+from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
 from .db import Grade, Pass, Pilot, Slice, Source, Upload, make_engine, make_sessionmaker
 from .storage import SliceStore
 
@@ -64,6 +66,15 @@ def occurred_at(sidecar: dict) -> datetime | None:
     if start is None:
         return None
     return start + timedelta(seconds=float(p["start_time"]) - float(rec.get("first_frame_time") or 0.0))
+
+
+@dataclass(frozen=True, slots=True)
+class PilotSummary:
+    trends: Trends  # across the latest `rows`
+    rows: list[Pass]  # the graded landings looked at, newest first
+    landings: int  # all of the pilot's landings
+    first_seen: datetime | None  # their first and latest landing
+    last_seen: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,6 +412,45 @@ class Central:
                 upload.status = "failed"
                 upload.finished_at = datetime.now(UTC)
                 self._remove_files(upload)
+
+    # -- meta grading ---------------------------------------------------------------------------
+
+    def pilot_trends(self, name: str, passes: int = DEFAULT_PASSES) -> PilotSummary | None:
+        """Themes across a pilot's last `passes` graded landings, those landings (newest first), and when
+        the pilot was first and last seen; None for an unknown pilot."""
+        with self.sessions() as s:
+            pilot = s.scalar(select(Pilot).where(Pilot.name == name))
+            if pilot is None:
+                return None
+            q = (select(Pass).where(Pass.pilot_id == pilot.id, Pass.merged_into_id.is_(None),
+                                    or_(Pass.kind.is_(None), Pass.kind != "track"))
+                 .order_by(func.coalesce(Pass.occurred_at, Pass.created_at).desc(), Pass.id.desc())
+                 .options(selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.source),
+                          selectinload(Pass.slice)))
+            landings = list(s.scalars(q))
+            rows = [p for p in landings if p.grade is not None][:passes]
+        seen = [p.occurred_at or p.created_at for p in landings]
+        items = []
+        for p in rows:
+            aircraft = AIRCRAFT.get(p.aircraft_type)
+            on_speed = aircraft.on_speed_aoa if aircraft else (7.4, 8.8)
+            items.append(TrendPass.from_detail(p.grade.detail or {}, p.outcome, on_speed, wire=p.wire))
+        return PilotSummary(trends(items), rows, len(landings), min(seen) if seen else None,
+                            max(seen) if seen else None)
+
+    def overlay(self, rows: list[Pass]) -> list[OverlayPass]:
+        """The landings' tracks for an overlay card (newest first); ones whose slice can't be read are left out."""
+        items = []
+        for p in rows:
+            try:
+                result = self.load_pass(p)
+            except (IngestError, OSError, ValueError, KeyError):
+                continue
+            g = p.grade
+            when = (p.occurred_at or p.created_at).strftime("%Y-%m-%d %H:%M UTC")
+            items.append(OverlayPass(result, g.grade if g else "", f"/passes/{p.id}",
+                                     f"{grade_name(g.grade) if g else '?'}: {g.text if g else ''} · {when}", p.id))
+        return items
 
     def regrade(self, force: bool = False) -> tuple[int, int]:
         """Grade every landing with the current grading version. Returns (regraded, unchanged)."""

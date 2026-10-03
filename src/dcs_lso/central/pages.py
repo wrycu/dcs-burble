@@ -5,20 +5,13 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from html import escape
+from urllib.parse import quote
 
+from ..cards.overlay import GRADE_COLORS
 from ..grading import grade_name, grade_short
 from .db import Pass, Upload
 
-# Greenie board colours per grade (light, dark).
-GRADE_COLORS = {
-    "_OK_": ("#116329", "#2ea043"),
-    "OK": ("#2da44e", "#3fb950"),
-    "(OK)": ("#d4a72c", "#d29922"),
-    "---": ("#8a5a2b", "#a0703c"),
-    "B": ("#0969da", "#388bfd"),
-    "WO": ("#6e7781", "#8b949e"),
-    "C": ("#cf222e", "#f85149"),
-}
+# Greenie board colours per grade (light, dark), shared with the overlay card.
 
 STYLE = """
 :root { --bg: #f6f8fa; --card: #ffffff; --text: #1f2328; --muted: #656d76; --border: #d0d7de; --empty: #eaeef2; }
@@ -61,6 +54,17 @@ table.results { border-collapse: collapse; width: 100%; }
 table.results th, table.results td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 table.results th { color: var(--muted); font-size: 12px; }
 .error { color: #cf222e; }
+ul.themes { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+ul.themes li { display: flex; gap: 10px; align-items: baseline; }
+.kind { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--muted); min-width: 64px; }
+.bar { flex: none; width: 60px; height: 6px; border-radius: 3px; background: var(--empty); overflow: hidden; align-self: center; }
+.bar span { display: block; height: 100%; background: var(--muted); }
+.recent { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
+h2 { font-size: 16px; margin: 20px 0 8px; }
+#tc-pop { position: fixed; z-index: 10; width: min(640px, 92vw); pointer-events: none; background: var(--card);
+  border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); }
+#tc-pop svg { display: block; width: 100%; height: auto; }
+#tc-pop .loading { color: var(--muted); padding: 24px; text-align: center; }
 """
 
 GRADE_CSS = "\n".join(
@@ -120,7 +124,8 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
             cells.append(f'<td><a class="cell {GRADE_CLASS.get(g, "")}" href="/passes/{p.id}" '
                          f'title="{escape(title)}">{escape(grade_short(g))}</a></td>')
         cells += ['<td><span class="cell empty"></span></td>'] * (columns - len(shown))
-        rows.append(f'<tr><td class="pilot">{escape(name)}</td><td class="num">{len(items)}</td>'
+        rows.append(f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}" title="Themes across recent passes">'
+                    f'{escape(name)}</a></td><td class="num">{len(items)}</td>'
                     f'<td class="num">{avg:.2f}</td><td class="num">{100 * traps / len(items):.0f}%</td>'
                     + "".join(cells) + "</tr>")
 
@@ -291,3 +296,84 @@ def upload_status_page(upload: Upload, key: str | None) -> str:
             f'{escape(upload.status)}</p>'
             f'<div class="panel">{detail}</div>')
     return _page(f"Upload: {upload.filename}", body).replace("<head>", "<head>" + refresh, 1)
+
+
+# Hovering a pass (a line on the overlay, or a grade square) previews its trap card next to the pointer.
+CARD_PREVIEW_SCRIPT = """
+(() => {
+  const pop = document.getElementById('tc-pop');
+  const cards = new Map();
+  let current = null;
+  const place = (e) => {
+    const w = pop.offsetWidth, h = pop.offsetHeight, m = 16;
+    let x = e.clientX + m, y = e.clientY + m;
+    if (x + w > window.innerWidth - 8) x = Math.max(8, e.clientX - w - m);
+    if (y + h > window.innerHeight - 8) y = Math.max(8, window.innerHeight - h - 8);
+    pop.style.left = x + 'px'; pop.style.top = y + 'px';
+  };
+  const show = async (id, e) => {
+    current = id;
+    pop.hidden = false;
+    if (!cards.has(id)) {
+      pop.innerHTML = '<div class="loading">Loading trap card…</div>';
+      place(e);
+      cards.set(id, fetch('/passes/' + id + '/card.svg').then(r => r.ok ? r.text() : '<div class="loading">No trap card</div>'));
+    }
+    const svg = await cards.get(id);
+    if (current !== id) return;
+    pop.innerHTML = svg;
+    place(e);
+  };
+  const hide = () => { current = null; pop.hidden = true; };
+  document.querySelectorAll('[data-pass]').forEach((el) => {
+    const id = el.getAttribute('data-pass');
+    el.addEventListener('mouseenter', (e) => show(id, e));
+    el.addEventListener('mousemove', (e) => { if (current === id) place(e); });
+    el.addEventListener('mouseleave', hide);
+  });
+})();
+"""
+
+KIND_LABELS = {"fault": "Fault", "bias": "Leaning", "speed": "Speed", "outcome": "Outcome", "wires": "Wires",
+               "trend": "Trend"}
+
+
+def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None) -> str:
+    """Meta grading: themes across the pilot's recent passes (`summary`: central's PilotSummary)."""
+    result, rows = summary.trends, summary.rows
+    first = summary.first_seen.strftime("%Y-%m-%d") if summary.first_seen else "?"
+    last = summary.last_seen.strftime("%Y-%m-%d") if summary.last_seen else "?"
+    seen = (f'<p class="sub">{summary.landings} landing{"s" if summary.landings != 1 else ""} · '
+            f"first seen {first} · last seen {last}</p>")
+    options = "".join(f'<option value="{n}"{" selected" if n == passes else ""}>last {n}</option>'
+                      for n in sorted({8, 12, 15, 20, passes}))
+    picker = (f'<form class="filters" method="get"><label>Look at <select name="passes" onchange="this.form.submit()">'
+              f"{options}</select> passes</label></form>")
+    if not result.passes:
+        body = (f'<p class="sub"><a href="/">← Greenie board</a></p><h1>{escape(name)}</h1>{seen}'
+                '<p class="empty-state">No graded passes yet.</p>')
+        return _page(name, body)
+    grades = " · ".join(f"{escape(grade_short(g))} ×{n}" for g, n in sorted(result.grades.items(), key=lambda kv: -kv[1]))
+    def items(themes, empty: str) -> str:
+        return "".join(
+            f'<li><span class="kind">{KIND_LABELS.get(t.kind, t.kind)}</span>'
+            f'<span class="bar" title="{t.count} of {t.of}"><span style="width:{100 * t.share:.0f}%"></span></span>'
+            f"<span>{escape(t.text)}</span></li>" for t in themes) or f"<li>{empty}</li>"
+
+    analysis = items(result.analysis, "Nothing stands out: no fault or leaning repeats across these passes.")
+    results = items(result.results, "No pattern in outcomes or wires across these passes.")
+    strengths = ("<h2>Consistently good</h2><ul class=\"themes\">"
+                 + "".join(f"<li>{escape(s)}</li>" for s in result.strengths) + "</ul>") if result.strengths else ""
+    cells = "".join(
+        f'<a class="cell {GRADE_CLASS.get(p.grade.grade, "")}" href="/passes/{p.id}" data-pass="{p.id}" '
+        f'title="{escape(grade_name(p.grade.grade))}: {escape(p.grade.text)} · {_when(p.occurred_at)}">'
+        f"{escape(grade_short(p.grade.grade))}</a>" for p in reversed(rows))
+    body = (f'<p class="sub"><a href="/">← Greenie board</a></p><h1>{escape(name)}</h1>{seen}'
+            f'<p class="sub">Last {result.passes} passes · {result.average_points:.2f} points on average · {grades}</p>'
+            f"{picker}<div class=\"panel\"><h2 style=\"margin-top:0\">Analysis</h2>"
+            f'<ul class="themes">{analysis}</ul>{strengths}'
+            f'<h2>Results</h2><ul class="themes">{results}</ul>'
+            f'<h2>These passes (oldest → newest)</h2><div class="recent">{cells}</div></div>'
+            + (f'<h2>Traps overlaid</h2><div class="panel card">{overlay_svg}</div>' if overlay_svg else "")
+            + f'<div id="tc-pop" hidden></div><script>{CARD_PREVIEW_SCRIPT}</script>')
+    return _page(f"{name}: recent passes", body)

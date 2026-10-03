@@ -11,12 +11,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from ..cards import render_card
+from ..cards.overlay import render_overlay
 from ..grading import grade_pass
+from ..grading.trends import DEFAULT_PASSES
 from . import pages
 from .db import Pass, Pilot, Source, Upload
 from .service import Central, IngestError
@@ -186,6 +188,26 @@ def create_app(central: Central) -> FastAPI:
                         "points": g.points if g else None, "grading_version": g.version if g else None})
         return out
 
+    @app.get("/api/v1/pilots/{name}/trends")
+    def pilot_trends_api(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES) -> dict:
+        """Themes across a pilot's recent passes: what keeps going wrong, biases, speed, outcomes, wires."""
+        found = central.pilot_trends(name, passes)
+        if found is None:
+            raise HTTPException(404, "no such pilot")
+        return {"pilot": name, "landings": found.landings,
+                "first_seen": found.first_seen.isoformat() if found.first_seen else None,
+                "last_seen": found.last_seen.isoformat() if found.last_seen else None,
+                **found.trends.to_dict(), "pass_ids": [p.id for p in found.rows]}
+
+    @app.get("/pilots/{name}", response_class=HTMLResponse)
+    def pilot_page(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES) -> str:
+        found = central.pilot_trends(name, passes)
+        if found is None:
+            raise HTTPException(404, "no such pilot")
+        items = central.overlay(found.rows)
+        svg = render_overlay(items, uid="ov", title=f"{name}: last {len(items)} passes overlaid") if items else None
+        return pages.pilot_page(name, found, passes, svg)
+
     @app.get("/", response_class=HTMLResponse)
     def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None) -> str:
         passes = _passes(days, pilot or None, source or None)
@@ -216,6 +238,19 @@ def create_app(central: Central) -> FastAPI:
             return pages.pass_page(p, svg, reports=reports, track_source=result.track_source)
         except (IngestError, OSError) as exc:
             return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports)
+
+    @app.get("/passes/{pass_id}/card.svg")
+    def pass_card(pass_id: int) -> Response:
+        """The pass's trap card on its own (e.g. previewed on hover)."""
+        p = _get(pass_id)
+        if p.merged_into_id is not None:
+            return RedirectResponse(f"/passes/{p.merged_into_id}/card.svg", status_code=307)
+        try:
+            result = central.load_pass(p)
+        except (IngestError, OSError) as exc:
+            raise HTTPException(404, f"trap card unavailable: {exc}") from exc
+        svg = render_card(result, grade_pass(result), p.mission or "", uid=f"hover{p.id}", calls=p.calls)
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=300"})
 
     @app.get("/passes/{pass_id}/acmi")
     def pass_acmi(pass_id: int) -> FileResponse:
