@@ -19,6 +19,7 @@ from ..dcslog import Debrief, LsoGrade, load_debrief
 from ..detect import PassResult, find_passes
 from ..geometry import AIRCRAFT, WindProfile
 from ..slices import is_default_pilot, own_pilots, slice_recording
+from ..sun import is_night
 from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
@@ -105,6 +106,7 @@ class Central:
         self.uploads_dir = Path(data_dir) / "uploads"
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self._fail_interrupted_uploads()
+        self._backfill_night()
 
     # -- sources ----------------------------------------------------------------------------
 
@@ -271,6 +273,7 @@ class Central:
                         raise ValueError("the track's aircraft isn't in its slice")
                 else:
                     grade_pass(self.load_pass(row, [row]))  # check the slice on its own before storing it
+                    row.night = self._night(row)
             except (OSError, ValueError, KeyError) as exc:
                 raise IngestError(f"could not analyse the slice: {exc}") from exc
             s.add(row)
@@ -287,6 +290,22 @@ class Central:
                     self._attach(s, landing, report)
             result = self._regrade(s, landing)
             return IngestResult(landing.id, True, result.grade.value, result.text)
+
+    def _night(self, p: Pass) -> bool | None:
+        """Was the pass flown at night (at the carrier, when it ended)? None if it can't be told."""
+        try:
+            carrier_id = int(((p.slice.sidecar or {}).get("pass") or {})["carrier_id"])
+            return is_night(load_recording(self.store.path(p.slice.sha256)), carrier_id, p.end_time)
+        except (KeyError, TypeError, ValueError, OSError):
+            return None
+
+    def _backfill_night(self) -> None:
+        """Work out day or night for passes stored before it was recorded."""
+        with self.sessions.begin() as s:
+            q = (select(Pass).where(Pass.night.is_(None), or_(Pass.kind.is_(None), Pass.kind != "track"))
+                 .options(selectinload(Pass.slice)))
+            for p in s.scalars(q):
+                p.night = self._night(p)
 
     def _candidates(self, s: Session, row: Pass) -> list[Pass]:
         """Unmerged reports that could be the same landing as `row`: from other sources, or from the same

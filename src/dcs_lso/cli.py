@@ -216,6 +216,7 @@ def _cards(args: argparse.Namespace) -> int:
     from .cards import CardEntry, render_card, render_index
     from .grading import GRADING_VERSION, grade_pass
     from .slices import slice_name
+    from .sun import is_night
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -229,7 +230,8 @@ def _cards(args: argparse.Namespace) -> int:
         for p in passes:
             grade = grade_pass(p)
             stem = slice_name(recording, p)
-            svg = render_card(p, grade, recording.globals.get("Title", ""), uid=f"c{len(entries)}")
+            svg = render_card(p, grade, recording.globals.get("Title", ""), uid=f"c{len(entries)}",
+                              night=bool(is_night(recording, p.carrier_id, p.end_time)))
             (out_dir / f"{stem}.svg").write_text(svg, encoding="utf-8")
             name = f"{stem}.svg"
             entries.append(CardEntry(name, svg, p.pilot or hex(p.aircraft_id), grade.grade.value, grade.text,

@@ -341,9 +341,10 @@ def _legend(on_speed: tuple[float, float], out: list[str]) -> None:
 
 
 def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc",
-                calls: list[dict] | None = None) -> str:
+                calls: list[dict] | None = None, night: bool = False) -> str:
     """`uid` prefixes element ids, so several cards can be inlined in one page. `calls` are the
-    live LSO calls made during the pass ({"time", "along", "call"}), if any."""
+    live LSO calls made during the pass ({"time", "along", "call"}), if any. `night`: flown at night
+    (marked with a black dot, as on the greenie board)."""
     calls = sorted(calls or [], key=lambda c: c["time"])
     listed = _wrap("LSO calls:", [f"{c['call'].capitalize()} ({c['along'] / NM:.2f} nm)" for c in calls],
                    12, PLOT_W) if calls else []
@@ -363,7 +364,12 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     sub = f"{p.aircraft_type} · {p.carrier_type} · {p.outcome.value} · t={p.start_time:.0f}s"
     if title:
         sub = f"{title} · {sub}"
-    out.append(f'<text class="tc-muted" x="{PAD_L}" y="56" font-size="12">{escape(sub)}</text>')
+    if night:
+        out.append(f'<circle cx="{PAD_L + 5}" cy="52" r="5" fill="#111" stroke="#fff" stroke-opacity="0.6"/>')
+        out.append(f'<text class="tc-text" x="{PAD_L + 15}" y="56" font-size="12" font-weight="600">Night'
+                   f'<tspan class="tc-muted" font-weight="400"> · {escape(sub)}</tspan></text>')
+    else:
+        out.append(f'<text class="tc-muted" x="{PAD_L}" y="56" font-size="12">{escape(sub)}</text>')
     gx = PAD_L + PLOT_W
     out.append(f'<text class="{_grade_class(grade.grade.value)}" x="{gx}" y="36" font-size="26" font-weight="700" '
                f'text-anchor="end">{escape(grade_short(grade.grade.value))}</text>')

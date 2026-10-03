@@ -86,6 +86,8 @@ class Pass(Base):
     kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The aircraft's livery, from the mission via the dcs-lso hook, when known.
     livery: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Flown at night (the sun below the horizon at the carrier when the pass ended); None if unknown.
+    night: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Another report of the same landing (e.g. the pilot's own and the server's) is merged into the
     # landing's first gradable report, which is the one shown; see `Central.ingest`.
     merged_into_id: Mapped[int | None] = mapped_column(ForeignKey("passes.id"), nullable=True, index=True)

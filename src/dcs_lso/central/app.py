@@ -330,7 +330,8 @@ def create_app(central: Central) -> FastAPI:
         reports = central.reports(p)
         try:
             result = central.load_pass(p, reports)
-            svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls)
+            svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls,
+                              night=bool(p.night))
             return pages.pass_page(p, svg, reports=reports, track_source=result.track_source)
         except (IngestError, OSError) as exc:
             return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports)
@@ -345,7 +346,8 @@ def create_app(central: Central) -> FastAPI:
             result = central.load_pass(p)
         except (IngestError, OSError) as exc:
             raise HTTPException(404, f"trap card unavailable: {exc}") from exc
-        svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"hover{p.id}", calls=p.calls)
+        svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"hover{p.id}", calls=p.calls,
+                          night=bool(p.night))
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=300"})
 
     @app.get("/passes/{pass_id}/acmi")

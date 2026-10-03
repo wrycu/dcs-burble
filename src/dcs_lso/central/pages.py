@@ -33,6 +33,10 @@ table.board td.num { padding: 4px 8px; text-align: right; font-variant-numeric: 
 .cell { display: block; width: 34px; height: 30px; border-radius: 6px; color: #fff; text-decoration: none;
         font-size: 11px; font-weight: 700; line-height: 30px; text-align: center; }
 .cell.empty { background: var(--empty); }
+.cell.night { position: relative; }
+.cell.night::after, .legend span.night-dot { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px;
+        border-radius: 50%; background: #111; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6); }
+.legend span.night-dot { position: relative; display: inline-block; top: 0; right: 0; vertical-align: 0; margin-right: 6px; }
 .legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 0; color: var(--muted); font-size: 12px; }
 .legend span.swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-right: 4px; }
 form.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
@@ -127,8 +131,9 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
         cells = []
         for p in shown:
             g = p.grade.grade if p.grade else "?"
-            title = f"{grade_name(g)}: {p.grade.text if p.grade else ''} · {_when(p.occurred_at)} · {p.mission or ''}"
-            cells.append(f'<td><a class="cell {GRADE_CLASS.get(g, "")}" href="/passes/{p.id}" '
+            night = " · night" if p.night else ""
+            title = f"{grade_name(g)}: {p.grade.text if p.grade else ''}{night} · {_when(p.occurred_at)} · {p.mission or ''}"
+            cells.append(f'<td><a class="cell {GRADE_CLASS.get(g, "")}{" night" if p.night else ""}" href="/passes/{p.id}" '
                          f'title="{escape(title)}">{escape(grade_short(g))}</a></td>')
         cells += ['<td><span class="cell empty"></span></td>'] * (columns - len(shown))
         rows.append(f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}" title="Themes across recent passes">'
@@ -139,7 +144,7 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
     legend = '<div class="legend">' + "".join(
         f'<span><span class="swatch {GRADE_CLASS[g]}"></span>{escape(grade_short(g))} {grade_name(g)}'
         f'{f" ({escape(g)})" if grade_short(g) != g else ""}</span>' for g in GRADE_COLORS
-    ) + "</div>"
+    ) + '<span><span class="night-dot"></span>Night pass</span></div>'
     period = f"last {days} days" if days else "all time"
     if rows:
         table = (f'<div class="scroll"><table class="board"><thead><tr><th>Pilot</th><th>Passes</th><th>Avg</th>'
