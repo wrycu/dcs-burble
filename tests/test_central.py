@@ -32,8 +32,10 @@ def token(central):
     return central.add_source("test-server")
 
 
-def upload(client, token, acmi: Path, sidecar: dict | None = None):
+def upload(client, token, acmi: Path, sidecar: dict | None = None, rename_default: bool = True):
     sidecar = sidecar or json.loads(acmi.with_suffix("").with_suffix(".json").read_text())
+    if rename_default and sidecar.get("pass", {}).get("pilot") == "New callsign":
+        sidecar["pass"]["pilot"] = "Maverick"  # DCS's default name is refused (see below)
     return client.post("/api/v1/passes", headers={"Authorization": f"Bearer {token}"},
                        files={"slice": (acmi.name, acmi.read_bytes(), "application/zip")},
                        data={"sidecar": json.dumps(sidecar)})
@@ -64,15 +66,22 @@ def test_bad_sidecar_is_rejected(client, token):
     assert r.status_code == 400
 
 
+def test_default_pilot_name_is_refused(client, token):
+    (acmi,) = [f for f in PASS_FILES if "New_callsign" in f.name]
+    r = upload(client, token, acmi, rename_default=False)
+    assert r.status_code == 400 and "default pilot name" in r.json()["detail"]
+    assert client.get("/api/v1/passes", params={"days": 0}).json() == []
+
+
 def test_board_and_pass_pages(client, token):
     for acmi in PASS_FILES:
         upload(client, token, acmi)
     board = client.get("/", params={"days": 0}).text
-    assert "Greenie Board" in board and "Wrycu" in board and "New callsign" in board
+    assert "Greenie Board" in board and "Wrycu" in board and "Maverick" in board
     assert board.count('href="/passes/') == len(PASS_FILES)
     # "---" is a real grade (No Grade); the board must not show it as a bare "---".
     assert ">NG</a>" in board and "No Grade" in board and ">---</a>" not in board
-    only = client.get("/", params={"days": 0, "pilot": "New callsign"}).text
+    only = client.get("/", params={"days": 0, "pilot": "Maverick"}).text
     assert only.count('href="/passes/') == 1
 
     pass_id = upload(client, token, PASS_FILES[-1]).json()["pass_id"]
@@ -121,9 +130,9 @@ def test_upload_command(central, client, token, monkeypatch, capsys):
     monkeypatch.setattr(httpx, "Client", fake_client)
     source = FIXTURES / "ai_hornet_trap_cvn75.zip.acmi"
     # The sibling ai_hornet_trap_cvn75.debrief.log is picked up automatically.
-    assert main(["upload", str(source), "--url", "http://testserver", "--token", token]) == 0
+    assert main(["upload", str(source), "--url", "http://testserver", f"--token={token}"]) == 0
     assert "(new)" in capsys.readouterr().out
-    assert main(["upload", str(source), "--url", "http://testserver", "--token", token]) == 0
+    assert main(["upload", str(source), "--url", "http://testserver", f"--token={token}"]) == 0
     assert "(already uploaded)" in capsys.readouterr().out
     (row,) = client.get("/api/v1/passes", params={"days": 0}).json()
     assert row["wire"] == 3

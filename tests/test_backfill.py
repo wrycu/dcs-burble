@@ -292,3 +292,34 @@ def test_upload_leftovers_are_cleaned_at_startup(tmp_path):
     (c.uploads_dir / "999.debrief.log").write_bytes(b"x")
     Central(db, data)
     assert sorted(p.name for p in c.uploads_dir.iterdir()) == [f"{waiting}.zip.acmi"]
+
+
+NEW_CALLSIGN = FIXTURES / "passes" / "20260928-025423_New_callsign_86s.zip.acmi"  # flown under DCS's default name
+
+
+def test_dcs_default_pilot_name_is_refused(central):
+    client = TestClient(create_app(central))
+    body = upload(client, NEW_CALLSIGN)
+    status = wait(client, body["status_url"])
+    assert status["status"] == "failed" and "default pilot name" in status["message"]
+    assert "Logbook" in client.get(body["page"]).text  # says how to fix it
+    assert landings(central) == []
+
+
+def test_default_name_is_never_offered_as_a_pilot(central, tmp_path):
+    # Two own pilots, one of them "New callsign": the real one is imported without asking.
+    path = two_pilots(OWN, tmp_path / "session.zip.acmi", other="New callsign", other_own=True)
+    client = TestClient(create_app(central))
+    status = wait(client, upload(client, path)["status_url"])
+    assert status["status"] == "done" and status["pilot"] == "Wrycu"
+    assert [x["pilot"] for x in landings(central)] == ["Wrycu"]
+
+
+def test_default_name_passes_are_skipped_in_a_token_upload(central, tmp_path):
+    token = central.add_source("uploader", kind="server")
+    path = two_pilots(OWN, tmp_path / "server.zip.acmi", other="New callsign")
+    client = TestClient(create_app(central))
+    status = wait(client, upload(client, path, Authorization=f"Bearer {token}")["status_url"])
+    results = {r["pilot"]: r for r in status["results"] if r["kind"] == "pass"}
+    assert results["Wrycu"]["created"] and "default pilot name" in results["New callsign"]["error"]
+    assert [x["pilot"] for x in landings(central)] == ["Wrycu"]

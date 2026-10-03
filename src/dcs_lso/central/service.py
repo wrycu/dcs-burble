@@ -18,7 +18,7 @@ from ..acmi import ObjectTrack, Recording, Sample, load_recording
 from ..dcslog import Debrief, LsoGrade, load_debrief
 from ..detect import PassResult, find_passes
 from ..geometry import AIRCRAFT, WindProfile
-from ..slices import own_pilots, slice_recording
+from ..slices import is_default_pilot, own_pilots, slice_recording
 from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
@@ -29,6 +29,8 @@ from .storage import SliceStore
 START_TIME_TOLERANCE_S = 0.5
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
 UPLOAD_PILOT_WAIT = timedelta(days=1)  # how long an upload waits for its uploader to pick a pilot
+DEFAULT_PILOT_REFUSED = ("passes flown under DCS's default pilot name aren't recorded, since they can't be "
+                         "credited to a pilot")
 UPLOAD_PASSWORD_ATTEMPTS = 5  # wrong pilot passwords before an upload is given up
 # Merging reports of one landing (see `Central.ingest`).
 MERGED_START_TOLERANCE_S = 15.0
@@ -217,6 +219,8 @@ class Central:
             kind = sidecar.get("kind") or "pass"
         except (KeyError, TypeError, ValueError) as exc:
             raise IngestError(f"invalid sidecar: {exc}") from exc
+        if is_default_pilot(info.get("pilot")):
+            raise IngestError(DEFAULT_PILOT_REFUSED)
         with self.sessions.begin() as s:
             existing = s.scalar(select(Pass).where(Pass.source_id == source_id, Pass.pass_key == key))
             if existing is not None:
@@ -351,13 +355,17 @@ class Central:
             upload = s.get(Upload, upload_id)
             path = self.upload_path(upload_id, upload.filename)
         try:
-            pilots = own_pilots(load_recording(path))
-            error = None
+            found = own_pilots(load_recording(path))
+            pilots, error = [p for p in found if not is_default_pilot(p)], None
         except Exception as exc:  # a bad file must not take the worker down
             pilots, error = [], f"could not read the recording: {exc}"[:500]
         with self.sessions.begin() as s:
             upload = s.get(Upload, upload_id)
             upload.pilots = pilots
+            if not error and found and not pilots:
+                error = (f"this recording was flown as {found[0]!r}, DCS's default pilot name: {DEFAULT_PILOT_REFUSED}. "
+                         "Set your own pilot name in DCS for future flights (the Logbook in single player, your nickname "
+                         "in multiplayer)")
             if error or not pilots:
                 upload.status, upload.message = ("failed", error) if error else (
                     "done", "this recording has no own pilot in an aircraft the LSO grades: only passes flown on "

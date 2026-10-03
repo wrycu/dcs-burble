@@ -168,6 +168,15 @@ def _own(track) -> bool:
     return any(s.aoa is not None for s in track.samples)
 
 
+# DCS's default pilot name (single player, or a player who never set one): passes flown under it can't be
+# credited to anyone, so central doesn't record them.
+DEFAULT_PILOT_NAMES = frozenset({"new callsign"})
+
+
+def is_default_pilot(name: str | None) -> bool:
+    return (name or "").strip().casefold() in DEFAULT_PILOT_NAMES
+
+
 def own_pilots(recording: Recording) -> list[str]:
     """The recording's own pilot(s): who flew an aircraft the LSO grades on the PC that recorded it.
     Normally one; none in a dedicated server's recording."""
