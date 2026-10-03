@@ -47,6 +47,7 @@ def clips(tmp_path) -> Path:
 class RecordingSink:
     def __init__(self) -> None:
         self.said: list[tuple[Call, Radio]] = []
+        self.texts: list[str] = []
         self.started = False
 
     async def start(self) -> None:
@@ -54,6 +55,7 @@ class RecordingSink:
 
     async def say(self, call, clip, radio, issued_at) -> None:
         self.said.append((call, radio))
+        self.texts.append(clip.text)
 
     async def close(self) -> None:
         pass
@@ -311,3 +313,29 @@ def test_hook_feed_reads_the_wire_from_dcs_grade(tmp_path):
     assert feed.live_wire(0x103, since=340.0) == 2
     assert feed.live_wire(0x103, since=370.0) is None  # an earlier landing's grade
     assert feed.live_wire(0x203, since=340.0) is None  # someone else's
+
+
+@pytest.mark.parametrize(("path", "grade", "praised"), [
+    (FIXTURES / "wires" / "server-dcs-wire-2.zip.acmi", "OK", True),
+    (FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi", "---", False),
+])
+def test_only_good_passes_get_a_nice_trap(tmp_path, clips, monkeypatch, path, grade, praised):
+    """Welcomes that compliment the landing only for passes we grade OK or better."""
+    import dcs_lso.callouts.voice as voice
+    from dcs_lso.detect import find_passes
+    from dcs_lso.grading import grade_pass
+    (p,) = find_passes(__import__("dcs_lso.acmi", fromlist=["load_recording"]).load_recording(path))
+    assert grade_pass(p).grade.value == grade
+    # Always pick a complimenting welcome when one is allowed.
+    monkeypatch.setattr(voice.random, "choice", lambda clips: next((c for c in clips if voice.is_praise(c.text)), clips[0]))
+    _, _, sink = asyncio.run(run_collector(path, tmp_path / "edge", clips))
+    assert sink.said[-1][0] is Call.TRAPPED
+    assert voice.is_praise(sink.texts[-1]) is praised
+
+
+def test_praise_is_never_picked_when_not_allowed(clips):
+    from dcs_lso.callouts.voice import is_praise
+    lib = ClipLibrary.load(clips)
+    assert {is_praise(lib.pick(Call.TRAPPED, praise=False).text) for _ in range(300)} == {False}
+    assert {is_praise(lib.pick(Call.TRAPPED_WIRE_3, praise=False).text) for _ in range(300)} == {False}
+    assert True in {is_praise(lib.pick(Call.TRAPPED, praise=True).text) for _ in range(300)}

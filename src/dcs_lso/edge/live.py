@@ -105,6 +105,15 @@ class LivePassDetector:
                 self.listener.on_sample(self.tracks[carrier_id], plane, pose, sample, frame)
         return finished
 
+    def provisional(self, carrier_id: int, aircraft_id: int) -> PassResult | None:
+        """The pass in progress as it stands now (e.g. graded for the welcome, before it has ended)."""
+        entry = self._trackers.get((carrier_id, aircraft_id))
+        carrier, plane = self.tracks.get(carrier_id), self.tracks.get(aircraft_id)
+        if entry is None or carrier is None or plane is None:
+            return None
+        tracker, frame = entry
+        return _finish(carrier, plane, frame, tracker)
+
     def _finish(self, key: tuple[int, int]) -> list[PassResult]:
         tracker, frame = self._trackers.pop(key)
         if self.listener is not None:

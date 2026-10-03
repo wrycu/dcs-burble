@@ -19,6 +19,7 @@ from ..acmi import ObjectTrack, Sample
 from ..callouts import CallEvent, CalloutEngine, LiveEstimator, LiveInput, Thresholds
 from ..callouts.rules import WAVE_OFFS, WELCOME_WIRE, Call
 from ..callouts.voice import Clip, ClipLibrary
+from ..grading import Grade
 from ..geometry import CarrierPose, DeckFrame, WindProfile
 from ..srs import Modulation, Radio, SrsClient
 
@@ -37,6 +38,8 @@ BOLTER_SPEED_RATIO = 0.85
 TRAP_SPEED_RATIO = 0.5
 TOUCHDOWN_HOOK_HEIGHT_M = 0.5
 KEEP_CALLS_S = 900.0
+# Welcomes that compliment the landing ("nice trap") only for these grades.
+PRAISE_GRADES = frozenset({Grade.PERFECT, Grade.OK})
 # On a trap, wait this long for DCS's wire (its LSO grade arrives ~0.3 s after we detect the trap)
 # so the welcome can name it; checked every WIRE_POLL_S.
 WIRE_WAIT_S = 1.2
@@ -182,6 +185,8 @@ class LiveCallouts:
         self.wind_for = wind_for  # the mission's wind at a carrier (by unit name), from the hook
         # DCS's wire for an aircraft (Tacview id) since a mission time, from the hook, if known yet.
         self.wire_for = wire_for
+        # Our grade of a pass in progress (carrier id, aircraft id), for the welcome; set by the collector.
+        self.grade_for: Callable[[int, int], Grade | None] | None = None
         self.clips = clips
         self.sink = sink
         self._engines: dict[tuple[int, int], tuple[LiveEstimator, CalloutEngine]] = {}
@@ -217,8 +222,10 @@ class LiveCallouts:
             event = CallEvent(sample.time, pos.along, outcome, state)
         if event is None or event.call not in self.settings.calls or event.call not in self.clips:
             return None
-        if event.call in WELCOME_WIRE and self.wire_for is not None:
-            welcome = self._welcome(carrier, plane, event)  # waits briefly for DCS's wire
+        if event.call in WELCOME_WIRE:
+            # Graded now, while the pass is still being tracked (the welcome may wait for the wire).
+            grade = self.grade_for(carrier.id, plane.id) if self.grade_for is not None else None
+            welcome = self._welcome(carrier, plane, event, grade)  # may wait briefly for DCS's wire
         else:
             welcome = self._say(carrier, plane, event.call, event)
         task = asyncio.get_running_loop().create_task(welcome)
@@ -226,24 +233,29 @@ class LiveCallouts:
         task.add_done_callback(self._tasks.discard)
         return event
 
-    async def _welcome(self, carrier: ObjectTrack, plane: ObjectTrack, event: CallEvent) -> None:
-        """The trap welcome (plain or salty), naming the wire if DCS reports it within WIRE_WAIT_S."""
-        assert self.wire_for is not None
-        since = event.time - 20.0  # DCS's events for this landing come after touchdown
-        deadline = time.monotonic() + WIRE_WAIT_S
-        wire = self.wire_for(plane.id, since)
-        while wire is None and time.monotonic() < deadline:
-            await asyncio.sleep(WIRE_POLL_S)
+    async def _welcome(self, carrier: ObjectTrack, plane: ObjectTrack, event: CallEvent, grade: Grade | None) -> None:
+        """The trap welcome (plain or salty), naming the wire if DCS reports it within WIRE_WAIT_S, and
+        complimenting the landing only if we grade it OK or better."""
+        wire = None
+        if self.wire_for is not None:
+            since = event.time - 20.0  # DCS's events for this landing come after touchdown
+            deadline = time.monotonic() + WIRE_WAIT_S
             wire = self.wire_for(plane.id, since)
+            while wire is None and time.monotonic() < deadline:
+                await asyncio.sleep(WIRE_POLL_S)
+                wire = self.wire_for(plane.id, since)
         call = WELCOME_WIRE[event.call].get(wire, event.call) if wire is not None else event.call
-        await self._say(carrier, plane, call if call in self.clips else event.call, event)
+        await self._say(carrier, plane, call if call in self.clips else event.call, event,
+                        praise=grade in PRAISE_GRADES)
 
-    async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent) -> None:
+    async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent,
+                   praise: bool = False) -> None:
         self.made.append(MadeCall(plane.id, event.time, event.along, call))
         radio = self.settings.radio_for(carrier.pilot)
-        log.info("CALL %s -> %s (%.2f nm, %s)", call.value, plane.pilot or hex(plane.id),
-                 event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}")
-        await self.sink.say(call, self.clips.pick(call), radio, time.monotonic())
+        clip = self.clips.pick(call, praise)
+        log.info("CALL %s -> %s (%.2f nm, %s): %r", call.value, plane.pilot or hex(plane.id),
+                 event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}", clip.text)
+        await self.sink.say(call, clip, radio, time.monotonic())
 
     def _outcome(self, key: tuple[int, int], t: float, pos, frame: DeckFrame) -> Call | None:
         """Once per pass, after touchdown: BOLTER when the jet rolls past the wires at speed, TRAPPED

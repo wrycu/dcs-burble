@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -30,9 +30,10 @@ from ..acmi.writer import write_slice
 from ..dcslog import (Debrief, DcsEvent, HookEvent, LsoGrade, attach_dcs_grades, follow, load_debrief,
                       parse_hook_line)
 from ..dcslog.match import tacview_id_hint
-from ..detect import PassResult, find_passes
+from ..detect import Outcome, PassResult, find_passes
 from ..detect.approaches import Approach, ApproachSegmenter
 from ..geometry import AIRCRAFT, WindProfile
+from ..grading import Grade, grade_pass
 from ..slices import (LEAD_S, TAIL_S, approach_window, sidecar, slice_name, slice_objects, track_sidecar,
                       track_slice_name)
 from ..callouts.voice import ClipLibrary
@@ -328,6 +329,8 @@ class Collector:
         session = Session(SessionArchive(self.archive_dir), LivePassDetector(callouts), callouts,
                           segmenters={} if c.mode == "pilot" else None)
         if callouts is not None:
+            callouts.grade_for = lambda carrier_id, aircraft_id: _provisional_grade(session, carrier_id, aircraft_id)
+        if callouts is not None:
             await callouts.sink.start()
         log.info("connected to Tacview stream from %r; archiving to %s%s", info.name, session.archive.path,
                  "; live callouts ON" if callouts else "")
@@ -569,6 +572,18 @@ class Collector:
                 item.sidecar.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
             updated += 1
         return updated
+
+
+def _provisional_grade(session: Session, carrier_id: int, aircraft_id: int) -> Grade | None:
+    """Our grade of a trap still in progress (for the welcome); None if it can't be graded yet. The
+    jet hasn't stopped yet, so the pass would still classify as a bolter: the welcome only follows a
+    detected arrestment, so it's graded as the trap it is."""
+    try:
+        result = session.detector.provisional(carrier_id, aircraft_id)
+        return grade_pass(replace(result, outcome=Outcome.TRAP)).grade if result is not None else None
+    except Exception:  # never let grading trouble stop a call
+        log.exception("could not grade the pass in progress")
+        return None
 
 
 def _radios(settings: CalloutSettings):

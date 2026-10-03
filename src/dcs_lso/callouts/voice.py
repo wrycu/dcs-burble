@@ -68,6 +68,12 @@ for _wire, _word in ((1, "one"), (2, "two"), (3, "three"), (4, "four")):
     )
 
 
+def is_praise(text: str) -> bool:
+    """A welcome that compliments the landing: only for passes graded OK or better."""
+    text = text.lower()
+    return "nice trap" in text or "good trap" in text
+
+
 def variants(call: Call) -> tuple[str, ...]:
     text = PHRASES[call]
     return (text,) if isinstance(text, str) else text
@@ -132,8 +138,10 @@ class ClipLibrary:
     def __getitem__(self, call: Call) -> Clip:
         return self.clips[call][0]
 
-    def pick(self, call: Call) -> Clip:
-        return random.choice(self.clips[call])
+    def pick(self, call: Call, praise: bool = True) -> Clip:
+        """A random variant; without `praise`, never one that compliments the landing."""
+        clips = self.clips[call] if praise else [c for c in self.clips[call] if not is_praise(c.text)]
+        return random.choice(clips or self.clips[call])
 
     def durations(self) -> dict[Call, float]:
         """How long each call takes to say (its longest variant)."""
