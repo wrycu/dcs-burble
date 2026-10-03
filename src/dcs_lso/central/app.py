@@ -81,6 +81,8 @@ def create_app(central: Central) -> FastAPI:
     @app.post("/api/v1/recordings", status_code=202)
     async def upload_recording(recording: Annotated[UploadFile, File(description="a whole .zip.acmi or .txt.acmi recording")],
                                debrief: Annotated[UploadFile | None, File(description="that session's debrief.log")] = None,
+                               password: Annotated[str | None, Form(description="without a token: the pilot's password, "
+                                                                                "if they've set one")] = None,
                                authorization: Annotated[str | None, Header()] = None):
         """Backfill: a whole recording's passes are sliced, graded and merged with the known landings (in
         the background; follow `status_url`, or the uploader's `page`). With a source's token: every pass.
@@ -101,6 +103,8 @@ def create_app(central: Central) -> FastAPI:
         incoming.rename(central.upload_path(upload_id, name))
         if debrief is not None and debrief.filename:
             await _save(debrief, central.debrief_path(upload_id), MAX_DEBRIEF_BYTES)
+        if choose:
+            central.remember_upload_password(upload_id, password)
         uploads.submit(_inspect_then_process if choose else central.process_upload, upload_id)
         return JSONResponse({"upload_id": upload_id, "key": key, "status_url": f"/api/v1/recordings/{upload_id}",
                              "choose_url": f"/api/v1/recordings/{upload_id}/pilot",
@@ -110,25 +114,96 @@ def create_app(central: Central) -> FastAPI:
         if central.inspect_upload(upload_id):
             central.process_upload(upload_id)
 
-    def _choose(upload_id: int, key: str, pilot: str) -> None:
+    def _queue_if(step) -> bool:
+        """Run an uploader's step (choosing a pilot, giving a password); process the upload if it's ready."""
         try:
-            central.choose_pilot(upload_id, key, pilot)
+            ready = step()
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        uploads.submit(central.process_upload, upload_id)
+        return ready
 
     @app.post("/api/v1/recordings/{upload_id}/pilot", status_code=202)
-    def choose_pilot(upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()]) -> dict:
-        """Pick whose passes to import from a token-less upload with several pilots."""
-        _choose(upload_id, key, pilot)
+    def choose_pilot(upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()],
+                     password: Annotated[str | None, Form()] = None) -> dict:
+        """Pick whose passes to import from a token-less upload with several own pilots (with their
+        password, if they've set one)."""
+        if _queue_if(lambda: central.choose_pilot(upload_id, key, pilot, password)):
+            uploads.submit(central.process_upload, upload_id)
         return {"upload_id": upload_id, "status_url": f"/api/v1/recordings/{upload_id}"}
 
     @app.post("/uploads/{upload_id}/pilot")
-    def choose_pilot_form(upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()]):
-        _choose(upload_id, key, pilot)
+    def choose_pilot_form(upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()],
+                          password: Annotated[str | None, Form()] = None):
+        if _queue_if(lambda: central.choose_pilot(upload_id, key, pilot, password)):
+            uploads.submit(central.process_upload, upload_id)
         return RedirectResponse(f"/uploads/{upload_id}?key={key}", status_code=303)
+
+    @app.post("/api/v1/recordings/{upload_id}/password", status_code=202)
+    def give_password(upload_id: int, key: Annotated[str, Form()], password: Annotated[str, Form()]) -> dict:
+        """The pilot's password, for a token-less upload of a pilot who has set one."""
+        if _queue_if(lambda: central.give_upload_password(upload_id, key, password)):
+            uploads.submit(central.process_upload, upload_id)
+        return {"upload_id": upload_id, "status_url": f"/api/v1/recordings/{upload_id}"}
+
+    @app.post("/uploads/{upload_id}/password")
+    def give_password_form(upload_id: int, key: Annotated[str, Form()], password: Annotated[str, Form()]):
+        if _queue_if(lambda: central.give_upload_password(upload_id, key, password)):
+            uploads.submit(central.process_upload, upload_id)
+        return RedirectResponse(f"/uploads/{upload_id}?key={key}", status_code=303)
+
+    # -- pilot settings (password, side number) ---------------------------------------------------
+
+    def _pilot_step(step) -> None:
+        try:
+            step()
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/v1/pilots/{name}/password")
+    def pilot_password(name: str, new: Annotated[str, Form()], current: Annotated[str | None, Form()] = None) -> dict:
+        """Set a pilot's password (the first time, this claims the name) or change it (needs `current`)."""
+        _pilot_step(lambda: central.set_pilot_password(name, new, current))
+        return {"pilot": name, "password": "set"}
+
+    @app.post("/api/v1/pilots/{name}/modex")
+    def pilot_modex(name: str, password: Annotated[str, Form()], modex: Annotated[str, Form()]) -> dict:
+        """A pilot with a password changes their side number."""
+        _pilot_step(lambda: central.set_pilot_modex(name, password, modex))
+        return {"pilot": name, "modex": modex.strip()}
+
+    @app.get("/pilots/{name}/settings", response_class=HTMLResponse)
+    def pilot_settings(name: str, done: str | None = None, error: str | None = None) -> str:
+        with central.sessions() as s:
+            pilot = s.scalar(select(Pilot).where(Pilot.name == name))
+        if pilot is None:
+            raise HTTPException(404, "no such pilot")
+        return pages.pilot_settings_page(pilot, done, error)
+
+    def _settings_redirect(name: str, step, done: str):
+        quoted = quote(name, safe="")
+        try:
+            _pilot_step(step)
+        except HTTPException as exc:
+            return RedirectResponse(f"/pilots/{quoted}/settings?error={quote(str(exc.detail))}", status_code=303)
+        return RedirectResponse(f"/pilots/{quoted}/settings?done={quote(done)}", status_code=303)
+
+    @app.post("/pilots/{name}/settings/password")
+    def pilot_password_form(name: str, new: Annotated[str, Form()], confirm: Annotated[str, Form()],
+                            current: Annotated[str | None, Form()] = None):
+        if new != confirm:
+            return RedirectResponse(f"/pilots/{quote(name, safe='')}/settings?error={quote('the two new passwords differ')}",
+                                    status_code=303)
+        return _settings_redirect(name, lambda: central.set_pilot_password(name, new, current), "Password saved.")
+
+    @app.post("/pilots/{name}/settings/modex")
+    def pilot_modex_form(name: str, password: Annotated[str, Form()], modex: Annotated[str, Form()]):
+        return _settings_redirect(name, lambda: central.set_pilot_modex(name, password, modex), "Side number saved.")
 
     def _upload(upload_id: int) -> Upload:
         with central.sessions() as s:

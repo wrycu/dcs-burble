@@ -286,6 +286,16 @@ def _voice_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _central_reset_password(args: argparse.Namespace) -> int:
+    try:
+        _central(args).reset_pilot_password(args.pilot)
+    except LookupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"password for {args.pilot!r} cleared; they (or anyone) can set a new one on their settings page")
+    return 0
+
+
 def _central_regrade(args: argparse.Namespace) -> int:
     done, skipped = _central(args).regrade(force=args.force)
     print(f"regraded {done} passes; {skipped} already had the current grading version")
@@ -464,6 +474,9 @@ def main(argv: list[str] | None = None) -> int:
     regrade = central_sub.add_parser("regrade", help="grade every stored pass with the current grading version")
     regrade.add_argument("--force", action="store_true", help="also redo passes already at the current version")
     regrade.set_defaults(func=_central_regrade)
+    reset = central_sub.add_parser("reset-password", help="clear a pilot's upload password (e.g. they forgot it)")
+    reset.add_argument("pilot", help="the pilot's name, as on the board")
+    reset.set_defaults(func=_central_reset_password)
     set_config = central_sub.add_parser("set-config", help="set a source's collector configuration (JSON file)")
     set_config.add_argument("name")
     set_config.add_argument("file")

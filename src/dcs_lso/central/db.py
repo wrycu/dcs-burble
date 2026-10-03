@@ -39,8 +39,12 @@ class Pilot(Base):
     __tablename__ = "pilots"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
-    # Side number (modex): the first one seen on any of the pilot's passes; later ones don't change it.
+    # Side number (modex): the first one seen on any of the pilot's passes; later ones don't change it
+    # (except by the pilot, once they've set a password).
     modex: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Set by the pilot (first come, first served; an admin can reset it): then uploads without a token
+    # need it to import this pilot's passes. A salted scrypt hash (central.passwords).
+    password_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
 class Slice(Base):
@@ -111,7 +115,8 @@ class Upload(Base):
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
     filename: Mapped[str] = mapped_column(String(300))
     size: Mapped[int] = mapped_column(Integer)
-    # inspecting -> choose_pilot (token-less, several pilots) -> queued -> processing -> done | failed
+    # inspecting -> choose_pilot (token-less, several pilots) -> needs_password (the pilot has one)
+    #   -> queued -> processing -> done | failed
     status: Mapped[str] = mapped_column(String(16), default="queued")
     # Uploaded without a token: only one pilot's passes are imported, picked by the uploader from those in
     # the file (`pilots`); `key` (in the uploader's link) lets only them pick.

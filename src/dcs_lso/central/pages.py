@@ -217,6 +217,7 @@ form.addEventListener('submit', (event) => {
   const data = new FormData();
   data.append('recording', form.elements.recording.files[0]);
   if (form.elements.debrief.files.length) data.append('debrief', form.elements.debrief.files[0]);
+  if (form.elements.password && form.elements.password.value) data.append('password', form.elements.password.value);
   try { localStorage.setItem('dcs-lso-token', tokenInput.value); } catch (e) {}
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/v1/recordings');
@@ -243,7 +244,10 @@ def upload_page(token_required: bool) -> str:
                  '<span class="hint">The token of a source on this service (kept in this browser).</span></label>')
         intro = "Every carrier pass in it is graded and added to the board."
     else:
-        token = ('<label>Upload token (optional) <input name="token" type="password" autocomplete="off">'
+        token = ('<label>Your pilot password (if you\'ve set one) <input name="password" type="password" '
+                 'autocomplete="current-password"><span class="hint">Needed only if you set a password for your '
+                 "pilot name; you can also give it after uploading.</span></label>"
+                 '<label>Upload token (optional) <input name="token" type="password" autocomplete="off">'
                  '<span class="hint">For a source on this service: imports every pilot\'s passes (kept in this '
                  "browser). Without one, only your own passes are imported: those of the pilot flying on the "
                  "PC that made the recording (a server's recording needs that server's token).</span></label>")
@@ -291,7 +295,18 @@ def upload_status_page(upload: Upload, key: str | None) -> str:
                   '<label>This recording has more than one own pilot. Which are you? <select name="pilot" required>'
                   f'<option value="" disabled selected>Choose…</option>{options}</select>'
                   '<span class="hint">Only that pilot\'s passes are imported.</span></label>'
+                  '<label>Password (if that pilot has set one) <input name="password" type="password" '
+                  'autocomplete="current-password"></label>'
                   '<button type="submit">Import my passes</button></form>')
+    elif upload.status == "needs_password" and key:
+        wrong = f'<p class="error">{escape(upload.message)}</p>' if upload.message else ""
+        detail = (f'<form class="upload" method="post" action="/uploads/{upload.id}/password">{wrong}'
+                  f'<input type="hidden" name="key" value="{escape(key)}">'
+                  f'<label>{escape(upload.pilot or "This pilot")} has set a password. Enter it to import their passes '
+                  '<input name="password" type="password" required autocomplete="current-password"></label>'
+                  '<button type="submit">Import</button></form>')
+    elif upload.status == "needs_password":
+        detail = '<p class="empty-state">Waiting for the pilot\'s password.</p>'
     elif upload.status == "choose_pilot":
         detail = '<p class="empty-state">Waiting for the uploader to choose their pilot.</p>'
     elif upload.status == "failed":
@@ -424,9 +439,11 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
     last = summary.last_seen.strftime("%Y-%m-%d") if summary.last_seen else "?"
     heading = (f'<h1>{escape(name)}{f" <span class=\"modex\">#{escape(summary.modex)}</span>" if summary.modex else ""}'
                "</h1>")
+    settings = f'<a href="/pilots/{quote(name, safe="")}/settings">Settings</a>'
     seen = (f'<p class="sub">{f"Last livery: {escape(summary.last_livery)} · " if summary.last_livery else ""}'
             f'{summary.landings} landing{"s" if summary.landings != 1 else ""} · '
-            f"first seen {first} · last seen {last}</p>")
+            f"first seen {first} · last seen {last} · "
+            f"{'uploads password-protected' if summary.protected else 'no upload password'} · {settings}</p>")
     options = "".join(f'<option value="{n}"{" selected" if n == passes else ""}>last {n}</option>'
                       for n in sorted({8, 12, 15, 20, passes}))
     picker = (f'<form class="filters" method="get"><label>Look at <select name="passes" onchange="this.form.submit()">'
@@ -461,3 +478,37 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
                f"<script>{OVERLAY_ZOOM_SCRIPT}</script>" if overlay_svg else "")
             + f'<div id="tc-pop" hidden></div><script>{CARD_PREVIEW_SCRIPT}</script>')
     return _page(f"{name}: recent passes", body)
+
+
+def pilot_settings_page(pilot, done: str | None, error: str | None) -> str:
+    """Set or change the pilot's password; with it, change their side number."""
+    name = pilot.name
+    quoted = quote(name, safe="")
+    note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
+        f'<p class="error">{escape(error)}</p>' if error else "")
+    has = pilot.password_hash is not None
+    password_form = (
+        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/password">'
+        "<h2 style=\"margin-top:0\">" + ("Change password" if has else "Set a password") + "</h2>"
+        + ("" if has else '<p class="sub">Nobody has set one for this pilot yet: setting it claims the name. '
+           "Recordings uploaded without a token then need it to import this pilot's passes.</p>")
+        + ('<label>Current password <input name="current" type="password" required autocomplete="current-password">'
+           "</label>" if has else "")
+        + '<label>New password <input name="new" type="password" required minlength="8" autocomplete="new-password">'
+        '<span class="hint">At least 8 characters.</span></label>'
+        '<label>New password again <input name="confirm" type="password" required minlength="8" '
+        'autocomplete="new-password"></label><button type="submit">Save password</button></form>')
+    modex_form = (
+        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/modex">'
+        '<h2>Side number</h2>'
+        f'<p class="sub">Now: {escape(pilot.modex or "not known yet")}. It\'s taken from your first pass that has one; '
+        "you can change it here.</p>"
+        + ('<label>Password <input name="password" type="password" required autocomplete="current-password"></label>'
+           '<label>Side number <input name="modex" required pattern="[0-9]{1,4}" inputmode="numeric"></label>'
+           '<button type="submit">Save side number</button>' if has else
+           '<p class="sub">Set a password first to change it.</p>')
+        + "</form>")
+    body = (f'<p class="sub"><a href="/pilots/{quoted}">← {escape(name)}</a></p><h1>{escape(name)}: settings</h1>'
+            f'{note}<div class="panel">{password_form}</div><div class="panel" style="margin-top:12px">{modex_form}</div>'
+            '<p class="sub" style="margin-top:12px">Forgot your password? Ask the server\'s admin to reset it.</p>')
+    return _page(f"{name}: settings", body)

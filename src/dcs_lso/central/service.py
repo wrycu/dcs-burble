@@ -23,11 +23,13 @@ from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
 from .db import Grade, Pass, Pilot, Slice, Source, Upload, make_engine, make_sessionmaker
+from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
 from .storage import SliceStore
 
 START_TIME_TOLERANCE_S = 0.5
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
 UPLOAD_PILOT_WAIT = timedelta(days=1)  # how long an upload waits for its uploader to pick a pilot
+UPLOAD_PASSWORD_ATTEMPTS = 5  # wrong pilot passwords before an upload is given up
 # Merging reports of one landing (see `Central.ingest`).
 MERGED_START_TOLERANCE_S = 15.0
 SAME_POSITION_M = 30.0  # median distance between the two tracks of the aircraft
@@ -77,6 +79,7 @@ class PilotSummary:
     last_seen: datetime | None
     modex: str | None = None  # the pilot's side number (the first one seen)
     last_livery: str | None = None  # the livery of their newest landing that has one
+    protected: bool = False  # they've set an upload password
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +94,9 @@ class Central:
     def __init__(self, database_url: str, data_dir: str | Path, require_upload_token: bool = False) -> None:
         # Refuse recordings uploaded without a source's token (by default anyone may upload their passes).
         self.require_upload_token = require_upload_token
+        self._upload_passwords: dict[int, str] = {}  # given with an upload, until its pilot is known (memory only)
+        self._upload_attempts: dict[int, int] = {}
+        self.password_failures = FailureLimiter()
         self.engine = make_engine(database_url)
         self.sessions: sessionmaker[Session] = make_sessionmaker(self.engine)
         self.store = SliceStore(Path(data_dir) / "slices")
@@ -361,22 +367,107 @@ class Central:
                 self._remove_files(upload)
                 return False
             if len(pilots) == 1:
-                upload.pilot, upload.status = pilots[0], "queued"
-                return True
+                upload.pilot = pilots[0]
+                return self._authorize(s, upload, self._upload_passwords.pop(upload_id, None))
             upload.status = "choose_pilot"
             return False
 
-    def choose_pilot(self, upload_id: int, key: str, pilot: str) -> None:
-        """The uploader picks whose passes to import; then the upload is ready to process."""
+    def remember_upload_password(self, upload_id: int, password: str | None) -> None:
+        """A password given with an upload, used once its pilot is known (kept in memory, never stored)."""
+        if password:
+            self._upload_passwords[upload_id] = password
+
+    def _authorize(self, s: Session, upload: Upload, password: str | None) -> bool:
+        """Queue the upload if its pilot has no password or `password` is theirs; otherwise it waits for the
+        password (`needs_password`). Returns whether it was queued."""
+        pilot = s.scalar(select(Pilot).where(Pilot.name == upload.pilot))
+        if pilot is None or pilot.password_hash is None:
+            upload.status, upload.message = "queued", None
+            return True
+        if password and not self.password_failures.blocked(pilot.name) and verify_password(password, pilot.password_hash):
+            upload.status, upload.message = "queued", None
+            return True
+        if password:
+            self.password_failures.failed(pilot.name)
+            attempts = self._upload_attempts[upload.id] = self._upload_attempts.get(upload.id, 0) + 1
+            if attempts >= UPLOAD_PASSWORD_ATTEMPTS:
+                upload.status, upload.message = "failed", "too many wrong passwords; please upload again"
+                upload.finished_at = datetime.now(UTC)
+                self._remove_files(upload)
+                return False
+            upload.message = "That password isn't right."
+        upload.status = "needs_password"
+        return False
+
+    def choose_pilot(self, upload_id: int, key: str, pilot: str, password: str | None = None) -> bool:
+        """The uploader picks whose passes to import; returns whether it's ready to process (the pilot may
+        need their password first)."""
         with self.sessions.begin() as s:
-            upload = s.get(Upload, upload_id)
-            if upload is None or not secrets.compare_digest(upload.key or "", key or ""):
-                raise PermissionError("this isn't your upload (the link you were given has its key)")
+            upload = self._own_upload(s, upload_id, key)
             if upload.status != "choose_pilot":
                 raise ValueError(f"this upload isn't waiting for a pilot (it's {upload.status})")
             if pilot not in (upload.pilots or []):
                 raise ValueError(f"{pilot!r} isn't one of the pilots in this recording")
-            upload.pilot, upload.status = pilot, "queued"
+            upload.pilot = pilot
+            return self._authorize(s, upload, password)
+
+    def give_upload_password(self, upload_id: int, key: str, password: str) -> bool:
+        """The uploader gives the pilot's password; returns whether the upload is ready to process."""
+        with self.sessions.begin() as s:
+            upload = self._own_upload(s, upload_id, key)
+            if upload.status != "needs_password":
+                raise ValueError(f"this upload isn't waiting for a password (it's {upload.status})")
+            return self._authorize(s, upload, password)
+
+    @staticmethod
+    def _own_upload(s: Session, upload_id: int, key: str) -> Upload:
+        upload = s.get(Upload, upload_id)
+        if upload is None or not secrets.compare_digest(upload.key or "", key or ""):
+            raise PermissionError("this isn't your upload (the link you were given has its key)")
+        return upload
+
+    # -- pilot settings ---------------------------------------------------------------------------
+
+    def set_pilot_password(self, name: str, new: str, current: str | None = None) -> None:
+        """Set (first time: claims the name) or change a pilot's password."""
+        if len(new or "") < MIN_PASSWORD_LENGTH:
+            raise ValueError(f"use at least {MIN_PASSWORD_LENGTH} characters")
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            if pilot.password_hash is not None:
+                self._check_password(pilot, current)
+            pilot.password_hash = hash_password(new)
+
+    def reset_pilot_password(self, name: str) -> None:
+        """Admin: clear a pilot's password (anyone may then set a new one)."""
+        with self.sessions.begin() as s:
+            self._pilot(s, name).password_hash = None
+
+    def set_pilot_modex(self, name: str, password: str, modex: str) -> None:
+        """A pilot with a password changes their side number."""
+        modex = (modex or "").strip()
+        if not modex.isdigit() or len(modex) > 4:
+            raise ValueError("a side number is 1 to 4 digits")
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            if pilot.password_hash is None:
+                raise PermissionError("set a password first; then you can change your side number")
+            self._check_password(pilot, password)
+            pilot.modex = modex
+
+    def _check_password(self, pilot: Pilot, password: str | None) -> None:
+        if self.password_failures.blocked(pilot.name):
+            raise PermissionError("too many wrong passwords; try again later")
+        if not verify_password(password or "", pilot.password_hash):
+            self.password_failures.failed(pilot.name)
+            raise PermissionError("that password isn't right")
+
+    @staticmethod
+    def _pilot(s: Session, name: str) -> Pilot:
+        pilot = s.scalar(select(Pilot).where(Pilot.name == name))
+        if pilot is None:
+            raise LookupError(f"no pilot named {name!r} (a pilot appears once they have a pass on the board)")
+        return pilot
 
     def process_upload(self, upload_id: int) -> None:
         """Run a queued upload (worker thread); the recording file is removed afterwards."""
@@ -412,20 +503,21 @@ class Central:
         for leftover in self.uploads_dir.glob("incoming-*"):  # no transfer is in progress at startup
             leftover.unlink(missing_ok=True)
         with self.sessions.begin() as s:
-            waiting = {u.id for u in s.scalars(select(Upload).where(Upload.status.in_(("inspecting", "queued",
-                                                                                        "processing", "choose_pilot"))))}
+            waiting = {u.id for u in s.scalars(select(Upload).where(Upload.status.in_(
+                ("inspecting", "queued", "processing", "choose_pilot", "needs_password"))))}
         for path in self.uploads_dir.iterdir():
             owner = path.name.split(".", 1)[0]
             if owner.isdigit() and int(owner) not in waiting:
                 path.unlink(missing_ok=True)
         with self.sessions.begin() as s:
             for upload in s.scalars(select(Upload).where(Upload.status.in_(("inspecting", "queued", "processing",
-                                                                             "choose_pilot")))):
+                                                                             "choose_pilot", "needs_password")))):
                 created = upload.created_at if upload.created_at.tzinfo else upload.created_at.replace(tzinfo=UTC)
-                if upload.status == "choose_pilot" and created > stale:
+                waiting = upload.status in ("choose_pilot", "needs_password")
+                if waiting and created > stale:
                     continue
-                upload.message = ("no pilot was chosen within a day; please upload again"
-                                  if upload.status == "choose_pilot" else
+                upload.message = ("no pilot or password was given within a day; please upload again"
+                                  if waiting else
                                   "interrupted by a restart of the service; please upload again")
                 upload.status = "failed"
                 upload.finished_at = datetime.now(UTC)
@@ -455,7 +547,7 @@ class Central:
             items.append(TrendPass.from_detail(p.grade.detail or {}, p.outcome, on_speed, wire=p.wire))
         return PilotSummary(trends(items), rows, len(landings), min(seen) if seen else None,
                             max(seen) if seen else None, pilot.modex,
-                            next((p.livery for p in landings if p.livery), None))
+                            next((p.livery for p in landings if p.livery), None), pilot.password_hash is not None)
 
     def overlay(self, rows: list[Pass]) -> list[OverlayPass]:
         """The landings' tracks for an overlay card (newest first); ones whose slice can't be read are left out."""
