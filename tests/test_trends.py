@@ -89,9 +89,9 @@ def test_pilot_page_and_api(tmp_path):
     assert "<h2" in page and ">Analysis</h2>" in page and ">Results</h2>" in page
     assert body["analysis"][0]["text"] in page
     assert "Traps overlaid" in page and page.count('class="ov-track') == 8  # 4 passes, 2 views
-    # Hovering a line or a grade square previews that pass's trap card, fetched on demand.
+    # Hovering a pass's grade square previews its trap card, fetched on demand; the overlay's lines don't.
     ids = body["pass_ids"]
-    assert all(page.count(f'data-pass="{i}"') == 3 for i in ids)  # 2 overlay lines + 1 grade square
+    assert all(page.count(f'data-pass="{i}"') == 1 for i in ids)
     card = client.get(f"/passes/{ids[0]}/card.svg")
     assert card.status_code == 200 and card.headers["content-type"].startswith("image/svg+xml")
     assert card.text.startswith("<svg") and f'id="hover{ids[0]}-side"' in card.text  # ids unique on the page
@@ -120,3 +120,30 @@ def test_overlay_card(tmp_path):
     assert sum("latest" in t.get("class") for t in tracks) == 2  # the newest, in both views
     links = {a.get("href") for a in root.iter(f"{svg}a")}
     assert links == {f"/passes/{i}" for i in range(1, len(items) + 1)}
+
+
+def test_overlay_zoom(tmp_path):
+    import re
+    import xml.etree.ElementTree as ET
+    central = Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central")
+    central.add_source("s")
+    for f in sorted((FIXTURES / "passes").glob("20260927-*.zip.acmi")):
+        r = load_recording(f)
+        (p,) = find_passes(r)
+        central.ingest(1, f.read_bytes(), sidecar(r, p, f.name, slice_objects(r, p)))
+    client = TestClient(create_app(central))
+    page = client.get("/pilots/Wrycu").text
+    assert 'data-src="/pilots/Wrycu/overlay.svg?passes=12"' in page and "zoom-reset" in page
+    full = ET.fromstring(client.get("/pilots/Wrycu/overlay.svg").text)
+    assert (float(full.get("data-near")), float(full.get("data-far"))) == (-40.0, 1481.6)
+    # The last 0.25 nm: the view the page asks for after a drag, with distances in round feet.
+    svg = client.get("/pilots/Wrycu/overlay.svg", params={"near": 463, "far": -40}).text  # either order
+    zoomed = ET.fromstring(svg)
+    assert (float(zoomed.get("data-near")), float(zoomed.get("data-far"))) == (-40.0, 463.0)
+    assert "250 ft" in svg and "0.5 nm" not in svg and "zoomed in" in svg
+    assert len(re.findall(r'class="ov-track', svg)) == 8
+    # Out-of-range and too-narrow requests are kept sensible.
+    wide = ET.fromstring(client.get("/pilots/Wrycu/overlay.svg", params={"near": -500, "far": 9999}).text)
+    assert (float(wide.get("data-near")), float(wide.get("data-far"))) == (-40.0, 1481.6)
+    narrow = ET.fromstring(client.get("/pilots/Wrycu/overlay.svg", params={"near": 100, "far": 101}).text)
+    assert float(narrow.get("data-far")) - float(narrow.get("data-near")) >= 15

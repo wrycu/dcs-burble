@@ -3,6 +3,7 @@
 # No `from __future__ import annotations` here: FastAPI must see the real annotation
 # objects to resolve dependencies defined inside create_app().
 import json
+from urllib.parse import quote
 import secrets
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -17,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from ..cards import render_card
 from ..cards.overlay import render_overlay
+from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M
 from ..grading import grade_pass
 from ..grading.trends import DEFAULT_PASSES
 from . import pages
@@ -27,6 +29,7 @@ MAX_SLICE_BYTES = 20 * 1024 * 1024
 MAX_RECORDING_BYTES = 1024 * 1024 * 1024  # a whole session's Tacview recording (backfill)
 MAX_DEBRIEF_BYTES = 50 * 1024 * 1024
 BOARD_COLUMNS = 20
+MIN_ZOOM_M = 15.0  # the narrowest stretch the overlay zooms to
 
 
 def create_app(central: Central) -> FastAPI:
@@ -206,7 +209,24 @@ def create_app(central: Central) -> FastAPI:
             raise HTTPException(404, "no such pilot")
         items = central.overlay(found.rows)
         svg = render_overlay(items, uid="ov", title=f"{name}: last {len(items)} passes overlaid") if items else None
-        return pages.pilot_page(name, found, passes, svg)
+        return pages.pilot_page(name, found, passes, svg, overlay_src=f"/pilots/{quote(name, safe='')}/overlay.svg?passes={passes}")
+
+    @app.get("/pilots/{name}/overlay.svg")
+    def pilot_overlay(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
+                      near: float | None = None, far: float | None = None) -> Response:
+        """The pilot's passes overlaid; with `near`/`far` (meters short of the aim point), zoomed to that
+        stretch of the approach."""
+        found = central.pilot_trends(name, passes)
+        if found is None:
+            raise HTTPException(404, "no such pilot")
+        view = None
+        if near is not None and far is not None:
+            near, far = max(min(near, far), OVERLAY_MIN_M), min(max(near, far), OVERLAY_MAX_M)
+            if far - near < MIN_ZOOM_M:
+                near, far = (near + far - MIN_ZOOM_M) / 2, (near + far + MIN_ZOOM_M) / 2
+            view = (near, far)
+        svg = render_overlay(central.overlay(found.rows), uid="ov", title=f"{name}: passes overlaid", view=view)
+        return Response(svg, media_type="image/svg+xml")
 
     @app.get("/", response_class=HTMLResponse)
     def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None) -> str:

@@ -449,7 +449,7 @@ class Central:
             g = p.grade
             when = (p.occurred_at or p.created_at).strftime("%Y-%m-%d %H:%M UTC")
             items.append(OverlayPass(result, g.grade if g else "", f"/passes/{p.id}",
-                                     f"{grade_name(g.grade) if g else '?'}: {g.text if g else ''} · {when}", p.id))
+                                     f"{grade_name(g.grade) if g else '?'}: {g.text if g else ''} · {when}"))
         return items
 
     def regrade(self, force: bool = False) -> tuple[int, int]:

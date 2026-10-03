@@ -265,8 +265,21 @@ def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Ax
                    f'text-anchor="middle">{label}</text>')
 
 
+def deck_top(frame: DeckFrame, x: Axis, y: Axis, out: list[str], caught: int | None = None) -> None:
+    """The landing area seen from above (lineup view): from the ramp forward, as wide as the wires'
+    pendants, with the wires across it (`caught` highlighted)."""
+    ends = frame.wire_ends
+    port = min(min(a[1], b[1]) for a, b in ends)
+    stbd = max(max(a[1], b[1]) for a, b in ends)
+    corners = [(x(RAMP_ALONG_M), y(port)), (x(RAMP_ALONG_M), y(stbd)), (x(X_MIN_M), y(stbd)), (x(X_MIN_M), y(port))]
+    out.append(f'<polygon class="tc-deck" points="{_poly(corners)}"/>')
+    for n, ((pa, pl), (sa, sl)) in enumerate(ends, start=1):
+        cls = "tc-wire-caught" if n == caught else "tc-wire"
+        out.append(f'<line class="{cls}" x1="{_f(x(pa))}" y1="{_f(y(pl))}" x2="{_f(x(sa))}" y2="{_f(y(sl))}"/>')
+
+
 def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float], uid: str, out: list[str],
-              calls: list[dict]) -> None:
+              calls: list[dict], frame: DeckFrame | None = None, wire: int | None = None) -> None:
     top, h = TOP_TOP, TOP_H
     reach = max([abs(s.lateral) for s in samples if s.along > 0] + [0.0])
     half = min(max(reach * 1.1, X_MAX_M * math.tan(math.radians(LINEUP_DEG[2])) * 1.2), 200.0)
@@ -277,6 +290,8 @@ def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float],
     for cls, dev in (("tc-band3", LINEUP_DEG[2]), ("tc-band2", LINEUP_DEG[1]), ("tc-band1", LINEUP_DEG[0])):
         off = X_MAX_M * math.tan(math.radians(dev))
         out.append(f'<polygon class="{cls}" points="{_poly([(x(0), y(0)), (x(X_MAX_M), y(off)), (x(X_MAX_M), y(-off))])}"/>')
+    if frame is not None:
+        deck_top(frame, x, y, out, wire)
     out.append(f'<line class="tc-ideal" x1="{_f(x(X_MIN_M))}" y1="{_f(y(0))}" x2="{_f(x(X_MAX_M))}" y2="{_f(y(0))}"/>')
     for cls, run in _runs(samples, on_speed):
         out.append(f'<polyline class="tc-track tc-{cls}" points="{_poly([(x(s.along), y(s.lateral)) for s in run])}"/>')
@@ -362,7 +377,8 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     _legend(aircraft.on_speed_aoa, out)
     _side_view(p, frame, samples, x, p.wire if p.wire is not None else p.wire_estimate, aircraft.on_speed_aoa,
                uid, out, calls)
-    _top_view(samples, x, aircraft.on_speed_aoa, uid, out, calls)
+    _top_view(samples, x, aircraft.on_speed_aoa, uid, out, calls, frame,
+              p.wire if p.wire is not None else p.wire_estimate)
     _table(grade, out)
     for i, line in enumerate(listed):
         text = escape(", ".join(line)) + ("," if i < len(listed) - 1 else "")

@@ -65,6 +65,12 @@ h2 { font-size: 16px; margin: 20px 0 8px; }
   border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); }
 #tc-pop svg { display: block; width: 100%; height: auto; }
 #tc-pop .loading { color: var(--muted); padding: 24px; text-align: center; }
+#overlay { position: relative; cursor: crosshair; user-select: none; }
+#overlay.loading svg { opacity: 0.5; }
+.zoom-sel { position: absolute; top: 0; bottom: 0; background: rgba(9, 105, 218, 0.12);
+  border-left: 1px solid #0969da; border-right: 1px solid #0969da; pointer-events: none; }
+.zoom-reset { font: inherit; font-size: 12px; font-weight: 400; margin-left: 8px; padding: 2px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; vertical-align: 2px; }
 """
 
 GRADE_CSS = "\n".join(
@@ -298,7 +304,7 @@ def upload_status_page(upload: Upload, key: str | None) -> str:
     return _page(f"Upload: {upload.filename}", body).replace("<head>", "<head>" + refresh, 1)
 
 
-# Hovering a pass (a line on the overlay, or a grade square) previews its trap card next to the pointer.
+# Hovering a pass's grade square previews its trap card next to the pointer (not the overlay's lines).
 CARD_PREVIEW_SCRIPT = """
 (() => {
   const pop = document.getElementById('tc-pop');
@@ -334,11 +340,75 @@ CARD_PREVIEW_SCRIPT = """
 })();
 """
 
+# Drag across the overlay to zoom into that stretch of the approach (redrawn by the server, so the scales
+# and labels adapt); "Reset zoom" or a double-click goes back to the whole approach.
+OVERLAY_ZOOM_SCRIPT = """
+(() => {
+  const box = document.getElementById('overlay');
+  const reset = document.getElementById('zoom-reset');
+  if (!box) return;
+  const sel = document.createElement('div');
+  sel.className = 'zoom-sel';
+  sel.hidden = true;
+  box.appendChild(sel);
+  let drag = null, dragged = false;
+  const along = (svg, clientX) => {
+    const r = svg.getBoundingClientRect();
+    const px = (clientX - r.left) * svg.viewBox.baseVal.width / r.width;
+    const near = +svg.dataset.near, far = +svg.dataset.far;
+    const f = Math.min(1, Math.max(0, (px - +svg.dataset.padL) / +svg.dataset.plotW));
+    return far - f * (far - near);
+  };
+  const load = async (near, far) => {
+    const url = near === null ? box.dataset.src : box.dataset.src + '&near=' + near.toFixed(1) + '&far=' + far.toFixed(1);
+    box.classList.add('loading');
+    try {
+      const r = await fetch(url);
+      if (r.ok) {
+        box.querySelector('svg').outerHTML = await r.text();
+        reset.hidden = near === null;
+      }
+    } finally {
+      box.classList.remove('loading');
+    }
+  };
+  box.addEventListener('mousedown', (e) => {
+    const svg = box.querySelector('svg');
+    if (e.button !== 0 || !svg) return;
+    drag = { x: e.clientX, svg };
+    dragged = false;
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    if (Math.abs(e.clientX - drag.x) > 4) dragged = true;
+    if (!dragged) return;
+    const r = box.getBoundingClientRect();
+    sel.hidden = false;
+    sel.style.left = (Math.min(drag.x, e.clientX) - r.left) + 'px';
+    sel.style.width = Math.abs(e.clientX - drag.x) + 'px';
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    sel.hidden = true;
+    if (!dragged) return;
+    const a = along(d.svg, d.x), b = along(d.svg, e.clientX);
+    load(Math.min(a, b), Math.max(a, b));
+  });
+  // A drag that ends on a line isn't a click on it.
+  box.addEventListener('click', (e) => { if (dragged) { e.preventDefault(); e.stopPropagation(); dragged = false; } }, true);
+  box.addEventListener('dblclick', () => load(null, null));
+  reset.addEventListener('click', () => load(null, null));
+})();
+"""
+
 KIND_LABELS = {"fault": "Fault", "bias": "Leaning", "speed": "Speed", "outcome": "Outcome", "wires": "Wires",
                "trend": "Trend"}
 
 
-def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None) -> str:
+def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, overlay_src: str = "") -> str:
     """Meta grading: themes across the pilot's recent passes (`summary`: central's PilotSummary)."""
     result, rows = summary.trends, summary.rows
     first = summary.first_seen.strftime("%Y-%m-%d") if summary.first_seen else "?"
@@ -374,6 +444,8 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None) 
             f'<ul class="themes">{analysis}</ul>{strengths}'
             f'<h2>Results</h2><ul class="themes">{results}</ul>'
             f'<h2>These passes (oldest → newest)</h2><div class="recent">{cells}</div></div>'
-            + (f'<h2>Traps overlaid</h2><div class="panel card">{overlay_svg}</div>' if overlay_svg else "")
+            + (f'<h2>Traps overlaid <button id="zoom-reset" class="zoom-reset" hidden>Reset zoom</button></h2>'
+               f'<div class="panel card" id="overlay" data-src="{escape(overlay_src)}">{overlay_svg}</div>'
+               f"<script>{OVERLAY_ZOOM_SCRIPT}</script>" if overlay_svg else "")
             + f'<div id="tc-pop" hidden></div><script>{CARD_PREVIEW_SCRIPT}</script>')
     return _page(f"{name}: recent passes", body)

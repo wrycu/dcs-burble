@@ -80,3 +80,13 @@ def test_lineup_calls_go_on_the_lineup_plot():
     y = {t.text: float(t.get("y")) for t in root.iter(f"{SVG}text") if "tc-call-label" in t.get("class", "")}
     assert SIDE_TOP - 30 < y["You're high"] < SIDE_TOP + SIDE_H
     assert TOP_TOP - 30 < y["A little come left"] < TOP_TOP + TOP_H
+
+
+def test_lineup_view_shows_the_deck_and_wires():
+    (p,) = find_passes(load_recording(FIXTURES / "wires" / "dcs-wire-2.zip.acmi"))
+    root = ET.fromstring(render_card(p, grade_pass(p)))
+    wires = [e for e in root.iter(f"{SVG}line") if e.get("class", "").startswith("tc-wire")]
+    assert len(wires) == 8  # 4 in the glideslope view, 4 across the deck in the lineup view
+    assert sum(e.get("class") == "tc-wire-caught" for e in wires) == 2  # the (estimated) caught wire, in both
+    decks = [e for e in root.iter() if e.get("class") == "tc-deck"]
+    assert len(decks) == 2

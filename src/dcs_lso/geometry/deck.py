@@ -74,8 +74,17 @@ class DeckFrame:
         )
 
     def _along_of(self, x: float, z: float) -> float:
+        return self.deck_point(x, z)[0]
+
+    def deck_point(self, x: float, z: float) -> tuple[float, float]:
+        """A carrier-local point as (along, lateral) in the landing-area frame."""
         rx, rz = self.aim[0] - x, self.aim[1] - z
-        return rx * self.axis[0] + rz * self.axis[1]
+        return rx * self.axis[0] + rz * self.axis[1], -(rx * self.axis[1] - rz * self.axis[0])
+
+    @property
+    def wire_ends(self) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+        """Each wire's port and starboard pendant as (along, lateral), wire 1 first."""
+        return tuple((self.deck_point(*port), self.deck_point(*stbd)) for port, stbd in self.carrier.wires)
 
     def position(self, carrier: CarrierPose, plane: Transform) -> DeckPosition:
         hu, halt, hv = hook_position(plane, self.aircraft)
