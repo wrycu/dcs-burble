@@ -42,7 +42,7 @@ KEEP_CALLS_S = 900.0
 PRAISE_GRADES = frozenset({Grade.PERFECT, Grade.OK})
 # On a trap, wait this long for DCS's wire (its LSO grade arrives ~0.3 s after we detect the trap)
 # so the welcome can name it; checked every WIRE_POLL_S.
-WIRE_WAIT_S = 1.2
+WIRE_WAIT_S = 0.6
 WIRE_POLL_S = 0.1
 
 
