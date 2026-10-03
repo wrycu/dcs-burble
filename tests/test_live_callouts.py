@@ -279,6 +279,9 @@ class WireHooks:
     def wire_for(self, tacview_id, start, end):
         return None
 
+    def slot_for(self, pilot, before):
+        return None
+
     def debrief(self):
         from dcs_lso.dcslog import Debrief
         return Debrief(None, [])

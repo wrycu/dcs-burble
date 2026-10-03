@@ -125,3 +125,30 @@ def test_pilot_mode_collector_uploads_its_own_track(tmp_path):
     meta = item.meta()
     assert meta["kind"] == "track" and meta["pass"]["aoa_recorded"] and meta["pass"]["pilot"] == "Wrycu"
     assert meta["window"]["start"] <= meta["pass"]["start_time"] - 40
+
+
+def test_livery_and_side_number_are_kept_and_shown(central):
+    from fastapi.testclient import TestClient
+
+    from dcs_lso.central.app import create_app
+    data, meta = server_report("trap")
+    meta["aircraft"] = {"livery": "VFA-106 high visibility", "onboard_num": "301", "unit": "Hornet 2"}
+    central.ingest(1, data, meta)
+    central.ingest(2, *pilot_report("trap"))  # the pilot's own track has no slot info; the landing keeps it
+    # An earlier pass (uploaded later) in another slot: its livery is kept for that pass, but the pilot's side
+    # number stays the first one recorded.
+    data, meta = server_report("bolter")
+    meta["aircraft"] = {"livery": "VFA-37", "onboard_num": "305"}
+    central.ingest(1, data, meta)
+    client = TestClient(create_app(central))
+    landings = {x["outcome"]: x for x in client.get("/api/v1/passes", params={"days": 0}).json()}
+    assert (landings["trap"]["livery"], landings["trap"]["modex"]) == ("VFA-106 high visibility", "301")
+    assert (landings["bolter"]["livery"], landings["bolter"]["modex"]) == ("VFA-37", "301")
+    page = client.get(f"/passes/{landings['bolter']['id']}").text
+    assert "<dt>Side number</dt><dd>301</dd>" in page and "<dt>Livery</dt><dd>VFA-37</dd>" in page
+    assert "#301 · VFA-37" in page  # the trap card's title line
+    pilot = client.get("/pilots/Wrycu").text
+    assert '<span class="modex">#301</span>' in pilot
+    assert "Last livery: VFA-106 high visibility · " in pilot  # the newest landing's (the trap, at 03:31)
+    trends = client.get("/api/v1/pilots/Wrycu/trends").json()
+    assert (trends["modex"], trends["last_livery"]) == ("301", "VFA-106 high visibility")

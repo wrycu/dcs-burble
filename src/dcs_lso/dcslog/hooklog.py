@@ -26,7 +26,9 @@ class HookEvent:
 
 def parse_hook_line(line: str) -> HookEvent | None:
     """Parse one dcs.log line; None if it isn't a dcs-lso hook event."""
-    idx = line.find(MARKER)
+    # Mission-side events log as "SCRIPTING (Main): DCSLSO {...}"; the hook's own as
+    # "DCSLSO (Main): DCSLSO {...}": the event is the JSON after the marker that precedes a "{".
+    idx = line.find(MARKER + "{")
     if idx < 0:
         return None
     try:

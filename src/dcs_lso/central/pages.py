@@ -61,6 +61,7 @@ ul.themes li { display: flex; gap: 10px; align-items: baseline; }
 .bar span { display: block; height: 100%; background: var(--muted); }
 .recent { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
 h2 { font-size: 16px; margin: 20px 0 8px; }
+h1 .modex { color: var(--muted); font-weight: 600; margin-left: 6px; }
 #tc-pop { position: fixed; z-index: 10; width: min(640px, 92vw); pointer-events: none; background: var(--card);
   border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); }
 #tc-pop svg { display: block; width: 100%; height: auto; }
@@ -152,6 +153,12 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
     return _page("Greenie Board", body)
 
 
+def card_title(p: Pass) -> str:
+    """The trap card's title line: the mission, the pilot's side number and the livery, when known."""
+    modex = p.pilot.modex if p.pilot else None
+    return " · ".join(x for x in (p.mission, f"#{modex}" if modex else None, p.livery) if x)
+
+
 def _wire(p: Pass) -> str:
     """DCS's own wire when known; otherwise the estimate from the stop point, marked as one."""
     if p.wire is not None:
@@ -175,10 +182,12 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
     g = p.grade
     facts = [
         ("Pilot", p.pilot.name),
+        ("Side number", p.pilot.modex or "–"),
         ("When", _when(p.occurred_at)),
         ("Mission", p.mission or "–"),
         ("Carrier", f"{p.carrier_unit or ''} ({p.carrier_type})"),
         ("Aircraft", p.aircraft_type),
+        ("Livery", p.livery or "–"),
         ("Outcome", p.outcome),
         ("Grade", f"{grade_name(g.grade)}: {g.text} ({g.points:g} pts, grading v{g.version})" if g else "not graded"),
         ("DCS LSO", p.dcs_grade or "–"),
@@ -413,14 +422,17 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
     result, rows = summary.trends, summary.rows
     first = summary.first_seen.strftime("%Y-%m-%d") if summary.first_seen else "?"
     last = summary.last_seen.strftime("%Y-%m-%d") if summary.last_seen else "?"
-    seen = (f'<p class="sub">{summary.landings} landing{"s" if summary.landings != 1 else ""} · '
+    heading = (f'<h1>{escape(name)}{f" <span class=\"modex\">#{escape(summary.modex)}</span>" if summary.modex else ""}'
+               "</h1>")
+    seen = (f'<p class="sub">{f"Last livery: {escape(summary.last_livery)} · " if summary.last_livery else ""}'
+            f'{summary.landings} landing{"s" if summary.landings != 1 else ""} · '
             f"first seen {first} · last seen {last}</p>")
     options = "".join(f'<option value="{n}"{" selected" if n == passes else ""}>last {n}</option>'
                       for n in sorted({8, 12, 15, 20, passes}))
     picker = (f'<form class="filters" method="get"><label>Look at <select name="passes" onchange="this.form.submit()">'
               f"{options}</select> passes</label></form>")
     if not result.passes:
-        body = (f'<p class="sub"><a href="/">← Greenie board</a></p><h1>{escape(name)}</h1>{seen}'
+        body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}'
                 '<p class="empty-state">No graded passes yet.</p>')
         return _page(name, body)
     grades = " · ".join(f"{escape(grade_short(g))} ×{n}" for g, n in sorted(result.grades.items(), key=lambda kv: -kv[1]))
@@ -438,7 +450,7 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
         f'<a class="cell {GRADE_CLASS.get(p.grade.grade, "")}" href="/passes/{p.id}" data-pass="{p.id}" '
         f'title="{escape(grade_name(p.grade.grade))}: {escape(p.grade.text)} · {_when(p.occurred_at)}">'
         f"{escape(grade_short(p.grade.grade))}</a>" for p in reversed(rows))
-    body = (f'<p class="sub"><a href="/">← Greenie board</a></p><h1>{escape(name)}</h1>{seen}'
+    body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}'
             f'<p class="sub">Last {result.passes} passes · {result.average_points:.2f} points on average · {grades}</p>'
             f"{picker}<div class=\"panel\"><h2 style=\"margin-top:0\">Analysis</h2>"
             f'<ul class="themes">{analysis}</ul>{strengths}'

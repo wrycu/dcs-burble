@@ -184,6 +184,7 @@ def create_app(central: Central) -> FastAPI:
                         "reports": [{"id": r.id, "source": r.source.name, "kind": r.kind or "pass"} for r in reports],
                         "occurred_at": p.occurred_at.isoformat() if p.occurred_at else None,
                         "mission": p.mission, "carrier": p.carrier_unit, "aircraft": p.aircraft_type,
+                        "livery": p.livery, "modex": p.pilot.modex,
                         "outcome": p.outcome, "wire": p.wire, "dcs_grade": p.dcs_grade, "calls": p.calls,
                         # DCS's wire (above) takes priority; this is estimated from where the jet stopped.
                         "wire_estimated": ((g.detail or {}).get("wire_estimate") if g else None),
@@ -197,7 +198,7 @@ def create_app(central: Central) -> FastAPI:
         found = central.pilot_trends(name, passes)
         if found is None:
             raise HTTPException(404, "no such pilot")
-        return {"pilot": name, "landings": found.landings,
+        return {"pilot": name, "modex": found.modex, "last_livery": found.last_livery, "landings": found.landings,
                 "first_seen": found.first_seen.isoformat() if found.first_seen else None,
                 "last_seen": found.last_seen.isoformat() if found.last_seen else None,
                 **found.trends.to_dict(), "pass_ids": [p.id for p in found.rows]}
@@ -254,7 +255,7 @@ def create_app(central: Central) -> FastAPI:
         reports = central.reports(p)
         try:
             result = central.load_pass(p, reports)
-            svg = render_card(result, grade_pass(result), p.mission or "", uid=f"p{p.id}", calls=p.calls)
+            svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls)
             return pages.pass_page(p, svg, reports=reports, track_source=result.track_source)
         except (IngestError, OSError) as exc:
             return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports)
@@ -269,7 +270,7 @@ def create_app(central: Central) -> FastAPI:
             result = central.load_pass(p)
         except (IngestError, OSError) as exc:
             raise HTTPException(404, f"trap card unavailable: {exc}") from exc
-        svg = render_card(result, grade_pass(result), p.mission or "", uid=f"hover{p.id}", calls=p.calls)
+        svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"hover{p.id}", calls=p.calls)
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=300"})
 
     @app.get("/passes/{pass_id}/acmi")

@@ -156,9 +156,50 @@ env.info('DCSLSO {"event":"handler_installed","t":' .. string.format('%.17g', ti
 
 local callbacks = {}
 
+-- The livery and side number (modex) of the slot a player takes, from the loaded mission (they're set
+-- per slot by the mission designer). Logged as `DCSLSO {json}`, like the mission-side events.
+local function find_unit(unit_id)
+  local mission = DCS.getCurrentMission()
+  local coalitions = mission and mission.mission and mission.mission.coalition or {}
+  for _, side in pairs(coalitions) do
+    for _, country in ipairs(side.country or {}) do
+      for _, category in ipairs({ 'plane', 'helicopter' }) do
+        for _, group in ipairs((country[category] or {}).group or {}) do
+          for _, unit in ipairs(group.units or {}) do
+            if unit.unitId == unit_id then return unit, group end
+          end
+        end
+      end
+    end
+  end
+end
+
+local function log_slot(player_id)
+  local info = net.get_player_info(player_id) or {}
+  local unit_id = tonumber(info.slot)
+  if not unit_id then return end  -- spectators, or a multicrew seat
+  local unit, group = find_unit(unit_id)
+  if not unit then return end
+  local fields = { event = 'slot', t = DCS.getModelTime(), player = info.name, unit = unit.name,
+                   unit_id = unit_id, group = group and group.name, type = unit.type,
+                   livery = unit.livery_id, onboard_num = unit.onboard_num }
+  log.write('DCSLSO', log.INFO, 'DCSLSO ' .. net.lua2json(fields))
+end
+
 function callbacks.onMissionLoadEnd()
   local ok, result = pcall(net.dostring_in, 'mission', 'a_do_script([====[' .. HANDLER .. ']====])')
   log.write('DCSLSO', ok and log.INFO or log.ERROR, 'handler injection: ' .. tostring(ok) .. ' ' .. tostring(result))
+end
+
+function callbacks.onPlayerChangeSlot(player_id)
+  pcall(log_slot, player_id)
+end
+
+-- Players already in their slots when a mission starts (and the local player, also in single player).
+function callbacks.onSimulationStart()
+  for _, player_id in ipairs(net.get_player_list() or {}) do
+    pcall(log_slot, player_id)
+  end
 end
 
 DCS.setUserCallbacks(callbacks)

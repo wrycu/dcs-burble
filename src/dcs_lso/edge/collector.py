@@ -137,6 +137,19 @@ class HookFeed:
                     return wire
         return None
 
+    def slot_for(self, pilot: str | None, before: float) -> dict | None:
+        """The aircraft a player was in (livery, side number, unit) at mission time `before`: their latest
+        slot change logged by the hook in this mission."""
+        if not pilot:
+            return None
+        with self._lock:
+            slots = [e for e in self._events if e.event == "slot" and e.raw.get("player") == pilot
+                     and (e.time or 0.0) <= before]
+        if not slots:
+            return None
+        raw = slots[-1].raw
+        return {k: raw.get(k) for k in ("livery", "onboard_num", "unit", "group") if raw.get(k) not in (None, "")}
+
     def debrief(self) -> Debrief:
         """The hook's landing grades in debrief.log form, for `attach_dcs_grades`."""
         with self._lock:
@@ -513,6 +526,8 @@ class Collector:
                     p.wire, wire_source = animated, "carrier-animation"
             meta = sidecar(recording, p, session.archive.path.name, item.objects)
             meta["wire_source"] = wire_source
+            if self.hooks is not None and (aircraft := self.hooks.slot_for(p.pilot, p.start_time)):
+                meta["aircraft"] = aircraft  # livery and side number of the pilot's slot
             meta["recording"]["first_frame_time"] = session.first_frame
             meta["window"] = {"start": start, "end": end}
             if calls is not None:

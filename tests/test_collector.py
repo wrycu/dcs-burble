@@ -43,6 +43,10 @@ class StubHooks:
     def wire_for(self, tacview_id, start, end):
         return None
 
+    def slot_for(self, pilot, before):
+        # As the hook logs a player's slot: from the mission, the slot's livery and side number.
+        return {"livery": "VFA-37", "onboard_num": "300", "unit": "Aerial-1-1"} if pilot == "Aerial-1-1" else None
+
     def wind_for(self, carrier_unit):
         # As logged by the hook (Lua arrays arrive keyed "1", "2", ...).
         return wind_profile({"carrier": carrier_unit, "levels": {"2": {"alt": 100, "east": 1.0, "north": -6.0},
@@ -98,6 +102,7 @@ def test_stream_to_central_with_hook_grade(tmp_path, central):
     (sent,) = collector.outbox.sent()
     meta = sent.meta()
     assert meta["recording"]["first_frame_time"] == pytest.approx(0.04)
+    assert meta["aircraft"] == {"livery": "VFA-37", "onboard_num": "300", "unit": "Aerial-1-1"}
     assert meta["wind"] == {"levels": [{"alt": 10.0, "east": 0.5, "north": -4.0}, {"alt": 100.0, "east": 1.0, "north": -6.0}]}
     # The archived session is a complete recording: it still yields the same pass.
     assert [p.outcome.value for p in find_passes(load_recording(archives[0]))] == ["trap"]

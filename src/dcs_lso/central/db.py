@@ -39,6 +39,8 @@ class Pilot(Base):
     __tablename__ = "pilots"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
+    # Side number (modex): the first one seen on any of the pilot's passes; later ones don't change it.
+    modex: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class Slice(Base):
@@ -78,6 +80,8 @@ class Pass(Base):
     # "pass" (None in older rows): a gradable report with the carrier. "track": one aircraft's own
     # track, no carrier (a multiplayer client's recording), graded only as part of a landing.
     kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The aircraft's livery, from the mission via the dcs-lso hook, when known.
+    livery: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # Another report of the same landing (e.g. the pilot's own and the server's) is merged into the
     # landing's first gradable report, which is the one shown; see `Central.ingest`.
     merged_into_id: Mapped[int | None] = mapped_column(ForeignKey("passes.id"), nullable=True, index=True)

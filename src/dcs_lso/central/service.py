@@ -75,6 +75,8 @@ class PilotSummary:
     landings: int  # all of the pilot's landings
     first_seen: datetime | None  # their first and latest landing
     last_seen: datetime | None
+    modex: str | None = None  # the pilot's side number (the first one seen)
+    last_livery: str | None = None  # the livery of their newest landing that has one
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +191,8 @@ class Central:
             landing.wire = report.wire
         if landing.calls is None and report.calls:
             landing.calls = report.calls
+        if landing.livery is None and report.livery:
+            landing.livery = report.livery
         s.flush()
 
     def _regrade(self, s: Session, row: Pass) -> GradeResult:
@@ -247,7 +251,11 @@ class Central:
                     outcome=info["outcome"], wire=dcs.get("wire"),
                     dcs_grade=(dcs.get("grade") or {}).get("raw"),
                     calls=sidecar.get("calls"),
+                    livery=((sidecar.get("aircraft") or {}).get("livery") or None),
                 )
+                modex = str((sidecar.get("aircraft") or {}).get("onboard_num") or "").strip()
+                if modex and pilot.modex is None:
+                    pilot.modex = modex[:16]  # only the first one seen is kept
                 if kind == "track":
                     if load_recording(self.store.path(sha)).objects.get(row.aircraft_id) is None:
                         raise ValueError("the track's aircraft isn't in its slice")
@@ -436,7 +444,8 @@ class Central:
             on_speed = aircraft.on_speed_aoa if aircraft else (7.4, 8.8)
             items.append(TrendPass.from_detail(p.grade.detail or {}, p.outcome, on_speed, wire=p.wire))
         return PilotSummary(trends(items), rows, len(landings), min(seen) if seen else None,
-                            max(seen) if seen else None)
+                            max(seen) if seen else None, pilot.modex,
+                            next((p.livery for p in landings if p.livery), None))
 
     def overlay(self, rows: list[Pass]) -> list[OverlayPass]:
         """The landings' tracks for an overlay card (newest first); ones whose slice can't be read are left out."""
