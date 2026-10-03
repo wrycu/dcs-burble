@@ -22,6 +22,15 @@ class Call(StrEnum):
     BOLTER = "bolter"  # decided by the bolter detector in the live collector, not by CalloutEngine
     TRAPPED = "welcome aboard"  # likewise (arrestment detected); spoken as one of several variants
     TRAPPED_WAVED_OFF = "welcome aboard, despite the wave off"  # trapped after ignoring our wave-off
+    # TRAPPED with the wire, when DCS reports it in time (its LSO grade, or the wire animation).
+    TRAPPED_WIRE_1 = "welcome aboard, one wire"
+    TRAPPED_WIRE_2 = "welcome aboard, two wire"
+    TRAPPED_WIRE_3 = "welcome aboard, three wire"
+    TRAPPED_WIRE_4 = "welcome aboard, four wire"
+    TRAPPED_WAVED_OFF_WIRE_1 = "one wire, despite the wave off"
+    TRAPPED_WAVED_OFF_WIRE_2 = "two wire, despite the wave off"
+    TRAPPED_WAVED_OFF_WIRE_3 = "three wire, despite the wave off"
+    TRAPPED_WAVED_OFF_WIRE_4 = "four wire, despite the wave off"
     POWER_X3 = "power, power, power"
     POWER_X2 = "power, power"
     POWER = "power"
@@ -48,6 +57,11 @@ class Call(StrEnum):
 PRIORITY = {call: i for i, call in enumerate(Call)}
 POWER_CALLS = frozenset({Call.POWER, Call.POWER_X2, Call.POWER_X3})
 WAVE_OFFS = frozenset({Call.WAVE_OFF, Call.WAVE_OFF_GEAR})
+# A trap welcome naming the wire: {plain welcome: {wire: call}}.
+WELCOME_WIRE = {
+    Call.TRAPPED: {n: Call[f"TRAPPED_WIRE_{n}"] for n in (1, 2, 3, 4)},
+    Call.TRAPPED_WAVED_OFF: {n: Call[f"TRAPPED_WAVED_OFF_WIRE_{n}"] for n in (1, 2, 3, 4)},
+}
 LINEUP_CALLS = frozenset({Call.RIGHT_FOR_LINEUP, Call.COME_LEFT, Call.LITTLE_RIGHT, Call.LITTLE_LEFT,
                           Call.DRIFTING_LEFT, Call.DRIFTING_RIGHT})
 

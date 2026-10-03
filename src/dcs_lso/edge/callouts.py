@@ -17,7 +17,7 @@ from typing import Protocol
 
 from ..acmi import ObjectTrack, Sample
 from ..callouts import CallEvent, CalloutEngine, LiveEstimator, LiveInput, Thresholds
-from ..callouts.rules import WAVE_OFFS, Call
+from ..callouts.rules import WAVE_OFFS, WELCOME_WIRE, Call
 from ..callouts.voice import Clip, ClipLibrary
 from ..geometry import CarrierPose, DeckFrame, WindProfile
 from ..srs import Modulation, Radio, SrsClient
@@ -37,6 +37,10 @@ BOLTER_SPEED_RATIO = 0.85
 TRAP_SPEED_RATIO = 0.5
 TOUCHDOWN_HOOK_HEIGHT_M = 0.5
 KEEP_CALLS_S = 900.0
+# On a trap, wait this long for DCS's wire (its LSO grade arrives ~0.3 s after we detect the trap)
+# so the welcome can name it; checked every WIRE_POLL_S.
+WIRE_WAIT_S = 1.2
+WIRE_POLL_S = 0.1
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,9 +176,12 @@ class LiveCallouts:
     """Plugged into `LivePassDetector` as its sample listener."""
 
     def __init__(self, settings: CalloutSettings, clips: ClipLibrary, sink: CallSink,
-                 wind_for: Callable[[str], WindProfile | None] | None = None) -> None:
+                 wind_for: Callable[[str], WindProfile | None] | None = None,
+                 wire_for: Callable[[int, float], int | None] | None = None) -> None:
         self.settings = settings
         self.wind_for = wind_for  # the mission's wind at a carrier (by unit name), from the hook
+        # DCS's wire for an aircraft (Tacview id) since a mission time, from the hook, if known yet.
+        self.wire_for = wire_for
         self.clips = clips
         self.sink = sink
         self._engines: dict[tuple[int, int], tuple[LiveEstimator, CalloutEngine]] = {}
@@ -210,15 +217,33 @@ class LiveCallouts:
             event = CallEvent(sample.time, pos.along, outcome, state)
         if event is None or event.call not in self.settings.calls or event.call not in self.clips:
             return None
-        self.made.append(MadeCall(plane.id, event.time, event.along, event.call))
-        radio = self.settings.radio_for(carrier.pilot)
-        log.info("CALL %s -> %s (%.2f nm, %s)", event.call.value, plane.pilot or hex(plane.id),
-                 event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}")
-        task = asyncio.get_running_loop().create_task(
-            self.sink.say(event.call, self.clips.pick(event.call), radio, time.monotonic()))
+        if event.call in WELCOME_WIRE and self.wire_for is not None:
+            welcome = self._welcome(carrier, plane, event)  # waits briefly for DCS's wire
+        else:
+            welcome = self._say(carrier, plane, event.call, event)
+        task = asyncio.get_running_loop().create_task(welcome)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return event
+
+    async def _welcome(self, carrier: ObjectTrack, plane: ObjectTrack, event: CallEvent) -> None:
+        """The trap welcome (plain or salty), naming the wire if DCS reports it within WIRE_WAIT_S."""
+        assert self.wire_for is not None
+        since = event.time - 20.0  # DCS's events for this landing come after touchdown
+        deadline = time.monotonic() + WIRE_WAIT_S
+        wire = self.wire_for(plane.id, since)
+        while wire is None and time.monotonic() < deadline:
+            await asyncio.sleep(WIRE_POLL_S)
+            wire = self.wire_for(plane.id, since)
+        call = WELCOME_WIRE[event.call].get(wire, event.call) if wire is not None else event.call
+        await self._say(carrier, plane, call if call in self.clips else event.call, event)
+
+    async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent) -> None:
+        self.made.append(MadeCall(plane.id, event.time, event.along, call))
+        radio = self.settings.radio_for(carrier.pilot)
+        log.info("CALL %s -> %s (%.2f nm, %s)", call.value, plane.pilot or hex(plane.id),
+                 event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}")
+        await self.sink.say(call, self.clips.pick(call), radio, time.monotonic())
 
     def _outcome(self, key: tuple[int, int], t: float, pos, frame: DeckFrame) -> Call | None:
         """Once per pass, after touchdown: BOLTER when the jet rolls past the wires at speed, TRAPPED

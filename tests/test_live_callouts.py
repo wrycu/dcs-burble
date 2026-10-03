@@ -76,13 +76,14 @@ def test_clip_library(clips):
     assert lib[Call.POWER].seconds == pytest.approx(0.2) and lib[Call.POWER].text == "Power."
 
 
-async def run_collector(source: Path, work: Path, clips: Path, mode: str = "server", client=None):
+async def run_collector(source: Path, work: Path, clips: Path, mode: str = "server", client=None, hooks=None):
     server = await serve_recording(source, port=0, speed=0)
     port = server.sockets[0].getsockname()[1]
     sink = RecordingSink()
     async with server:
         collector = Collector(CollectorConfig(work_dir=work, tacview_port=port, mode=mode, voice_dir=clips),
                               client=client)
+        collector.hooks = hooks
         collector.remote_config = CONFIG
         collector.refresh_config = _no_refresh  # keep the config set above
         collector.sink_factory = lambda settings: sink
@@ -257,3 +258,56 @@ def test_old_single_clip_manifest_still_loads(clips):
     (clips / "manifest.json").write_text(json.dumps(manifest))
     lib = ClipLibrary.load(clips)
     assert lib[Call.POWER].text == "Power." and len(lib.clips[Call.TRAPPED]) == 1
+
+
+class WireHooks:
+    """Stands in for HookFeed: DCS reports `wire` for every aircraft (None: never)."""
+
+    def __init__(self, wire):
+        self.wire = wire
+        self.asked = 0
+
+    def live_wire(self, tacview_id, since):
+        self.asked += 1
+        return self.wire
+
+    def wind_for(self, carrier_unit):
+        return None
+
+    def wire_for(self, tacview_id, start, end):
+        return None
+
+    def debrief(self):
+        from dcs_lso.dcslog import Debrief
+        return Debrief(None, [])
+
+
+@pytest.mark.parametrize(("name", "wire", "expected"), [
+    ("20260927-204347_Wrycu_4013s", 2, Call.TRAPPED_WIRE_2),
+    ("20260927-204347_Wrycu_4769s", 3, Call.TRAPPED_WAVED_OFF_WIRE_3),  # trapped through our wave-off
+    ("20260927-204347_Wrycu_4013s", None, Call.TRAPPED),  # DCS never reported a wire: the plain welcome
+    ("20260927-204347_Wrycu_4769s", None, Call.TRAPPED_WAVED_OFF),
+])
+def test_welcome_names_dcs_wire(tmp_path, clips, monkeypatch, name, wire, expected):
+    import dcs_lso.edge.callouts as callouts_mod
+    monkeypatch.setattr(callouts_mod, "WIRE_WAIT_S", 0.2)
+    hooks = WireHooks(wire)
+    collector, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / f"{name}.zip.acmi", tmp_path / "edge",
+                                                   clips, hooks=hooks))
+    said = [call for call, _ in sink.said]
+    assert said[-1] is expected and hooks.asked >= 1
+    (item,) = collector.outbox.pending()
+    assert item.meta()["calls"][-1]["call"] == expected.value  # the trap card shows what was said
+
+
+def test_hook_feed_reads_the_wire_from_dcs_grade(tmp_path):
+    from dcs_lso.dcslog import HookEvent
+    from dcs_lso.edge.collector import HookFeed
+    feed = HookFeed.__new__(HookFeed)  # no dcs.log follower thread
+    import threading
+    feed._events, feed._lock = [], threading.Lock()
+    feed.add(HookEvent("landing_quality_mark", 362.1, "LSO: GRADE:C : _EGTL_  3PTSIW  WIRE# 2[BC]",
+                       {"name": "Wrycu", "object_id": 16777474}, {"name": "CVN-75 Harry S. Truman"}, None, {}))
+    assert feed.live_wire(0x103, since=340.0) == 2
+    assert feed.live_wire(0x103, since=370.0) is None  # an earlier landing's grade
+    assert feed.live_wire(0x203, since=340.0) is None  # someone else's

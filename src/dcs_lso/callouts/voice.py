@@ -53,6 +53,21 @@ PHRASES: dict[Call, str | tuple[str, ...]] = {
 }
 
 
+for _wire, _word in ((1, "one"), (2, "two"), (3, "three"), (4, "four")):
+    PHRASES[Call[f"TRAPPED_WIRE_{_wire}"]] = (
+        f"Welcome aboard, {_word} wire.",
+        f"Welcome home. {_word.capitalize()} wire.",
+        f"{_word.capitalize()} wire, welcome aboard.",
+        f"Nice trap, {_word} wire. Welcome home.",
+    )
+    PHRASES[Call[f"TRAPPED_WAVED_OFF_WIRE_{_wire}"]] = (
+        f"{_word.capitalize()} wire. That was a wave off, by the way.",
+        f"Welcome aboard. {_word.capitalize()} wire, through a wave off. See me in the ready room.",
+        f"{_word.capitalize()} wire. You did hear the wave off, right?",
+        f"Welcome home, {_word} wire. We'll talk about that wave off later.",
+    )
+
+
 def variants(call: Call) -> tuple[str, ...]:
     text = PHRASES[call]
     return (text,) if isinstance(text, str) else text

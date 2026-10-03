@@ -27,7 +27,8 @@ import httpx
 from ..acmi import AcmiParser, Frame, ObjectRemoved, ObjectUpdate, load_recording
 from ..acmi.stream import DEFAULT_PORT, HandshakeError, TelemetryClient
 from ..acmi.writer import write_slice
-from ..dcslog import Debrief, DcsEvent, HookEvent, attach_dcs_grades, follow, load_debrief, parse_hook_line
+from ..dcslog import (Debrief, DcsEvent, HookEvent, LsoGrade, attach_dcs_grades, follow, load_debrief,
+                      parse_hook_line)
 from ..dcslog.match import tacview_id_hint
 from ..detect import PassResult, find_passes
 from ..detect.approaches import Approach, ApproachSegmenter
@@ -119,6 +120,21 @@ class HookFeed:
         with self._lock:
             events = [e for e in self._events if e.event == "wind" and e.raw.get("carrier") == carrier_unit]
         return wind_profile(events[-1].raw) if events else None
+
+    def live_wire(self, tacview_id: int, since: float) -> int | None:
+        """DCS's wire for this aircraft since `since` (mission time), if it has arrived: the carrier's
+        wire animation (hosted servers) or DCS's LSO grade (with comms)."""
+        animated = self.wire_for(tacview_id, since, float("inf"))
+        if animated is not None:
+            return animated
+        with self._lock:
+            marks = [e for e in self._events if e.event == "landing_quality_mark" and (e.time or 0.0) >= since]
+        for e in reversed(marks):
+            who = (e.initiator or {}).get("object_id")
+            if who is not None and tacview_id_hint(int(who)) == tacview_id and e.comment:
+                if (wire := LsoGrade.parse(e.comment).wire) is not None:
+                    return wire
+        return None
 
     def debrief(self) -> Debrief:
         """The hook's landing grades in debrief.log form, for `attach_dcs_grades`."""
@@ -260,7 +276,8 @@ class Collector:
             log.warning("live callouts OFF: enabled in central's config, but no --voice-dir was given")
             return None
         return LiveCallouts(settings, self.clips, self.sink_factory(settings),
-                            wind_for=self.hooks.wind_for if self.hooks is not None else None)
+                            wind_for=self.hooks.wind_for if self.hooks is not None else None,
+                            wire_for=self.hooks.live_wire if self.hooks is not None else None)
 
     # -- top level ----------------------------------------------------------------------------
 
@@ -326,9 +343,10 @@ class Collector:
             for segmenter in (session.segmenters or {}).values():
                 if (approach := segmenter.flush()) is not None:
                     session.approaches.append(_PendingApproach(approach, approach.end_time + TAIL_S))
+            if session.callouts is not None:
+                await session.callouts.drain()  # finish calls first (a welcome may still be waiting for the wire)
             await self._slice_waiting(session)
             if session.callouts is not None:
-                await session.callouts.drain()
                 await session.callouts.sink.close()
             archive = session.archive.close()
             log.info("session ended; archive saved as %s", archive)
