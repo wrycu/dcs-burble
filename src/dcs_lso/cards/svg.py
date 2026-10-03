@@ -20,7 +20,6 @@ from ..grading.grade import GLIDESLOPE_DEG, LINEUP_DEG, POSITIONS
 
 NM = 1852.0
 FT = 0.3048
-RAMP_ALONG_M = 70.0  # deck edge, meters short of the aim point (Nimitz class)
 X_MAX_M = 0.8 * NM
 X_MIN_M = -40.0
 
@@ -242,8 +241,9 @@ def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Ax
         out.append(f'<polygon class="{cls}" points="{_poly([(x(0), y(0)), (x(X_MAX_M), y(hi_h)), (x(X_MAX_M), y(lo_h))])}"/>')
     out.append(f'<line class="tc-ideal" x1="{_f(x(0))}" y1="{_f(y(0))}" x2="{_f(x(X_MAX_M))}" y2="{_f(y(ideal_far))}"/>')
     # Deck from the ramp forward, and the wires.
-    out.append(f'<rect class="tc-deck" x="{_f(x(RAMP_ALONG_M))}" y="{_f(y(0))}" '
-               f'width="{_f(x(X_MIN_M) - x(RAMP_ALONG_M))}" height="{_f(y(-6.0) - y(0))}"/>')
+    ramp = frame.carrier.ramp_along_m
+    out.append(f'<rect class="tc-deck" x="{_f(x(ramp))}" y="{_f(y(0))}" '
+               f'width="{_f(x(X_MIN_M) - x(ramp))}" height="{_f(y(-6.0) - y(0))}"/>')
     for n, along in enumerate(frame.wire_along, start=1):
         cls = "tc-wire-caught" if n == wire else "tc-wire"
         out.append(f'<line class="{cls}" x1="{_f(x(along))}" y1="{_f(y(0) - 5)}" x2="{_f(x(along))}" y2="{_f(y(0) + 3)}"/>')
@@ -271,7 +271,8 @@ def deck_top(frame: DeckFrame, x: Axis, y: Axis, out: list[str], caught: int | N
     ends = frame.wire_ends
     port = min(min(a[1], b[1]) for a, b in ends)
     stbd = max(max(a[1], b[1]) for a, b in ends)
-    corners = [(x(RAMP_ALONG_M), y(port)), (x(RAMP_ALONG_M), y(stbd)), (x(X_MIN_M), y(stbd)), (x(X_MIN_M), y(port))]
+    ramp = frame.carrier.ramp_along_m
+    corners = [(x(ramp), y(port)), (x(ramp), y(stbd)), (x(X_MIN_M), y(stbd)), (x(X_MIN_M), y(port))]
     out.append(f'<polygon class="tc-deck" points="{_poly(corners)}"/>')
     for n, ((pa, pl), (sa, sl)) in enumerate(ends, start=1):
         cls = "tc-wire-caught" if n == caught else "tc-wire"

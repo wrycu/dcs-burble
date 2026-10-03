@@ -21,6 +21,14 @@ class CarrierInfo:
     deck_altitude: float
     # Arresting wire pendant positions (port, starboard), wire 1 first.
     wires: tuple[tuple[Point, Point], ...]
+    # The ramp (aft edge of the deck), meters short of the aim point along the landing area centerline.
+    ramp_along_m: float = 70.0
+    # Forward end of the landing area (for "foul deck"), meters along the centerline (negative = past
+    # the aim point).
+    landing_area_forward_m: float = -170.0
+    # Has the aircraft arrest runout (AircraftInfo.arrest_runout_m) been measured on this carrier's
+    # arresting gear? If not, no wire is estimated (see detect.wire).
+    runout_measured: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +57,31 @@ NIMITZ = CarrierInfo(
     ),
 )
 
+# CV-59 Forrestal (in DCS with the F-14 module, usable by everyone): deck angle, deck height and wires
+# from lso, which match DCS's CoreMods/aircraft/F14/Entry/CV-59-Forrestal_RunwaysAndRoutes.lua (landing
+# strip azimuth 350.58 = 9.42 deg, deck at 18.46 m). Not yet checked against a flight:
+# - the ramp: DCS gives no ramp position. Its ICLS localizer (at the stern) sits 15.5 m further forward
+#   than the Nimitz's (-137.5 vs -153.0 m) while its aim point is 12.1 m further forward, so the ramp is
+#   about 3.5 m closer to the aim point than the Nimitz's 70 m (which leaves the same 51 m from the ramp
+#   to wire 1 as on the Nimitz);
+# - the forward end of the landing area: from DCS's landing strip (centred on its start point, which
+#   gives the Nimitz's 170 m too);
+# - the arrest runout hasn't been measured on its gear, so no wire estimate (DCS's own wire still shows).
+FORRESTAL = CarrierInfo(
+    name="Forrestal",
+    deck_angle=9.42,
+    deck_altitude=18.46,
+    wires=(
+        ((-17.749493, -96.792412), (17.089462, -90.162186)),
+        ((-19.516848, -87.192558), (15.311986, -80.510368)),
+        ((-21.246920, -76.618980), (13.582755, -69.941109)),
+        ((-23.128010, -66.396812), (11.704433, -59.733154)),
+    ),
+    ramp_along_m=66.5,
+    landing_area_forward_m=-136.0,
+    runout_measured=False,
+)
+
 FA18C = AircraftInfo(
     name="FA-18C",
     hook=(-2.240897, -7.237348),
@@ -66,6 +99,7 @@ CARRIERS: dict[str, CarrierInfo] = {
     "CVN_73": NIMITZ,
     "CVN_75": NIMITZ,
     "Stennis": NIMITZ,
+    "Forrestal": FORRESTAL,
 }
 
 AIRCRAFT: dict[str, AircraftInfo] = {

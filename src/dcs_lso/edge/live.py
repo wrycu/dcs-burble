@@ -26,11 +26,9 @@ def _extrapolate(a: tuple[float, CarrierPose], b: tuple[float, CarrierPose], t: 
                        heading=(pb.heading + dh * f) % 360.0)
 
 
-# The landing area for "foul deck": from the ramp (meters short of the aim point) to the forward end
-# of the angled deck, with an aircraft's hook within this height of the deck; samples older than
+# The landing area for "foul deck": from the ramp to the forward end of the angled deck (per carrier,
+# CarrierInfo), with an aircraft's hook within this height of the deck; samples older than
 # FOUL_DECK_STALE_S are ignored (the aircraft left).
-RAMP_ALONG_M = 70.0
-LANDING_AREA_FORWARD_M = -170.0
 ON_DECK_HEIGHT_M = 3.0
 FOUL_DECK_STALE_S = 3.0
 
@@ -124,7 +122,7 @@ class LivePassDetector:
             if now - last.time > FOUL_DECK_STALE_S:
                 continue
             pos = frame.position(pose, last.transform)
-            if (LANDING_AREA_FORWARD_M <= pos.along <= RAMP_ALONG_M and abs(pos.lateral) <= half_width
+            if (frame.carrier.landing_area_forward_m <= pos.along <= frame.carrier.ramp_along_m and abs(pos.lateral) <= half_width
                     and pos.hook_height <= ON_DECK_HEIGHT_M):
                 return True
         return False

@@ -31,8 +31,8 @@ MAX_ERROR_M = 3.5
 def estimate_wire(samples: Sequence[PassSample], frame: DeckFrame) -> int | None:
     """The wire (1-4) a trapped jet caught, or None if it can't be told."""
     runout = frame.aircraft.arrest_runout_m
-    if runout is None or not samples or any(s.aoa_derived for s in samples):
-        return None  # unmeasured aircraft, or not the recording PC's own jet (see above)
+    if runout is None or not frame.carrier.runout_measured or not samples or any(s.aoa_derived for s in samples):
+        return None  # unmeasured aircraft or carrier, or not the recording PC's own jet (see above)
     touchdown = next((i for i, s in enumerate(samples) if s.hook_height <= 0.0 and s.along < 60.0), None)
     if touchdown is None:
         return None

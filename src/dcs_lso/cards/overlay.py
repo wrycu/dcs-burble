@@ -14,7 +14,7 @@ from ..detect import PassResult
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
 from ..grading import grade_name
 from ..grading.grade import GLIDESLOPE_DEG, LINEUP_DEG, POSITIONS
-from .svg import (FT, NM, PAD_L, PLOT_W, RAMP_ALONG_M, STYLE, WIDTH, X_MAX_M, X_MIN_M, Axis, _clip, _f, _poly,
+from .svg import (FT, NM, PAD_L, PLOT_W, STYLE, WIDTH, X_MAX_M, X_MIN_M, Axis, _clip, _f, _poly,
                   deck_top)
 
 # Grade colours (light, dark), shared with the greenie board.
@@ -98,6 +98,7 @@ def render_overlay(items: list[OverlayPass], uid: str = "ov", title: str = "",
     first = items[0].result if items else None
     aircraft = AIRCRAFT.get(first.aircraft_type) if first else None
     frame = DeckFrame(CARRIERS.get(first.carrier_type, next(iter(CARRIERS.values()))), aircraft) if aircraft else None
+    ramp = frame.carrier.ramp_along_m if frame else next(iter(CARRIERS.values())).ramp_along_m
     glide = aircraft.glideslope if aircraft else 3.6
     near, far = view if view else (X_MIN_M, X_MAX_M)
     margin = (far - near) * 0.05  # keep the lines running to the plot edges
@@ -144,8 +145,8 @@ def render_overlay(items: list[OverlayPass], uid: str = "ov", title: str = "",
         lo_h = X_MAX_M * math.tan(math.radians(max(glide - dev, 0.0)))
         out.append(f'<polygon class="{cls}" points="{_poly([(x(0), y(0)), (x(X_MAX_M), y(hi_h)), (x(X_MAX_M), y(lo_h))])}"/>')
     out.append(f'<line class="tc-ideal" x1="{_f(x(0))}" y1="{_f(y(0))}" x2="{_f(x(X_MAX_M))}" y2="{_f(y(ideal(X_MAX_M)))}"/>')
-    out.append(f'<rect class="tc-deck" x="{_f(x(RAMP_ALONG_M))}" y="{_f(y(0))}" '
-               f'width="{_f(x(X_MIN_M) - x(RAMP_ALONG_M))}" height="{_f(abs(y(-6.0) - y(0)))}"/>')
+    out.append(f'<rect class="tc-deck" x="{_f(x(ramp))}" y="{_f(y(0))}" '
+               f'width="{_f(x(X_MIN_M) - x(ramp))}" height="{_f(abs(y(-6.0) - y(0)))}"/>')
     for along in (frame.wire_along if frame else ()):
         out.append(f'<line class="tc-wire" x1="{_f(x(along))}" y1="{_f(y(0) - 5)}" x2="{_f(x(along))}" y2="{_f(y(0) + 3)}"/>')
     for i, (item, ss) in reversed(list(enumerate(shown))):
@@ -167,7 +168,7 @@ def render_overlay(items: list[OverlayPass], uid: str = "ov", title: str = "",
         half = min(max(reach * 1.1, X_MAX_M * math.tan(math.radians(LINEUP_DEG[2])) * 1.2), 200.0)
     else:
         half = max(reach * 1.15, 3.0)
-        if frame is not None and near < RAMP_ALONG_M:  # the deck is in view: show all of its width
+        if frame is not None and near < ramp:  # the deck is in view: show all of its width
             half = max(half, max(abs(lat) for ends in frame.wire_ends for _, lat in ends) * 1.15)
     y = Axis(-half, half, TOP_TOP + TOP_H, TOP_TOP)
     out.append(f'<text class="tc-text" x="{PAD_L}" y="{TOP_TOP - 6}" font-size="13" font-weight="600">'
