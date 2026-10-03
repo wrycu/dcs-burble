@@ -95,6 +95,14 @@ class SrsClient:
         self._tx_lock = asyncio.Lock()
         self._packet_number = 1
 
+    async def set_radios(self, radios: Sequence[Radio]) -> None:
+        """Change the radios this client announces (sent to the server straight away when connected)."""
+        if not 1 <= len(radios) < MAX_RADIOS:
+            raise ValueError(f"between 1 and {MAX_RADIOS - 1} radios")
+        self.radios = tuple(radios)
+        if self._writer is not None:
+            await self._send(_MSG_RADIO_UPDATE)
+
     # -- connection -------------------------------------------------------------------------
 
     async def connect(self, timeout: float = 10.0) -> None:

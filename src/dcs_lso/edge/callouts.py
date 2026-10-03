@@ -25,6 +25,7 @@ from ..srs import Modulation, Radio, SrsClient
 
 log = logging.getLogger(__name__)
 
+MAX_SRS_RADIOS = 10  # radios one SRS client announces
 # A call that couldn't be spoken within this long is dropped: late calls are worse than none.
 MAX_CALL_AGE_S = 1.5
 
@@ -87,9 +88,12 @@ class CalloutSettings:
             thresholds=replace(Thresholds(), **overrides),
         )
 
-    def radio_for(self, carrier_unit: str) -> Radio:
-        freq, mod = self.carriers.get(carrier_unit, (self.frequency_mhz, self.modulation))
-        return Radio(freq, mod)
+    def radio_for(self, carrier_unit: str, detected: Radio | None = None) -> Radio:
+        """Where to make calls for this carrier: its setting in the config, else the frequency set for it
+        in the mission (`detected`, from the hook), else the default frequency."""
+        if carrier_unit in self.carriers:
+            return Radio(*self.carriers[carrier_unit])
+        return detected or Radio(self.frequency_mhz, self.modulation)
 
 
 class CallSink(Protocol):
@@ -140,6 +144,12 @@ class SrsSink:
                 return
             try:
                 client = await self._connected()
+                if radio not in self.radios and len(self.radios) < MAX_SRS_RADIOS:
+                    # A frequency found in the mission: announce it before talking on it (SRS clients
+                    # mishandle audio from radios they haven't been told about).
+                    self.radios.append(radio)
+                    await client.set_radios(self.radios)
+                    log.info("SRS: now also on %.3f %s", radio.frequency_mhz, radio.modulation.name)
                 self._current = asyncio.current_task()
                 await client.transmit(clip.frames, radios=(radio,))
             except asyncio.CancelledError:
@@ -189,6 +199,8 @@ class LiveCallouts:
         self.wire_for = wire_for
         # Our grade of a pass in progress (carrier id, aircraft id), for the welcome; set by the collector.
         self.grade_for: Callable[[int, int], Grade | None] | None = None
+        # The frequency set for a carrier (by unit name) in the mission, from the hook.
+        self.carrier_radio: Callable[[str], Radio | None] | None = None
         # Is another aircraft in the landing area (carrier id, pose, frame, this aircraft's id, time)?
         self.deck_foul: Callable[[int, CarrierPose, DeckFrame, int, float], bool] | None = None
         # A pilot's side number at a mission time (from the hook), to say before calls when the groove is busy.
@@ -271,7 +283,7 @@ class LiveCallouts:
     async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent,
                    praise: bool = False, side_number: str | None = None) -> None:
         self.made.append(MadeCall(plane.id, event.time, event.along, call))
-        radio = self.settings.radio_for(carrier.pilot)
+        radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
         clip = self.clips.with_side_number(self.clips.pick(call, praise), side_number)  # whose call, if busy
         log.info("CALL %s -> %s (%.2f nm, %s): %r", call.value, plane.pilot or hex(plane.id),
                  event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}", clip.text)

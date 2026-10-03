@@ -38,6 +38,7 @@ from ..grading import Grade, grade_pass
 from ..slices import (LEAD_S, TAIL_S, approach_window, sidecar, slice_name, slice_objects, track_sidecar,
                       track_slice_name)
 from ..callouts.voice import ClipLibrary
+from ..srs import Modulation, Radio
 from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink
 from .live import LivePassDetector
 from .outbox import Outbox
@@ -97,6 +98,9 @@ class HookFeed:
         for line in follow(self.path):
             if (event := parse_hook_line(line)) is not None:
                 self.add(event)
+                if event.event == "carrier" and (radio := self.carrier_radio(event.raw.get("name"))):
+                    log.info("carrier in the mission: %s (%s) on %.3f %s", event.raw.get("name"), event.raw.get("type"),
+                             radio.frequency_mhz, radio.modulation.name)
                 if event.event == "landing_quality_mark":
                     log.info("DCS LSO: %s", event.comment)
 
@@ -145,6 +149,24 @@ class HookFeed:
                 if (wire := LsoGrade.parse(e.comment).wire) is not None:
                     return wire
         return None
+
+    def carrier_radio(self, carrier_unit: str | None) -> Radio | None:
+        """The radio frequency set for this carrier (by unit name) in the current mission, from the hook."""
+        if not carrier_unit:
+            return None
+        with self._lock:
+            found = [e for e in self._events if e.event == "carrier" and e.raw.get("name") == carrier_unit]
+        if not found:
+            return None
+        raw = found[-1].raw
+        try:
+            frequency_hz = float(raw.get("frequency"))
+        except (TypeError, ValueError):
+            return None
+        if frequency_hz <= 0:
+            return None
+        modulation = Modulation.FM if raw.get("modulation") == 1 else Modulation.AM
+        return Radio(round(frequency_hz / 1e6, 4), modulation)
 
     def slot_for(self, pilot: str | None, before: float) -> dict | None:
         """The aircraft a player was in (livery, side number, unit) at mission time `before`: their latest
@@ -300,9 +322,12 @@ class Collector:
         if self.clips is None:
             log.warning("live callouts OFF: enabled in central's config, but no --voice-dir was given")
             return None
-        return LiveCallouts(settings, self.clips, self.sink_factory(settings),
-                            wind_for=self.hooks.wind_for if self.hooks is not None else None,
-                            wire_for=self.hooks.live_wire if self.hooks is not None else None)
+        callouts = LiveCallouts(settings, self.clips, self.sink_factory(settings),
+                                wind_for=self.hooks.wind_for if self.hooks is not None else None,
+                                wire_for=self.hooks.live_wire if self.hooks is not None else None)
+        if self.hooks is not None:
+            callouts.carrier_radio = self.hooks.carrier_radio  # the mission's frequency for each carrier
+        return callouts
 
     # -- top level ----------------------------------------------------------------------------
 

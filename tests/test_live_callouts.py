@@ -290,6 +290,9 @@ class WireHooks:
     def slot_for(self, pilot, before):
         return None
 
+    def carrier_radio(self, carrier_unit):
+        return None
+
     def debrief(self):
         from dcs_lso.dcslog import Debrief
         return Debrief(None, [])
@@ -434,3 +437,85 @@ def test_side_numbers_when_two_jets_are_in_the_groove(tmp_path, clips):
 
 
 WELCOMES = {Call.TRAPPED, Call.TRAPPED_WAVED_OFF, Call.BOLTER} | {c for c in Call if c.name.startswith("TRAPPED_")}
+
+
+
+def test_hook_feed_reads_each_carriers_mission_frequency():
+    import threading
+
+    from dcs_lso.dcslog import parse_hook_line
+    from dcs_lso.edge.collector import HookFeed
+    feed = HookFeed.__new__(HookFeed)
+    feed._events, feed._lock = [], threading.Lock()
+    line = ('2026-10-03 12:00:00.000 INFO    DCSLSO (Main): DCSLSO {"event":"carrier","t":0,'
+            '"name":"CVN-75 Harry S. Truman","type":"CVN_75","frequency":127500000,"modulation":0}')
+    feed.add(parse_hook_line(line))
+    feed.add(parse_hook_line(line.replace("CVN-75 Harry S. Truman", "Tarawa").replace("127500000", "264000000")
+                             .replace('"modulation":0', '"modulation":1')))
+    assert feed.carrier_radio("CVN-75 Harry S. Truman") == Radio(127.5, Modulation.AM)
+    assert feed.carrier_radio("Tarawa") == Radio(264.0, Modulation.FM)
+    assert feed.carrier_radio("CVN-71 Theodore Roosevelt") is None
+
+
+def test_carrier_radio_precedence():
+    settings = CalloutSettings.from_config(CONFIG)  # sets the Truman to 127.6 and a default of 127.5
+    detected = Radio(127.75)
+    assert settings.radio_for("CVN-75 Harry S. Truman", detected) == Radio(127.6)  # the config wins
+    assert settings.radio_for("CVN-71 Theodore Roosevelt", detected) == detected  # then the mission
+    assert settings.radio_for("CVN-71 Theodore Roosevelt") == Radio(127.5)  # then the default
+
+
+def test_srs_sink_announces_a_detected_frequency_before_using_it():
+    from dcs_lso.callouts.voice import Clip
+
+    class FakeClient:
+        connected = True
+
+        def __init__(self):
+            self.events = []
+
+        async def set_radios(self, radios):
+            self.events.append(("radios", tuple(radios)))
+
+        async def transmit(self, frames, radios):
+            self.events.append(("transmit", tuple(radios)))
+
+        async def close(self):
+            pass
+
+    async def run():
+        import time
+        sink = SrsSink(CalloutSettings().srs, [Radio(127.5)])
+        sink._client = FakeClient()
+        await sink.say(Call.POWER, Clip("p", [b"f"]), Radio(127.75), time.monotonic())
+        await sink.say(Call.POWER, Clip("p", [b"f"]), Radio(127.75), time.monotonic())
+        return sink._client.events
+
+    assert asyncio.run(run()) == [("radios", (Radio(127.5), Radio(127.75))), ("transmit", (Radio(127.75),)),
+                                  ("transmit", (Radio(127.75),))]  # announced once
+
+
+class CarrierHooks(WireHooks):
+    def __init__(self):
+        super().__init__(None)
+
+    def carrier_radio(self, carrier_unit):
+        return Radio(127.75) if carrier_unit == "CVN-75 Harry S. Truman" else None
+
+
+def test_calls_go_out_on_the_frequency_set_in_the_mission(tmp_path, clips):
+    async def run():
+        server = await serve_recording(FLAT_LOW_CUT, port=0, speed=0)
+        sink = RecordingSink()
+        async with server:
+            collector = Collector(CollectorConfig(work_dir=tmp_path, tacview_port=server.sockets[0].getsockname()[1],
+                                                  voice_dir=clips))
+            collector.hooks = CarrierHooks()
+            collector.remote_config = {"callouts": {"enabled": True, "frequency_mhz": 127.5}}  # no carrier settings
+            collector.refresh_config = _no_refresh
+            collector.sink_factory = lambda settings: sink
+            await collector.run_session()
+        return sink
+
+    sink = asyncio.run(run())
+    assert sink.said and all(radio == Radio(127.75) for _, radio in sink.said)

@@ -186,9 +186,37 @@ local function log_slot(player_id)
   log.write('DCSLSO', log.INFO, 'DCSLSO ' .. net.lua2json(fields))
 end
 
+-- Each carrier in the mission with the radio frequency set for it in the mission editor (Hz, and
+-- modulation 0 = AM, 1 = FM), so the collector can make its LSO calls there without configuration.
+local CARRIER_TYPES = { 'CVN', 'Stennis', 'Forrestal', 'LHA', 'CV_1143' }
+
+local function log_carriers()
+  local mission = DCS.getCurrentMission()
+  local coalitions = mission and mission.mission and mission.mission.coalition or {}
+  for _, side in pairs(coalitions) do
+    for _, country in ipairs(side.country or {}) do
+      for _, group in ipairs((country.ship or {}).group or {}) do
+        for _, unit in ipairs(group.units or {}) do
+          local type_name = unit.type or ''
+          for _, pattern in ipairs(CARRIER_TYPES) do
+            if type_name:find(pattern, 1, true) then
+              local fields = { event = 'carrier', t = DCS.getModelTime(), name = unit.name, type = type_name,
+                               frequency = unit.frequency or group.frequency,
+                               modulation = unit.modulation or group.modulation }
+              log.write('DCSLSO', log.INFO, 'DCSLSO ' .. net.lua2json(fields))
+              break
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
 function callbacks.onMissionLoadEnd()
   local ok, result = pcall(net.dostring_in, 'mission', 'a_do_script([====[' .. HANDLER .. ']====])')
   log.write('DCSLSO', ok and log.INFO or log.ERROR, 'handler injection: ' .. tostring(ok) .. ' ' .. tostring(result))
+  pcall(log_carriers)
 end
 
 function callbacks.onPlayerChangeSlot(player_id)
@@ -197,6 +225,7 @@ end
 
 -- Players already in their slots when a mission starts (and the local player, also in single player).
 function callbacks.onSimulationStart()
+  pcall(log_carriers)
   for _, player_id in ipairs(net.get_player_list() or {}) do
     pcall(log_slot, player_id)
   end
