@@ -6,7 +6,8 @@ Runs next to DCS. For each stream connection (a "session") it:
   same code as `dcs-lso slice`, attaches DCS's grade and wire from the dcs-lso hook's
   events in dcs.log, and queues slice + sidecar in the outbox;
 - uploads the outbox to central, retrying until accepted;
-- at session end, reads debrief.log and fills in DCS grades the hook didn't provide.
+- at session end, reads debrief.log and fills in DCS grades the hook didn't provide (in pilot mode,
+  the pilot's own DCS grades and wires for their track reports).
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from ..acmi import AcmiParser, Frame, ObjectRemoved, ObjectUpdate, load_recordin
 from ..acmi.stream import DEFAULT_PORT, HandshakeError, TelemetryClient
 from ..acmi.writer import write_slice
 from ..dcslog import (Debrief, DcsEvent, HookEvent, LsoGrade, attach_dcs_grades, follow, load_debrief,
-                      parse_hook_line)
+                      parse_hook_line, track_dcs_grades)
 from ..dcslog.match import tacview_id_hint
 from ..detect import Outcome, PassResult, find_passes
 from ..detect.approaches import Approach, ApproachSegmenter
@@ -50,6 +51,8 @@ MATCH_START_TOLERANCE_S = 5.0
 # Warn when a connection delivers no frames for this long (Tacview's exporter isn't
 # getting data from DCS, e.g. Export.lua lost its Tacview line, or the sim is paused).
 NO_FRAMES_WARNING_S = 30.0
+PRUNE_INTERVAL_S = 6 * 3600.0  # retention clean-up (also at start-up)
+RETENTION_DEFAULT_DAYS = {"archives": 90.0, "sent": 14.0, "rejected": 30.0}
 NO_FRAMES_REPEAT_S = 600.0  # repeat the warning this rarely while frames stay away
 # Passes waiting to be sliced are due in mission time, which only advances with frames. DCS pauses an
 # empty dedicated server (e.g. the pilot leaves right after landing), so after this long without
@@ -73,6 +76,12 @@ class CollectorConfig:
     # only, never transmit (a pilot's collector would be talking on someone else's server).
     mode: str = "server"
     voice_dir: Path | None = None  # clip set from `dcs-lso voice build`
+    # Retention, in days (0: keep forever). Session archives allow re-slicing; uploaded slices are kept
+    # on central, so the local copies only matter for a while (e.g. adding debrief.log grades). None:
+    # not set here, so central's configuration for this source ("retention") applies, else the default.
+    keep_archives_days: float | None = None
+    keep_sent_days: float | None = None
+    keep_rejected_days: float | None = None
 
 
 class HookFeed:
@@ -231,6 +240,8 @@ class Session:
     segmenters: dict[int, ApproachSegmenter] | None = None
     approaches: list[_PendingApproach] = field(default_factory=list)
     pass_windows: list[tuple[int, float, float]] = field(default_factory=list)  # (aircraft, start, end)
+    # When each object first appeared in this session (to line debrief.log's clock up with the stream's).
+    first_seen: dict[int, float] = field(default_factory=dict)
 
 
 class Collector:
@@ -295,8 +306,52 @@ class Collector:
 
     # -- top level ----------------------------------------------------------------------------
 
+    def retention(self) -> dict[str, float]:
+        """Days to keep each kind of file (0: forever): set locally, else from central's configuration
+        for this source (`{"retention": {"archives_days": 90, "sent_days": 14, "rejected_days": 30}}`),
+        else the defaults."""
+        central = (self.remote_config or {}).get("retention") or {}
+        out = {}
+        for kind, default in RETENTION_DEFAULT_DAYS.items():
+            local = getattr(self.config, f"keep_{kind}_days")
+            try:
+                out[kind] = float(local if local is not None else central.get(f"{kind}_days", default))
+            except (TypeError, ValueError):
+                out[kind] = default
+        return out
+
+    def prune(self, now: float | None = None) -> dict[str, int]:
+        """Apply the retention settings: old session archives and uploaded/rejected slices. Pending
+        uploads and the archive of a session in progress are never removed."""
+        now = time.time() if now is None else now
+        keep = self.retention()
+        removed = {"archives": 0, "sent": 0, "rejected": 0}
+        if keep["archives"] > 0:
+            cutoff = now - keep["archives"] * 86400
+            for path in self.archive_dir.glob("*.zip.acmi"):  # closed sessions only (open ones are .txt.acmi)
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+                    removed["archives"] += 1
+        if keep["sent"] > 0:
+            removed["sent"] = self.outbox.prune(self.outbox.sent_dir, now - keep["sent"] * 86400)
+        if keep["rejected"] > 0:
+            removed["rejected"] = self.outbox.prune(self.outbox.rejected_dir, now - keep["rejected"] * 86400)
+        if any(removed.values()):
+            log.info("retention: removed %d session archives, %d uploaded slices, %d rejected slices",
+                     removed["archives"], removed["sent"], removed["rejected"])
+        return removed
+
+    async def _prune_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, self.prune)
+            except OSError as exc:
+                log.warning("retention clean-up failed: %s", exc)
+            await asyncio.sleep(PRUNE_INTERVAL_S)
+
     async def run_forever(self) -> None:
         uploader = asyncio.create_task(self.upload_loop())
+        pruner = asyncio.create_task(self._prune_loop())
         delay = RECONNECT_MIN_S
         try:
             while True:
@@ -309,6 +364,7 @@ class Collector:
                     delay = min(delay * 2, RECONNECT_MAX_S)
         finally:
             uploader.cancel()
+            pruner.cancel()
 
     async def upload_loop(self) -> None:
         if self.client is None:
@@ -422,6 +478,8 @@ class Collector:
                     session.approaches = [a for a in session.approaches if a.due > record.time]
                     for pending in ready:
                         await self._slice_approach(session, pending.approach, pending.ended_at)
+            if isinstance(record, ObjectUpdate) and record.moved:
+                session.first_seen.setdefault(record.id, record.time)
             for result in session.detector.feed(record):
                 self._queue(session, result)
             if session.segmenters is not None:
@@ -495,6 +553,7 @@ class Collector:
             meta["recording"]["first_frame_time"] = session.first_frame
             meta["window"] = {"start": start, "end": end}
             meta["pass"]["occurred_at"] = (ended_at - timedelta(seconds=approach.end_time - approach.start_time)).isoformat()
+            meta["pass"]["aircraft_first_seen"] = session.first_seen.get(approach.aircraft_id)
             name = track_slice_name(recording, approach)
             self.outbox.put(name, path, meta)
         log.info("queued %s (own track; central grades it with the server's report of this landing)", name)
@@ -576,21 +635,38 @@ class Collector:
                 continue
             recording = load_recording(item.acmi)
             info = meta["pass"]
-            passes = [p for p in find_passes(recording) if p.aircraft_id == info["aircraft_id"]
-                      and abs(p.start_time - info["start_time"]) <= MATCH_START_TOLERANCE_S]
-            if not passes:
+            grade = (_track_grade(recording, info, debrief) if meta.get("kind") == "track"
+                     else _pass_grade(recording, info, debrief))
+            if grade is None:
                 continue
-            attach_dcs_grades(passes, recording, debrief)
-            p = passes[0]
-            if p.dcs_grade is None:
-                continue
-            meta["dcs"] = {"wire": p.wire, "grade": asdict(p.dcs_grade)}
+            meta["dcs"] = {"wire": grade.wire, "grade": asdict(grade)}
             if item.sidecar.parent == self.outbox.sent_dir:
                 self.outbox.requeue(item, meta)
             else:
                 item.sidecar.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
             updated += 1
         return updated
+
+
+def _pass_grade(recording, info: dict, debrief: Debrief) -> LsoGrade | None:
+    """DCS's grade for an uploaded pass, from debrief.log."""
+    passes = [p for p in find_passes(recording) if p.aircraft_id == info["aircraft_id"]
+              and abs(p.start_time - info["start_time"]) <= MATCH_START_TOLERANCE_S]
+    if not passes:
+        return None
+    attach_dcs_grades(passes, recording, debrief)
+    return passes[0].dcs_grade
+
+
+def _track_grade(recording, info: dict, debrief: Debrief) -> LsoGrade | None:
+    """DCS's grade for an own-track report (a pilot's collector), from the pilot's debrief.log: a
+    multiplayer client's DCS grades its own traps (with the wire) and writes them there at mission end."""
+    aircraft = int(info["aircraft_id"])
+    approach = Approach(aircraft, float(info["start_time"]), float(info["end_time"]), 0.0)
+    first_seen = info.get("aircraft_first_seen")
+    grades = track_dcs_grades(recording, [approach], debrief,
+                              first_seen={aircraft: float(first_seen)} if first_seen is not None else None)
+    return grades.get(approach)
 
 
 def _provisional_grade(session: Session, carrier_id: int, aircraft_id: int) -> Grade | None:

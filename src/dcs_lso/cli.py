@@ -345,6 +345,8 @@ def _collect(args: argparse.Namespace) -> int:
         tacview_password=args.tacview_password, dcs_log=dcs_log, debrief=debrief,
         url=args.url, token=args.token or os.environ.get("DCS_LSO_TOKEN"),
         mode=args.mode, voice_dir=Path(args.voice_dir) if args.voice_dir else None,
+        keep_archives_days=args.keep_archives_days, keep_sent_days=args.keep_sent_days,
+        keep_rejected_days=args.keep_rejected_days,
     )
 
     async def run() -> None:
@@ -499,6 +501,14 @@ def main(argv: list[str] | None = None) -> int:
                          help="server: live callouts over SRS when enabled in central's config; "
                               "pilot: record and upload only, never transmit")
     collect.add_argument("--voice-dir", metavar="DIR", help="LSO voice clips (from `dcs-lso voice build`)")
+    for name, default, what in (("archives", 90, "session archives (raw recordings, for re-slicing)"),
+                                ("sent", 14, "local copies of uploaded slices (central keeps its own)"),
+                                ("rejected", 30, "slices central rejected")):
+        env = f"DCS_LSO_KEEP_{name.upper()}_DAYS"
+        collect.add_argument(f"--keep-{name}-days", type=float,
+                             default=float(os.environ[env]) if os.environ.get(env) else None, metavar="DAYS",
+                             help=f"keep {what} this long; 0 = forever. Default: central's \"retention\" setting "
+                                  f"for this source, else {default} [${env}]")
     collect.add_argument("-v", "--verbose", action="store_true")
     collect.set_defaults(func=_collect)
     args = parser.parse_args(argv)

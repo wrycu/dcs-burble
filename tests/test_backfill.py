@@ -276,3 +276,19 @@ def test_an_upload_waits_a_day_for_its_pilot(tmp_path):
     status = client.get(f"/api/v1/recordings/{old}").json()
     assert status["status"] == "failed" and "within a day" in status["message"]
     assert not c.upload_path(old, "b.zip.acmi").exists()
+
+
+def test_upload_leftovers_are_cleaned_at_startup(tmp_path):
+    db, data = f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central"
+    c = Central(db, data)
+    c.add_source("s")
+    waiting, _ = c.add_upload(1, "a.zip.acmi", 1, choose_pilot=True)
+    from dcs_lso.central.db import Upload
+    with c.sessions.begin() as s:
+        s.get(Upload, waiting).status = "choose_pilot"
+    c.upload_path(waiting, "a.zip.acmi").write_bytes(b"x")  # waiting for its pilot: kept
+    (c.uploads_dir / "incoming-deadbeef.acmi").write_bytes(b"x")  # a transfer cut off by a crash
+    (c.uploads_dir / "999.zip.acmi").write_bytes(b"x")  # belongs to no upload in progress
+    (c.uploads_dir / "999.debrief.log").write_bytes(b"x")
+    Central(db, data)
+    assert sorted(p.name for p in c.uploads_dir.iterdir()) == [f"{waiting}.zip.acmi"]

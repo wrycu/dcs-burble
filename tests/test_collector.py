@@ -275,3 +275,46 @@ def test_hook_events_are_scoped_to_the_current_mission():
     feed.add(HookEvent("handler_installed", 0.0, None, None, None, None, {}))  # next mission loads
     assert feed.wire_for(0x201, 290.0, 310.0) is None
     assert feed.debrief().landing_marks() == []
+
+
+def test_retention(tmp_path):
+    import os
+    import time
+    collector = Collector(CollectorConfig(work_dir=tmp_path, keep_archives_days=30, keep_sent_days=14,
+                                          keep_rejected_days=0))
+    now = time.time()
+
+    def aged(path, days):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        os.utime(path, (now - days * 86400, now - days * 86400))
+        return path
+
+    archives = collector.archive_dir
+    old_archive, new_archive = aged(archives / "a-session.zip.acmi", 40), aged(archives / "b-session.zip.acmi", 5)
+    open_session = aged(archives / "c-session.txt.acmi", 90)  # a session still being written
+    box = collector.outbox
+    for directory, name, days in ((box.sent_dir, "old", 20), (box.sent_dir, "new", 2), (box.rejected_dir, "bad", 400),
+                                  (box.pending_dir, "waiting", 400)):
+        aged(directory / f"{name}.zip.acmi", days)
+        aged(directory / f"{name}.json", days)
+    assert collector.prune(now) == {"archives": 1, "sent": 1, "rejected": 0}  # rejected: kept forever (0)
+    assert not old_archive.exists() and new_archive.exists() and open_session.exists()
+    assert [i.name for i in box.sent()] == ["new"] and [i.name for i in box.pending()] == ["waiting"]
+    assert (box.rejected_dir / "bad.json").exists()
+    # 0 everywhere: nothing is ever removed.
+    keep = Collector(CollectorConfig(work_dir=tmp_path, keep_archives_days=0, keep_sent_days=0, keep_rejected_days=0))
+    assert keep.prune(now + 10 * 365 * 86400) == {"archives": 0, "sent": 0, "rejected": 0}
+
+
+
+def test_retention_settings_from_central(tmp_path):
+    collector = Collector(CollectorConfig(work_dir=tmp_path))
+    assert collector.retention() == {"archives": 90.0, "sent": 14.0, "rejected": 30.0}  # the defaults
+    collector.remote_config = {"retention": {"archives_days": 365, "sent_days": 0}}
+    assert collector.retention() == {"archives": 365.0, "sent": 0.0, "rejected": 30.0}
+    local = Collector(CollectorConfig(work_dir=tmp_path, keep_archives_days=7))  # set on the collector: wins
+    local.remote_config = {"retention": {"archives_days": 365}}
+    assert local.retention()["archives"] == 7.0
+    collector.remote_config = {"retention": {"archives_days": "lots"}}
+    assert collector.retention()["archives"] == 90.0  # a bad value falls back to the default

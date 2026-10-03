@@ -65,6 +65,18 @@ class Outbox:
     def sent(self) -> list[Item]:
         return self._items(self.sent_dir)
 
+    def prune(self, directory: Path, older_than: float) -> int:
+        """Remove items in `directory` (sent or rejected; never pending) last changed before `older_than`
+        (a Unix time). Returns how many were removed."""
+        assert directory != self.pending_dir, "pending uploads are never pruned"
+        removed = 0
+        for item in self._items(directory):
+            if item.sidecar.stat().st_mtime < older_than:
+                item.acmi.unlink(missing_ok=True)
+                item.sidecar.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
     def _move(self, item: Item, directory: Path) -> Item:
         acmi = directory / item.acmi.name
         meta = directory / item.sidecar.name

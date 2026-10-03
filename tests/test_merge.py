@@ -152,3 +152,54 @@ def test_livery_and_side_number_are_kept_and_shown(central):
     assert "Last livery: VFA-106 high visibility · " in pilot  # the newest landing's (the trap, at 03:31)
     trends = client.get("/api/v1/pilots/Wrycu/trends").json()
     assert (trends["modex"], trends["last_livery"]) == ("301", "VFA-106 high visibility")
+
+
+def test_pilot_collector_adds_dcs_wire_from_its_debrief(tmp_path, central):
+    """A multiplayer client's DCS writes its own traps' grades and wires to debrief.log at mission end;
+    the pilot's collector re-uploads its track report with it, and the landing gets DCS's wire."""
+    from dcs_lso.dcslog import Debrief, DcsEvent
+
+    async def run():
+        server = await serve_recording(PAIRS / "client-trap.zip.acmi", port=0, speed=0)
+        async with server:
+            collector = Collector(CollectorConfig(work_dir=tmp_path, tacview_port=server.sockets[0].getsockname()[1],
+                                                  mode="pilot"))
+            session = await collector.run_session()
+        return collector, session
+
+    collector, session = asyncio.run(run())
+    (item,) = collector.outbox.pending()
+    info = item.meta()["pass"]
+    jet = info["aircraft_id"]
+    assert info["aircraft_first_seen"] == session.first_seen[jet]
+    # The client joined 129 s into the mission: debrief.log's times are 129 s ahead of the stream's.
+    dcs_id, offset = 0x1000000 | (jet - 1), 129.0
+    debrief_path = tmp_path / "debrief.log"
+    debrief = Debrief(None, [
+        DcsEvent("under control", info["aircraft_first_seen"] + offset, initiator_object_id=dcs_id),
+        DcsEvent("landing quality mark", info["end_time"] - 2.0 + offset, place="CVN-75 Harry S. Truman",
+                 initiator_unit_type="FA-18C_hornet", initiator_object_id=dcs_id,
+                 comment="LSO: GRADE:C : _EGTL_  3PTSIW  WIRE# 2[BC]"),
+    ])
+    import dcs_lso.edge.collector as collector_mod
+    collector_mod.load_debrief = lambda path: debrief  # (the file's format is covered by test_dcslog)
+    try:
+        assert collector.apply_debrief(session.names, debrief_path) == 1
+    finally:
+        from dcs_lso.dcslog import load_debrief
+        collector_mod.load_debrief = load_debrief
+    (item,) = collector.outbox.pending()
+    assert item.meta()["dcs"]["wire"] == 2
+    # On central: the server's report (no comms on the server, so no DCS grade there), the pilot's track as
+    # first uploaded, then its re-upload with the pilot's own DCS grade: the landing now has DCS's wire.
+    data, meta = server_report("trap")
+    meta["dcs"] = {"wire": None, "grade": None}
+    central.ingest(1, data, meta)
+    track = item.meta()
+    central.ingest(2, item.acmi.read_bytes(), dict(track, dcs={"wire": None, "grade": None}))
+    (landing,) = landings(central)
+    assert landing["wire"] is None and landing["wire_estimated"] is not None  # until the debrief arrives: an estimate
+    again = central.ingest(2, item.acmi.read_bytes(), track)
+    assert again.created is False
+    (landing,) = landings(central)
+    assert landing["wire"] == 2 and landing["dcs_grade"].startswith("LSO: GRADE:C")  # DCS's own, from the pilot

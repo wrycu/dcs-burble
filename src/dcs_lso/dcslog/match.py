@@ -57,12 +57,14 @@ def attach_dcs_grades(passes: list[PassResult], recording: Recording, debrief: D
 _SPAWN_EVENTS = ("under control", "birth")
 
 
-def track_dcs_grades(recording: Recording, approaches: list, debrief: Debrief) -> dict:
+def track_dcs_grades(recording: Recording, approaches: list, debrief: Debrief,
+                     first_seen: dict[int, float] | None = None) -> dict:
     """DCS's grade for each own-track approach (`detect.approaches.Approach`), keyed by approach.
 
     A multiplayer client's recording starts when the client joined, while debrief times are mission
     time; the offset comes from the aircraft's spawn ("under control"/"birth") against its first
-    sample in the recording. Recordings that start with the mission need no offset.
+    sample in the recording (or `first_seen`, when the recording is only a slice of the session).
+    Recordings that start with the mission need no offset.
     """
     marks = debrief.landing_marks()
     found = {}
@@ -74,7 +76,8 @@ def track_dcs_grades(recording: Recording, approaches: list, debrief: Debrief) -
                and tacview_id_hint(e.initiator_object_id) == a.aircraft_id]
         spawn = next((e for e in debrief.events if e.type in _SPAWN_EVENTS and e.initiator_object_id is not None
                       and tacview_id_hint(e.initiator_object_id) == a.aircraft_id), None)
-        offset = spawn.time - track.samples[0].time if spawn is not None else 0.0
+        appeared = (first_seen or {}).get(a.aircraft_id, track.samples[0].time)
+        offset = spawn.time - appeared if spawn is not None else 0.0
         hits = [e for e in own if a.start_time <= e.time - offset <= a.end_time + GRADE_AFTER_PASS_S]
         if hits:
             found[a] = LsoGrade.parse(hits[0].comment or "")

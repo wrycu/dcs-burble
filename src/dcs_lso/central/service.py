@@ -406,8 +406,18 @@ class Central:
 
     def _fail_interrupted_uploads(self) -> None:
         """At startup: uploads that were being worked on when the service stopped are failed; those
-        waiting for their uploader to pick a pilot keep waiting, for a day."""
+        waiting for their uploader to pick a pilot keep waiting, for a day. Files left over from half-done
+        uploads (a crash mid-transfer) or from finished ones are removed."""
         stale = datetime.now(UTC) - UPLOAD_PILOT_WAIT
+        for leftover in self.uploads_dir.glob("incoming-*"):  # no transfer is in progress at startup
+            leftover.unlink(missing_ok=True)
+        with self.sessions.begin() as s:
+            waiting = {u.id for u in s.scalars(select(Upload).where(Upload.status.in_(("inspecting", "queued",
+                                                                                        "processing", "choose_pilot"))))}
+        for path in self.uploads_dir.iterdir():
+            owner = path.name.split(".", 1)[0]
+            if owner.isdigit() and int(owner) not in waiting:
+                path.unlink(missing_ok=True)
         with self.sessions.begin() as s:
             for upload in s.scalars(select(Upload).where(Upload.status.in_(("inspecting", "queued", "processing",
                                                                              "choose_pilot")))):
