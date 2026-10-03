@@ -15,10 +15,11 @@ from dataclasses import asdict
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from .acmi import Recording
+from .acmi import Recording, load_recording
 from .acmi.writer import write_slice
 from .detect import CarrierTimeline, PassResult
 from .detect.approaches import Approach
+from .dcslog import Debrief
 
 NM = 1852.0
 LEAD_S = 30.0
@@ -155,3 +156,67 @@ def write_pass_slice(source: str | Path, recording: Recording, p: PassResult,
     meta = out_dir / f"{name}.json"
     meta.write_text(json.dumps(sidecar(recording, p, source, ids), indent=2) + "\n", encoding="utf-8")
     return acmi, meta
+
+
+def _same_pilot(a: str | None, b: str | None) -> bool:
+    return a is not None and b is not None and a.strip().casefold() == b.strip().casefold()
+
+
+def _own(track) -> bool:
+    """Flown on the PC that made the recording: Tacview records AOA (and fuel, head position...) only
+    for the local player's jet. A dedicated server's recording has no such aircraft."""
+    return any(s.aoa is not None for s in track.samples)
+
+
+def own_pilots(recording: Recording) -> list[str]:
+    """The recording's own pilot(s): who flew an aircraft the LSO grades on the PC that recorded it.
+    Normally one; none in a dedicated server's recording."""
+    from .geometry import AIRCRAFT
+    return sorted({t.pilot for t in recording.objects.values() if t.name in AIRCRAFT and t.pilot and _own(t)},
+                  key=str.casefold)
+
+
+def slice_recording(source: str | Path, out_dir: str | Path, debrief: Debrief | None = None,
+                    recording: Recording | None = None, pilot: str | None = None,
+                    own_only: bool = False) -> list[tuple[Path, dict]]:
+    """Everything uploadable in a whole recording (backfill): a slice + sidecar for every carrier pass,
+    and a track report around every approach of the recording PC's own jet (the aircraft with
+    recorded AOA) that isn't already a pass, e.g. a multiplayer client's recording without the carrier.
+    With `debrief` (that session's debrief.log), DCS's grades and wires are attached. With `pilot`, only
+    that pilot's passes and approaches; with `own_only`, only those of aircraft flown on the PC that
+    made the recording (see `own_pilots`)."""
+    from .dcslog import attach_dcs_grades, track_dcs_grades
+    from .detect import find_passes
+    from .detect.approaches import find_approaches
+    from .geometry import AIRCRAFT
+
+    source, out_dir = Path(source), Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    recording = recording or load_recording(source)
+    passes = [p for p in find_passes(recording) if (pilot is None or _same_pilot(p.pilot, pilot))
+              and (not own_only or _own(recording.objects[p.aircraft_id]))]
+    if debrief is not None:
+        attach_dcs_grades(passes, recording, debrief)
+    out: list[tuple[Path, dict]] = []
+    for p in passes:
+        acmi, meta = write_pass_slice(source, recording, p, out_dir)
+        out.append((acmi, json.loads(meta.read_text(encoding="utf-8"))))
+    approaches = []
+    for track in recording.objects.values():
+        if track.name not in AIRCRAFT or not any(s.aoa is not None for s in track.samples):
+            continue
+        if pilot is not None and not _same_pilot(track.pilot, pilot):
+            continue
+        for a in find_approaches(recording, track.id):
+            start, end = approach_window(a)
+            if not any(p.aircraft_id == a.aircraft_id and p.start_time < end and start < p.end_time for p in passes):
+                approaches.append(a)
+    grades = track_dcs_grades(recording, approaches, debrief) if debrief is not None else {}
+    for a in approaches:
+        start, end = approach_window(a)
+        acmi = write_slice(source, out_dir / f"{track_slice_name(recording, a)}.zip.acmi", start, end, {a.aircraft_id})
+        meta = track_sidecar(recording, a, source)
+        if (grade := grades.get(a)) is not None:
+            meta["dcs"] = {"wire": grade.wire, "grade": asdict(grade)}
+        out.append((acmi, meta))
+    return out

@@ -6,22 +6,26 @@ import hashlib
 import math
 import secrets
 import statistics
+import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from ..acmi import ObjectTrack, Recording, Sample, load_recording
-from ..dcslog import LsoGrade
+from ..dcslog import Debrief, LsoGrade, load_debrief
 from ..detect import PassResult, find_passes
 from ..geometry import WindProfile
+from ..slices import own_pilots, slice_recording
 from ..grading import GRADING_VERSION, GradeResult, grade_pass
-from .db import Grade, Pass, Pilot, Slice, Source, make_engine, make_sessionmaker
+from .db import Grade, Pass, Pilot, Slice, Source, Upload, make_engine, make_sessionmaker
 from .storage import SliceStore
 
 START_TIME_TOLERANCE_S = 0.5
+PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
+UPLOAD_PILOT_WAIT = timedelta(days=1)  # how long an upload waits for its uploader to pick a pilot
 # Merging reports of one landing (see `Central.ingest`).
 MERGED_START_TOLERANCE_S = 15.0
 SAME_POSITION_M = 30.0  # median distance between the two tracks of the aircraft
@@ -71,10 +75,15 @@ class IngestResult:
 
 
 class Central:
-    def __init__(self, database_url: str, data_dir: str | Path) -> None:
+    def __init__(self, database_url: str, data_dir: str | Path, require_upload_token: bool = False) -> None:
+        # Refuse recordings uploaded without a source's token (by default anyone may upload their passes).
+        self.require_upload_token = require_upload_token
         self.engine = make_engine(database_url)
         self.sessions: sessionmaker[Session] = make_sessionmaker(self.engine)
         self.store = SliceStore(Path(data_dir) / "slices")
+        self.uploads_dir = Path(data_dir) / "uploads"
+        self.uploads_dir.mkdir(parents=True, exist_ok=True)
+        self._fail_interrupted_uploads()
 
     # -- sources ----------------------------------------------------------------------------
 
@@ -251,12 +260,147 @@ class Central:
             return IngestResult(landing.id, True, result.grade.value, result.text)
 
     def _candidates(self, s: Session, row: Pass) -> list[Pass]:
-        """Unmerged reports from other sources that could be the same landing as `row`."""
-        q = (select(Pass).where(Pass.id != row.id, Pass.source_id != row.source_id, Pass.pilot_id == row.pilot_id,
+        """Unmerged reports that could be the same landing as `row`: from other sources, or from the same
+        one (e.g. a server's Tacview file backfilled after its collector already sent the pass live)."""
+        q = (select(Pass).where(Pass.id != row.id, Pass.pilot_id == row.pilot_id,
                                 Pass.aircraft_type == row.aircraft_type, Pass.merged_into_id.is_(None))
              .order_by(Pass.id).options(selectinload(Pass.slice)))
         q = q.where(Pass.mission == row.mission) if row.mission is not None else q.where(Pass.mission.is_(None))
         return list(s.scalars(q))
+
+    # -- backfill: whole recordings --------------------------------------------------------------
+
+    def ingest_recording(self, source_id: int, path: str | Path, debrief: Debrief | None = None,
+                         pilot: str | None = None, own_only: bool = False) -> list[dict]:
+        """Slice every pass (and own-jet track) out of a whole recording, or only `pilot`'s, and ingest
+        each, merging with the landings already known. Returns one result per pass or track found."""
+        results = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for acmi, meta in slice_recording(path, tmp, debrief, pilot=pilot, own_only=own_only):
+                info = meta["pass"]
+                entry = {"kind": meta.get("kind", "pass"), "pilot": info.get("pilot"), "outcome": info.get("outcome"),
+                         "start_time": info.get("start_time")}
+                try:
+                    r = self.ingest(source_id, acmi.read_bytes(), meta)
+                    entry.update(pass_id=r.pass_id, created=r.created, grade=r.grade, text=r.text)
+                except IngestError as exc:
+                    entry["error"] = str(exc)
+                results.append(entry)
+        return results
+
+    def upload_source(self) -> int:
+        """The source that token-less uploads are recorded under (created on first use)."""
+        with self.sessions.begin() as s:
+            source = s.scalar(select(Source).where(Source.name == PUBLIC_UPLOADS))
+            if source is None:
+                source = Source(name=PUBLIC_UPLOADS, kind="pilot", token_hash=_hash_token(secrets.token_urlsafe(32)))
+                s.add(source)
+                s.flush()
+            return source.id
+
+    def add_upload(self, source_id: int, filename: str, size: int, choose_pilot: bool) -> tuple[int, str]:
+        """Record an upload; returns (id, key). `choose_pilot`: uploaded without a token, so only the
+        recording's own pilot's passes are imported (normally found automatically; if a file has several,
+        the uploader, who alone has the key, picks)."""
+        key = secrets.token_urlsafe(16)
+        with self.sessions.begin() as s:
+            upload = Upload(source_id=source_id, filename=filename[:300], size=size, key=key,
+                            status="inspecting" if choose_pilot else "queued", choose_pilot=choose_pilot)
+            s.add(upload)
+            s.flush()
+            return upload.id, key
+
+    def upload_path(self, upload_id: int, filename: str) -> Path:
+        """Where an upload's recording waits to be processed; keeps .zip.acmi/.txt.acmi (our reader
+        tells the two apart by name)."""
+        suffix = ".zip.acmi" if filename.lower().endswith(".zip.acmi") else ".txt.acmi"
+        return self.uploads_dir / f"{upload_id}{suffix}"
+
+    def debrief_path(self, upload_id: int) -> Path:
+        return self.uploads_dir / f"{upload_id}.debrief.log"
+
+    def inspect_upload(self, upload_id: int) -> bool:
+        """Find a token-less upload's own pilot (worker thread). Returns True if it can go straight on to
+        processing (exactly one, chosen automatically); otherwise it waits for the uploader, or ends."""
+        with self.sessions.begin() as s:
+            upload = s.get(Upload, upload_id)
+            path = self.upload_path(upload_id, upload.filename)
+        try:
+            pilots = own_pilots(load_recording(path))
+            error = None
+        except Exception as exc:  # a bad file must not take the worker down
+            pilots, error = [], f"could not read the recording: {exc}"[:500]
+        with self.sessions.begin() as s:
+            upload = s.get(Upload, upload_id)
+            upload.pilots = pilots
+            if error or not pilots:
+                upload.status, upload.message = ("failed", error) if error else (
+                    "done", "this recording has no own pilot in an aircraft the LSO grades: only passes flown on "
+                            "the PC that recorded it can be uploaded without a token (a server's recording needs "
+                            "that server's token)")
+                upload.finished_at = datetime.now(UTC)
+                self._remove_files(upload)
+                return False
+            if len(pilots) == 1:
+                upload.pilot, upload.status = pilots[0], "queued"
+                return True
+            upload.status = "choose_pilot"
+            return False
+
+    def choose_pilot(self, upload_id: int, key: str, pilot: str) -> None:
+        """The uploader picks whose passes to import; then the upload is ready to process."""
+        with self.sessions.begin() as s:
+            upload = s.get(Upload, upload_id)
+            if upload is None or not secrets.compare_digest(upload.key or "", key or ""):
+                raise PermissionError("this isn't your upload (the link you were given has its key)")
+            if upload.status != "choose_pilot":
+                raise ValueError(f"this upload isn't waiting for a pilot (it's {upload.status})")
+            if pilot not in (upload.pilots or []):
+                raise ValueError(f"{pilot!r} isn't one of the pilots in this recording")
+            upload.pilot, upload.status = pilot, "queued"
+
+    def process_upload(self, upload_id: int) -> None:
+        """Run a queued upload (worker thread); the recording file is removed afterwards."""
+        with self.sessions.begin() as s:
+            upload = s.get(Upload, upload_id)
+            upload.status = "processing"
+            source_id, pilot, own_only = upload.source_id, upload.pilot, bool(upload.choose_pilot)
+            path, debrief_path = self.upload_path(upload_id, upload.filename), self.debrief_path(upload_id)
+        try:
+            debrief = load_debrief(debrief_path) if debrief_path.exists() else None
+            results = self.ingest_recording(source_id, path, debrief, pilot=pilot, own_only=own_only)
+            status = "done"
+            message = f"no carrier passes flown by {pilot} in this recording" if pilot and not results else None
+        except Exception as exc:  # a bad file must not take the worker down
+            results, status, message = None, "failed", f"could not read the recording: {exc}"[:500]
+        finally:
+            path.unlink(missing_ok=True)
+            debrief_path.unlink(missing_ok=True)
+        with self.sessions.begin() as s:
+            upload = s.get(Upload, upload_id)
+            upload.status, upload.message, upload.results = status, message, results
+            upload.finished_at = datetime.now(UTC)
+
+    def _remove_files(self, upload: Upload) -> None:
+        for leftover in self.uploads_dir.glob(f"{upload.id}.*"):
+            leftover.unlink(missing_ok=True)
+
+    def _fail_interrupted_uploads(self) -> None:
+        """At startup: uploads that were being worked on when the service stopped are failed; those
+        waiting for their uploader to pick a pilot keep waiting, for a day."""
+        stale = datetime.now(UTC) - UPLOAD_PILOT_WAIT
+        with self.sessions.begin() as s:
+            for upload in s.scalars(select(Upload).where(Upload.status.in_(("inspecting", "queued", "processing",
+                                                                             "choose_pilot")))):
+                created = upload.created_at if upload.created_at.tzinfo else upload.created_at.replace(tzinfo=UTC)
+                if upload.status == "choose_pilot" and created > stale:
+                    continue
+                upload.message = ("no pilot was chosen within a day; please upload again"
+                                  if upload.status == "choose_pilot" else
+                                  "interrupted by a restart of the service; please upload again")
+                upload.status = "failed"
+                upload.finished_at = datetime.now(UTC)
+                self._remove_files(upload)
 
     def regrade(self, force: bool = False) -> tuple[int, int]:
         """Grade every landing with the current grading version. Returns (regraded, unchanged)."""

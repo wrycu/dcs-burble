@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import (JSON, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, create_engine,
+from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, create_engine,
                         event, inspect, text)
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -97,6 +97,32 @@ class Pass(Base):
     def grade(self) -> Grade | None:
         """The grade from the newest grading version."""
         return self.grades[-1] if self.grades else None
+
+
+class Upload(Base):
+    """A whole recording uploaded for backfill; sliced and ingested in the background."""
+
+    __tablename__ = "uploads"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
+    filename: Mapped[str] = mapped_column(String(300))
+    size: Mapped[int] = mapped_column(Integer)
+    # inspecting -> choose_pilot (token-less, several pilots) -> queued -> processing -> done | failed
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    # Uploaded without a token: only one pilot's passes are imported, picked by the uploader from those in
+    # the file (`pilots`); `key` (in the uploader's link) lets only them pick.
+    choose_pilot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    pilots: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    pilot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # One entry per pass or track found: {"kind", "pilot", "outcome", "start_time", "pass_id", "created",
+    # "grade", "text", "error"}.
+    results: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    source: Mapped[Source] = relationship()
 
 
 class Grade(Base):

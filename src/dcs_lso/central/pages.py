@@ -7,7 +7,7 @@ from datetime import datetime
 from html import escape
 
 from ..grading import grade_name, grade_short
-from .db import Pass
+from .db import Pass, Upload
 
 # Greenie board colours per grade (light, dark).
 GRADE_COLORS = {
@@ -50,6 +50,17 @@ dl.facts dt { color: var(--muted); }
 dl.facts dd { margin: 0; }
 .card svg { display: block; width: 100%; height: auto; }
 .empty-state { color: var(--muted); padding: 24px; text-align: center; }
+form.upload { display: grid; gap: 12px; max-width: 560px; }
+form.upload label { display: grid; gap: 4px; font-weight: 600; }
+form.upload .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
+form.upload input, form.upload button { font: inherit; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text); }
+form.upload button { justify-self: start; cursor: pointer; font-weight: 600; }
+progress { width: 100%; }
+table.results { border-collapse: collapse; width: 100%; }
+table.results th, table.results td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+table.results th { color: var(--muted); font-size: 12px; }
+.error { color: #cf222e; }
 """
 
 GRADE_CSS = "\n".join(
@@ -124,7 +135,8 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
                  f'<tbody>{"".join(rows)}</tbody></table></div>')
     else:
         table = '<p class="empty-state">No passes yet for this filter.</p>'
-    body = (f"<h1>Greenie Board</h1><p class=\"sub\">{len(passes)} passes · {period}</p>"
+    body = (f"<h1>Greenie Board</h1><p class=\"sub\">{len(passes)} passes · {period} · "
+            '<a href="/upload">Upload a Tacview recording</a></p>'
             f'{filters}<div class="panel">{table}{legend}</div>')
     return _page("Greenie Board", body)
 
@@ -172,3 +184,110 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
             f'<dl class="facts">{dl}</dl>{card}')
     return _page(f"{p.pilot.name} {g.grade if g else ''}", body)
 
+
+
+UPLOAD_SCRIPT = """
+const form = document.getElementById('upload');
+const tokenInput = form.elements.token;
+try { tokenInput.value = localStorage.getItem('dcs-lso-token') || ''; } catch (e) {}
+form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const status = document.getElementById('status');
+  const bar = document.getElementById('bar');
+  const data = new FormData();
+  data.append('recording', form.elements.recording.files[0]);
+  if (form.elements.debrief.files.length) data.append('debrief', form.elements.debrief.files[0]);
+  try { localStorage.setItem('dcs-lso-token', tokenInput.value); } catch (e) {}
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/v1/recordings');
+  if (tokenInput.value.trim()) xhr.setRequestHeader('Authorization', 'Bearer ' + tokenInput.value.trim());
+  bar.hidden = false;
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.value = e.loaded / e.total; };
+  xhr.onload = () => {
+    if (xhr.status === 202) { window.location = JSON.parse(xhr.responseText).page; return; }
+    bar.hidden = true;
+    let detail = xhr.responseText;
+    try { detail = JSON.parse(xhr.responseText).detail; } catch (e) {}
+    status.textContent = 'Upload failed (' + xhr.status + '): ' + detail;
+  };
+  xhr.onerror = () => { bar.hidden = true; status.textContent = 'Upload failed: network error'; };
+  status.textContent = 'Uploading…';
+  xhr.send(data);
+});
+"""
+
+
+def upload_page(token_required: bool) -> str:
+    if token_required:
+        token = ('<label>Upload token <input name="token" type="password" required autocomplete="off">'
+                 '<span class="hint">The token of a source on this service (kept in this browser).</span></label>')
+        intro = "Every carrier pass in it is graded and added to the board."
+    else:
+        token = ('<label>Upload token (optional) <input name="token" type="password" autocomplete="off">'
+                 '<span class="hint">For a source on this service: imports every pilot\'s passes (kept in this '
+                 "browser). Without one, only your own passes are imported: those of the pilot flying on the "
+                 "PC that made the recording (a server's recording needs that server's token).</span></label>")
+        intro = "Your carrier passes in it are graded and added to the board."
+    body = (
+        '<p class="sub"><a href="/">← Greenie board</a></p><h1>Upload a Tacview recording</h1>'
+        f'<p class="sub">{intro} They\'re merged with the passes already here (a server\'s and a pilot\'s '
+        "report of the same landing become one). From a multiplayer client's recording, which often has only "
+        "your own jet, your approaches are matched with the server's report of each landing.</p>"
+        f'<div class="panel"><form class="upload" id="upload">{token}'
+        '<label>Tacview recording <input name="recording" type="file" accept=".acmi" required>'
+        '<span class="hint">A .zip.acmi or .txt.acmi file.</span></label>'
+        '<label>debrief.log (optional) <input name="debrief" type="file" accept=".log">'
+        "<span class=\"hint\">DCS's Logs/debrief.log from the same session, for DCS's own grades and wires "
+        "(DCS overwrites it at the next mission).</span></label>"
+        '<button type="submit">Upload</button><progress id="bar" hidden value="0"></progress>'
+        '<p id="status" class="error"></p></form></div>'
+        f"<script>{UPLOAD_SCRIPT}</script>"
+    )
+    return _page("Upload a recording", body)
+
+
+def upload_status_page(upload: Upload, key: str | None) -> str:
+    """`key`: the uploader's own view (they may pick whose passes to import)."""
+    running = upload.status in ("inspecting", "queued", "processing")
+    refresh = '<meta http-equiv="refresh" content="3">' if running else ""
+    rows = []
+    for r in upload.results or []:
+        kind = "own track" if r.get("kind") == "track" else (r.get("outcome") or "")
+        if r.get("error"):
+            result = f'<span class="error">{escape(r["error"])}</span>'
+        elif r.get("grade"):
+            state = "added" if r.get("created") else "already here"
+            result = (f'<a href="/passes/{r["pass_id"]}">{escape(grade_name(r["grade"]))}: {escape(r.get("text") or "")}</a>'
+                      f" ({state})")
+        else:
+            result = escape(r.get("text") or "kept until a report of this landing with the carrier arrives")
+        start = r.get("start_time")
+        rows.append(f"<tr><td>{escape(r.get('pilot') or '?')}</td><td>{escape(kind)}</td>"
+                    f"<td>{'' if start is None else f'{start:.0f}s'}</td><td>{result}</td></tr>")
+    if upload.status == "choose_pilot" and key:
+        options = "".join(f'<option value="{escape(n)}">{escape(n)}</option>' for n in upload.pilots or [])
+        detail = (f'<form class="upload" method="post" action="/uploads/{upload.id}/pilot">'
+                  f'<input type="hidden" name="key" value="{escape(key)}">'
+                  '<label>This recording has more than one own pilot. Which are you? <select name="pilot" required>'
+                  f'<option value="" disabled selected>Choose…</option>{options}</select>'
+                  '<span class="hint">Only that pilot\'s passes are imported.</span></label>'
+                  '<button type="submit">Import my passes</button></form>')
+    elif upload.status == "choose_pilot":
+        detail = '<p class="empty-state">Waiting for the uploader to choose their pilot.</p>'
+    elif upload.status == "failed":
+        detail = f'<p class="error">{escape(upload.message or "failed")}</p>'
+    elif running:
+        doing = {"inspecting": "Reading the recording", "queued": "Waiting to be processed"}.get(upload.status, "Processing")
+        detail = f'<p class="empty-state">{doing}… (this page refreshes)</p>'
+    elif rows:
+        detail = ('<div class="scroll"><table class="results"><thead><tr><th>Pilot</th><th>Pass</th><th>At</th>'
+                  f'<th>Result</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+    else:
+        detail = f'<p class="empty-state">{escape(upload.message or "No carrier passes or approaches found in this recording.")}</p>'
+    body = (f'<p class="sub"><a href="/">← Greenie board</a> · <a href="/upload">Upload another</a></p>'
+            f"<h1>{escape(upload.filename)}</h1>"
+            f'<p class="sub">{upload.size / 1e6:.1f} MB · '
+            f'{escape(f"passes flown by {upload.pilot}" if upload.pilot else f"from {upload.source.name}")} · '
+            f'{escape(upload.status)}</p>'
+            f'<div class="panel">{detail}</div>')
+    return _page(f"Upload: {upload.filename}", body).replace("<head>", "<head>" + refresh, 1)

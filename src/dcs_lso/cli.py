@@ -248,7 +248,7 @@ def _central(args: argparse.Namespace):
     data_dir = Path(args.data_dir)
     url = args.database_url or f"sqlite:///{(data_dir / 'lso.db').resolve()}"
     data_dir.mkdir(parents=True, exist_ok=True)
-    return Central(url, data_dir)
+    return Central(url, data_dir, require_upload_token=args.require_upload_token)
 
 
 def _central_serve(args: argparse.Namespace) -> int:
@@ -295,7 +295,7 @@ def _central_regrade(args: argparse.Namespace) -> int:
 def _upload(args: argparse.Namespace) -> int:
     import httpx
 
-    from .slices import write_pass_slice
+    from .slices import slice_recording
 
     token = args.token or os.environ.get("DCS_LSO_TOKEN")
     if not token:
@@ -305,27 +305,26 @@ def _upload(args: argparse.Namespace) -> int:
     with httpx.Client(base_url=args.url, headers={"Authorization": f"Bearer {token}"}, timeout=60) as client, \
             tempfile.TemporaryDirectory() as tmp:
         for path in args.recordings:
-            recording = load_recording(path)
-            passes = list(find_passes(recording))
             debrief = args.debrief or _sibling_debrief(path)
-            if debrief:
-                attach_dcs_grades(passes, recording, load_debrief(debrief))
-            for p in passes:
-                acmi, meta = write_pass_slice(path, recording, p, tmp)
+            # Every pass, plus own-jet approaches without a carrier (merged on central with the
+            # server's report of each landing).
+            for acmi, meta in slice_recording(path, Path(tmp) / Path(path).name, load_debrief(debrief) if debrief else None):
+                info = meta["pass"]
+                label = f"{info['start_time']:8.2f}s  {info.get('pilot') or hex(info['aircraft_id']):<16}"
                 try:
                     r = client.post("/api/v1/passes", files={"slice": (acmi.name, acmi.read_bytes(), "application/zip")},
-                                    data={"sidecar": meta.read_text()})
+                                    data={"sidecar": json.dumps(meta)})
                 except httpx.HTTPError as exc:
-                    print(f"{p.start_time:8.2f}s  upload failed: {exc}", file=sys.stderr)
+                    print(f"{label} upload failed: {exc}", file=sys.stderr)
                     failures += 1
                     continue
                 if r.status_code in (200, 201):
                     b = r.json()
                     state = "new" if b["created"] else "already uploaded"
-                    print(f"{p.start_time:8.2f}s  {p.pilot or hex(p.aircraft_id):<16} {b['text']:<40} "
-                          f"({state}) {args.url.rstrip('/')}{b['url']}")
+                    text = b["text"] or "own track: waiting for a report of this landing with the carrier"
+                    print(f"{label} {text:<40} ({state}) {args.url.rstrip('/')}{b['url']}")
                 else:
-                    print(f"{p.start_time:8.2f}s  rejected ({r.status_code}): {r.text}", file=sys.stderr)
+                    print(f"{label} rejected ({r.status_code}): {r.text}", file=sys.stderr)
                     failures += 1
     return 1 if failures else 0
 
@@ -447,6 +446,10 @@ def main(argv: list[str] | None = None) -> int:
                          help="where slices (and the default SQLite database) live [$DCS_LSO_DATA_DIR]")
     central.add_argument("--database-url", default=os.environ.get("DCS_LSO_DATABASE_URL"),
                          help="SQLAlchemy URL; default sqlite in the data dir [$DCS_LSO_DATABASE_URL]")
+    central.add_argument("--require-upload-token", action="store_true",
+                         default=os.environ.get("DCS_LSO_REQUIRE_UPLOAD_TOKEN", "").lower() in ("1", "true", "yes"),
+                         help="only accept recordings uploaded with a source's token (by default anyone can upload "
+                              "a recording and import their own passes from it) [$DCS_LSO_REQUIRE_UPLOAD_TOKEN]")
     central_sub = central.add_subparsers(dest="central_command", required=True)
     serve = central_sub.add_parser("serve", help="serve the API, greenie board and pass pages")
     serve.add_argument("--host", default="127.0.0.1")

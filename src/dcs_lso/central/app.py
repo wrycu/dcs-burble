@@ -3,6 +3,10 @@
 # No `from __future__ import annotations` here: FastAPI must see the real annotation
 # objects to resolve dependencies defined inside create_app().
 import json
+import secrets
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
@@ -14,15 +18,19 @@ from sqlalchemy.orm import selectinload
 from ..cards import render_card
 from ..grading import grade_pass
 from . import pages
-from .db import Pass, Pilot, Source
+from .db import Pass, Pilot, Source, Upload
 from .service import Central, IngestError
 
 MAX_SLICE_BYTES = 20 * 1024 * 1024
+MAX_RECORDING_BYTES = 1024 * 1024 * 1024  # a whole session's Tacview recording (backfill)
+MAX_DEBRIEF_BYTES = 50 * 1024 * 1024
 BOARD_COLUMNS = 20
 
 
 def create_app(central: Central) -> FastAPI:
     app = FastAPI(title="dcs-lso central", docs_url="/api/docs", redoc_url=None)
+    # Uploaded recordings are processed one at a time, off the request threads.
+    uploads = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload")
 
     def source_from_token(authorization: Annotated[str | None, Header()] = None) -> Source:
         if not authorization or not authorization.startswith("Bearer "):
@@ -52,6 +60,94 @@ def create_app(central: Central) -> FastAPI:
                 "url": f"/passes/{result.pass_id}"}
         # 201 for a new pass, 200 when this pass was already uploaded (nothing changes).
         return body if result.created else JSONResponse(body, status_code=200)
+
+    async def _save(upload: UploadFile, path: Path, limit: int) -> int:
+        size = 0
+        with path.open("wb") as out:
+            while chunk := await upload.read(1024 * 1024):
+                size += len(chunk)
+                if size > limit:
+                    out.close()
+                    path.unlink(missing_ok=True)
+                    raise HTTPException(413, f"{upload.filename} is larger than {limit // (1024 * 1024)} MB")
+                out.write(chunk)
+        return size
+
+    @app.post("/api/v1/recordings", status_code=202)
+    async def upload_recording(recording: Annotated[UploadFile, File(description="a whole .zip.acmi or .txt.acmi recording")],
+                               debrief: Annotated[UploadFile | None, File(description="that session's debrief.log")] = None,
+                               authorization: Annotated[str | None, Header()] = None):
+        """Backfill: a whole recording's passes are sliced, graded and merged with the known landings (in
+        the background; follow `status_url`, or the uploader's `page`). With a source's token: every pass.
+        Without (unless the server requires tokens): one pilot's passes, picked from the pilots in the file
+        (automatically if there's only one; otherwise POST it to `choose_url` with the `key`)."""
+        if authorization:
+            source_id, choose = source_from_token(authorization).id, False
+        elif central.require_upload_token:
+            raise HTTPException(401, "this server only accepts recordings uploaded with a source's token")
+        else:
+            source_id, choose = central.upload_source(), True
+        name = Path(recording.filename or "recording.acmi").name
+        if not name.lower().endswith(".acmi"):
+            raise HTTPException(400, "expected a Tacview .acmi recording")
+        incoming = central.uploads_dir / f"incoming-{uuid.uuid4().hex}.acmi"
+        size = await _save(recording, incoming, MAX_RECORDING_BYTES)
+        upload_id, key = central.add_upload(source_id, name, size, choose_pilot=choose)
+        incoming.rename(central.upload_path(upload_id, name))
+        if debrief is not None and debrief.filename:
+            await _save(debrief, central.debrief_path(upload_id), MAX_DEBRIEF_BYTES)
+        uploads.submit(_inspect_then_process if choose else central.process_upload, upload_id)
+        return JSONResponse({"upload_id": upload_id, "key": key, "status_url": f"/api/v1/recordings/{upload_id}",
+                             "choose_url": f"/api/v1/recordings/{upload_id}/pilot",
+                             "page": f"/uploads/{upload_id}?key={key}"}, status_code=202)
+
+    def _inspect_then_process(upload_id: int) -> None:
+        if central.inspect_upload(upload_id):
+            central.process_upload(upload_id)
+
+    def _choose(upload_id: int, key: str, pilot: str) -> None:
+        try:
+            central.choose_pilot(upload_id, key, pilot)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        uploads.submit(central.process_upload, upload_id)
+
+    @app.post("/api/v1/recordings/{upload_id}/pilot", status_code=202)
+    def choose_pilot(upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()]) -> dict:
+        """Pick whose passes to import from a token-less upload with several pilots."""
+        _choose(upload_id, key, pilot)
+        return {"upload_id": upload_id, "status_url": f"/api/v1/recordings/{upload_id}"}
+
+    @app.post("/uploads/{upload_id}/pilot")
+    def choose_pilot_form(upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()]):
+        _choose(upload_id, key, pilot)
+        return RedirectResponse(f"/uploads/{upload_id}?key={key}", status_code=303)
+
+    def _upload(upload_id: int) -> Upload:
+        with central.sessions() as s:
+            upload = s.scalar(select(Upload).where(Upload.id == upload_id).options(selectinload(Upload.source)))
+        if upload is None:
+            raise HTTPException(404, "no such upload")
+        return upload
+
+    @app.get("/api/v1/recordings/{upload_id}")
+    def upload_status(upload_id: int) -> dict:
+        u = _upload(upload_id)
+        return {"upload_id": u.id, "filename": u.filename, "size": u.size, "source": u.source.name,
+                "pilots": u.pilots or [], "pilot": u.pilot,
+                "status": u.status, "message": u.message, "results": u.results or []}
+
+    @app.get("/upload", response_class=HTMLResponse)
+    def upload_form() -> str:
+        return pages.upload_page(token_required=central.require_upload_token)
+
+    @app.get("/uploads/{upload_id}", response_class=HTMLResponse)
+    def upload_detail(upload_id: int, key: str | None = None) -> str:
+        upload = _upload(upload_id)
+        owner = key is not None and upload.key is not None and secrets.compare_digest(upload.key, key)
+        return pages.upload_status_page(upload, key if owner else None)
 
     def _passes(days: int, pilot: str | None, source: str | None) -> list[Pass]:
         with central.sessions() as s:
