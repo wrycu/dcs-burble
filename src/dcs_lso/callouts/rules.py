@@ -18,6 +18,7 @@ NM = 1852.0
 
 class Call(StrEnum):
     WAVE_OFF = "wave off"
+    WAVE_OFF_FOUL_DECK = "wave off, foul deck"  # another aircraft is in the landing area
     WAVE_OFF_GEAR = "wave off, gear"
     BOLTER = "bolter"  # decided by the bolter detector in the live collector, not by CalloutEngine
     TRAPPED = "welcome aboard"  # likewise (arrestment detected); spoken as one of several variants
@@ -39,6 +40,8 @@ class Call(StrEnum):
     EASY_WITH_IT = "easy with it"
     RIGHT_FOR_LINEUP = "right for lineup"
     COME_LEFT = "come left"
+    DONT_SETTLE = "don't settle"  # going low, in close
+    DONT_CLIMB = "don't climb"  # going high, in close
     GOING_LOW = "you're going low"
     LITTLE_LOW = "you're a little low"
     LITTLE_HIGH = "you're a little high"
@@ -51,12 +54,14 @@ class Call(StrEnum):
     EASY_NOSE = "easy with the nose"
     FAST = "you're fast"
     SLOW = "you're slow"
+    KEEP_TURN_IN = "keep your turn in"  # overshooting the turn to final (before the groove)
+    KEEP_IT_COMING = "keep it coming"  # reassurance: on glideslope and centerline, nothing to say
 
 
 # Lower number = more urgent (declaration order above).
 PRIORITY = {call: i for i, call in enumerate(Call)}
 POWER_CALLS = frozenset({Call.POWER, Call.POWER_X2, Call.POWER_X3})
-WAVE_OFFS = frozenset({Call.WAVE_OFF, Call.WAVE_OFF_GEAR})
+WAVE_OFFS = frozenset({Call.WAVE_OFF, Call.WAVE_OFF_FOUL_DECK, Call.WAVE_OFF_GEAR})
 # A trap welcome naming the wire: {plain welcome: {wire: call}}.
 WELCOME_WIRE = {
     Call.TRAPPED: {n: Call[f"TRAPPED_WIRE_{n}"] for n in (1, 2, 3, 4)},
@@ -81,6 +86,8 @@ class Thresholds:
     quiet_inside_m: float = 120.0
     wave_off_inside_m: float = 0.25 * NM
     gear_wave_off_inside_m: float = 0.5 * NM
+    # Another aircraft in the landing area with the pilot this close: "wave off, foul deck".
+    foul_deck_inside_m: float = 0.35 * NM
     in_close_m: float = 0.25 * NM
     # Glideslope deviation bands, degrees: "a little" / plain.
     little_deg: float = 0.35
@@ -107,6 +114,19 @@ class Thresholds:
     angle_hysteresis_deg: float = 0.1
     # A deviation is "being corrected" when its rate toward zero is at least this.
     correcting_deg_s: float = 0.05
+    # Reassurance ("keep it coming"): a pass this close to the glideslope and centerline, steady, with no
+    # call for `keep_coming_after_s`, gets one; at most `keep_coming_max` per pass, between these distances.
+    keep_coming_share: float = 0.6  # of the "a little" bands
+    keep_coming_hold_s: float = 1.5
+    keep_coming_after_s: float = 4.0
+    keep_coming_max: int = 2
+    keep_coming_from_m: float = 0.6 * NM
+    keep_coming_to_m: float = 150.0
+    # Before the groove: past the extended centerline by this much and still heading away from it.
+    overshoot_lateral_m: float = 15.0
+    overshoot_heading_deg: float = 10.0
+    overshoot_from_m: float = 1.5 * NM
+    overshoot_to_m: float = 0.3 * NM
     # A condition must hold this long before it is called (DCS: lineup 3 s, speed 4 s)...
     hold_s: float = 0.4
     lineup_hold_s: float = 3.0
@@ -153,6 +173,8 @@ def conditions(s: GrooveState, th: Thresholds, previous: frozenset[Call] = froze
         active.add(Call.WAVE_OFF)
     if s.gear is not None and s.gear < 0.5 and 0 < s.along <= th.gear_wave_off_inside_m:
         active.add(Call.WAVE_OFF_GEAR)
+    if s.foul_deck and 0 < s.along <= th.foul_deck_inside_m:
+        active.add(Call.WAVE_OFF_FOUL_DECK)
     if s.along <= th.quiet_inside_m:
         return active
 
@@ -170,9 +192,9 @@ def conditions(s: GrooveState, th: Thresholds, previous: frozenset[Call] = froze
     elif gs >= edge(Call.LITTLE_HIGH, th.little_deg, h):
         active.add(Call.LITTLE_HIGH)
     elif rate <= -th.going_deg_s:
-        active.add(Call.GOING_LOW)
+        active.add(Call.DONT_SETTLE if s.along <= th.in_close_m else Call.GOING_LOW)
     elif rate >= th.going_deg_s:
-        active.add(Call.GOING_HIGH)
+        active.add(Call.DONT_CLIMB if s.along <= th.in_close_m else Call.GOING_HIGH)
 
     # Lineup (+ is right of centerline).
     lu, lu_rate = s.lineup_deg, s.lineup_rate
@@ -208,9 +230,9 @@ def conditions(s: GrooveState, th: Thresholds, previous: frozenset[Call] = froze
 def correcting(call: Call, s: GrooveState, th: Thresholds) -> bool:
     """Is the pilot already fixing the deviation this call is about?"""
     c = th.correcting_deg_s
-    if call in POWER_CALLS or call in (Call.LOW, Call.LITTLE_LOW, Call.GOING_LOW):
+    if call in POWER_CALLS or call in (Call.LOW, Call.LITTLE_LOW, Call.GOING_LOW, Call.DONT_SETTLE):
         return s.glideslope_rate >= c
-    if call in (Call.HIGH, Call.LITTLE_HIGH, Call.GOING_HIGH):
+    if call in (Call.HIGH, Call.LITTLE_HIGH, Call.GOING_HIGH, Call.DONT_CLIMB):
         return s.glideslope_rate <= -c
     if call in (Call.RIGHT_FOR_LINEUP, Call.LITTLE_RIGHT, Call.DRIFTING_LEFT):
         return s.lineup_rate >= c
@@ -236,6 +258,10 @@ class CalloutEngine:
         self._aligned_since: float | None = None
         self.in_groove = False
         self.waved_off = False
+        self._steady_since: float | None = None  # for "keep it coming"
+        self._keep_coming_said = 0
+        self._overshoot_since: float | None = None
+        self._overshoot_said = False
 
     def _update_groove(self, s: GrooveState) -> None:
         th = self.thresholds
@@ -271,6 +297,8 @@ class CalloutEngine:
             self._since.setdefault(call, s.time)
         if self.waved_off:
             return None
+        if not self.in_groove:
+            return self._pattern(s)
         ready = []
         for c in active:
             if s.time - self._since[c] < th.hold_for(c):
@@ -280,7 +308,7 @@ class CalloutEngine:
                 continue
             ready.append(c)
         if not ready:
-            return None
+            return self._keep_coming(s, active)
         call = min(ready, key=PRIORITY.__getitem__)
         # A wave-off interrupts anything; other calls wait for the previous one to finish.
         if call not in WAVE_OFFS and s.time - self._busy_until < th.spacing_s:
@@ -295,4 +323,47 @@ class CalloutEngine:
             self._last_power = s.time
         if said_as in WAVE_OFFS:
             self.waved_off = True
+        self._steady_since = None
         return CallEvent(s.time, s.along, said_as, s)
+
+    def _say(self, s: GrooveState, call: Call) -> CallEvent:
+        ends = s.time + self.durations.get(call, self.thresholds.default_call_s)
+        self._said_until[call] = ends
+        self._busy_until = ends
+        return CallEvent(s.time, s.along, call, s)
+
+    def _pattern(self, s: GrooveState) -> CallEvent | None:
+        """Before the groove: "keep your turn in" when overshooting the extended centerline (passing it
+        to starboard while still heading away from it), once per pass."""
+        th = self.thresholds
+        overshooting = (th.overshoot_to_m < s.along <= th.overshoot_from_m and s.lateral_m >= th.overshoot_lateral_m
+                        and s.heading_error >= th.overshoot_heading_deg)
+        if not overshooting or self._overshoot_said:
+            self._overshoot_since = None
+            return None
+        if self._overshoot_since is None:
+            self._overshoot_since = s.time
+        if s.time - self._overshoot_since < th.hold_s or s.time - self._busy_until < th.spacing_s:
+            return None
+        self._overshoot_said = True
+        return self._say(s, Call.KEEP_TURN_IN)
+
+    def _keep_coming(self, s: GrooveState, active: set[Call]) -> CallEvent | None:
+        """Reassurance when the pass is good and the LSO has been quiet for a while."""
+        th = self.thresholds
+        k = th.keep_coming_share
+        steady = (not active and th.keep_coming_to_m < s.along <= th.keep_coming_from_m
+                  and abs(s.glideslope_deg) < th.little_deg * k and abs(s.glideslope_rate) < th.going_deg_s * k
+                  and abs(s.lineup_deg) < th.little_lineup_deg * k and abs(s.lineup_rate) < th.drifting_deg_s * k
+                  and (s.aoa is None or th.aoa_fast < s.aoa < th.aoa_slow))
+        if not steady:
+            self._steady_since = None
+            return None
+        if self._steady_since is None:
+            self._steady_since = s.time
+        if (self._keep_coming_said >= th.keep_coming_max or s.time - self._steady_since < th.keep_coming_hold_s
+                or s.time - self._busy_until < th.keep_coming_after_s):
+            return None
+        self._keep_coming_said += 1
+        self._steady_since = None
+        return self._say(s, Call.KEEP_IT_COMING)

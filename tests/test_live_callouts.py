@@ -10,7 +10,7 @@ import pytest
 
 from dcs_lso.acmi.stream import serve_recording
 from dcs_lso.callouts.rules import Call
-from dcs_lso.callouts.voice import PHRASES, ClipLibrary, clip_name, variants
+from dcs_lso.callouts.voice import DIGITS, PHRASES, ClipLibrary, clip_name, variants
 from dcs_lso.central.app import create_app
 from dcs_lso.central.service import Central
 from dcs_lso.edge.callouts import CalloutSettings, SrsSink
@@ -40,6 +40,14 @@ def clips(tmp_path) -> Path:
                 w.setframerate(16000)
                 w.writeframes(tone(0.2).tobytes())
             manifest["clips"][call.name].append({"file": clip_name(call, i), "text": text})
+    manifest["numbers"] = {}
+    for digit, word in DIGITS.items():
+        with wave.open(str(d / f"number_{digit}.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(tone(0.12).tobytes())
+        manifest["numbers"][digit] = {"file": f"number_{digit}.wav", "text": word}
     (d / "manifest.json").write_text(json.dumps(manifest))
     return d
 
@@ -342,3 +350,87 @@ def test_praise_is_never_picked_when_not_allowed(clips):
     assert {is_praise(lib.pick(Call.TRAPPED, praise=False).text) for _ in range(300)} == {False}
     assert {is_praise(lib.pick(Call.TRAPPED_WIRE_3, praise=False).text) for _ in range(300)} == {False}
     assert True in {is_praise(lib.pick(Call.TRAPPED, praise=True).text) for _ in range(300)}
+
+
+
+def test_side_number_goes_before_a_call(clips):
+    lib = ClipLibrary.load(clips)
+    power = lib[Call.POWER]
+    numbered = lib.with_side_number(power, "301")
+    assert numbered.text == "301, Power."
+    assert len(numbered.frames) == 3 * len(lib.numbers["3"].frames) + 2 + len(power.frames)  # 3 digits, gap, call
+    assert lib.with_side_number(power, None) is power and lib.with_side_number(power, "") is power
+
+
+def test_foul_deck_is_another_aircraft_in_the_landing_area():
+    from dcs_lso.acmi import ObjectTrack, Sample, Transform
+    from dcs_lso.edge.live import LivePassDetector
+    from dcs_lso.geometry import FA18C, NIMITZ, CarrierPose, DeckFrame
+    frame = DeckFrame(NIMITZ, FA18C)
+    pose = CarrierPose(u=0.0, v=0.0, alt=0.0, heading=0.0)
+    detector = LivePassDetector()
+
+    def parked(object_id: int, along: float, lateral: float) -> None:
+        """A jet whose hook sits on deck at (along, lateral) in the landing-area frame."""
+        def at(u: float, v: float) -> Transform:
+            return Transform(u=u, v=v, alt=frame.carrier.deck_altitude + 2.24, roll=0.0, pitch=0.0, heading=0.0)
+        u, v = 0.0, 0.0
+        for _ in range(4):  # Newton steps on the (linear) map from (u, v) to (along, lateral)
+            p0 = frame.position(pose, at(u, v))
+            pu, pv = frame.position(pose, at(u + 1, v)), frame.position(pose, at(u, v + 1))
+            j = ((pu.along - p0.along, pv.along - p0.along), (pu.lateral - p0.lateral, pv.lateral - p0.lateral))
+            ea, el = along - p0.along, lateral - p0.lateral
+            det = j[0][0] * j[1][1] - j[0][1] * j[1][0]
+            u += (ea * j[1][1] - el * j[0][1]) / det
+            v += (j[0][0] * el - j[1][0] * ea) / det
+        track = ObjectTrack(object_id, {"Type": "Air+FixedWing", "Name": "FA-18C_hornet"})
+        track.samples.append(Sample(10.0, at(u, v), None))
+        detector.tracks[object_id] = track
+
+    parked(0x201, along=-20.0, lateral=2.0)  # just past the wires, still in the landing area
+    pos = frame.position(pose, detector.tracks[0x201].samples[-1].transform)
+    assert abs(pos.along + 20.0) < 0.1 and abs(pos.lateral - 2.0) < 0.1 and abs(pos.hook_height) < 0.5
+    assert detector.landing_area_foul(0x101, pose, frame, exclude=0x301, now=10.5)
+    assert not detector.landing_area_foul(0x101, pose, frame, exclude=0x201, now=10.5)  # that's the one landing
+    assert not detector.landing_area_foul(0x101, pose, frame, exclude=0x301, now=20.0)  # long gone
+    detector.tracks.clear()
+    parked(0x202, along=-60.0, lateral=40.0)  # parked forward on the starboard side: clear of the landing area
+    assert not detector.landing_area_foul(0x101, pose, frame, exclude=0x301, now=10.5)
+
+
+def test_foul_deck_waves_the_pilot_off(tmp_path, clips, monkeypatch):
+    from dcs_lso.edge.live import LivePassDetector
+    monkeypatch.setattr(LivePassDetector, "landing_area_foul", lambda self, *args: True)
+    _, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi",
+                                           tmp_path / "edge", clips))
+    said = [call for call, _ in sink.said]
+    assert Call.WAVE_OFF_FOUL_DECK in said
+    assert said[said.index(Call.WAVE_OFF_FOUL_DECK) + 1:] in ([], [Call.TRAPPED_WAVED_OFF])  # nothing else after it
+
+
+class SlotHooks(WireHooks):
+    def __init__(self, numbers: dict[str, str]):
+        super().__init__(None)
+        self.numbers = numbers
+
+    def slot_for(self, pilot, before):
+        return {"onboard_num": self.numbers[pilot]} if pilot in self.numbers else None
+
+
+def test_side_numbers_when_two_jets_are_in_the_groove(tmp_path, clips):
+    from test_backfill import two_pilots
+    path = two_pilots(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi", tmp_path / "two.zip.acmi")
+    _, _, sink = asyncio.run(run_collector(path, tmp_path / "edge", clips,
+                                           hooks=SlotHooks({"Wrycu": "301", "Maverick": "302"})))
+    groove_calls = [text for (call, _), text in zip(sink.said, sink.texts) if call not in WELCOMES]
+    assert groove_calls and all(t.startswith(("301, ", "302, ")) for t in groove_calls)
+    assert {t[:3] for t in groove_calls} == {"301", "302"}
+    # (The copy flies exactly the same path, so each also finds the other in the landing area.)
+    assert Call.WAVE_OFF_FOUL_DECK in [c for c, _ in sink.said]
+    # One jet alone: no side numbers.
+    _, _, alone = asyncio.run(run_collector(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi",
+                                            tmp_path / "edge2", clips, hooks=SlotHooks({"Wrycu": "301"})))
+    assert not any(t.startswith("301") for t in alone.texts)
+
+
+WELCOMES = {Call.TRAPPED, Call.TRAPPED_WAVED_OFF, Call.BOLTER} | {c for c in Call if c.name.startswith("TRAPPED_")}

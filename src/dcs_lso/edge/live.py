@@ -26,6 +26,14 @@ def _extrapolate(a: tuple[float, CarrierPose], b: tuple[float, CarrierPose], t: 
                        heading=(pb.heading + dh * f) % 360.0)
 
 
+# The landing area for "foul deck": from the ramp (meters short of the aim point) to the forward end
+# of the angled deck, with an aircraft's hook within this height of the deck; samples older than
+# FOUL_DECK_STALE_S are ignored (the aircraft left).
+RAMP_ALONG_M = 70.0
+LANDING_AREA_FORWARD_M = -170.0
+ON_DECK_HEIGHT_M = 3.0
+FOUL_DECK_STALE_S = 3.0
+
 # Keep this much history per object (slices reach back 30 s before detection, and
 # nearby-aircraft checks need the whole window).
 HISTORY_S = 600.0
@@ -104,6 +112,22 @@ class LivePassDetector:
             elif self.listener is not None:
                 self.listener.on_sample(self.tracks[carrier_id], plane, pose, sample, frame)
         return finished
+
+    def landing_area_foul(self, carrier_id: int, pose: CarrierPose, frame: DeckFrame, exclude: int, now: float) -> bool:
+        """Is another aircraft on deck in the landing area right now (from the ramp to the forward end
+        of the angled deck, within the wires' width)?"""
+        half_width = max(abs(lateral) for ends in frame.wire_ends for _, lateral in ends)
+        for track in self.tracks.values():
+            if track.id in (exclude, carrier_id) or "Air" not in track.tags or not track.samples:
+                continue
+            last = track.samples[-1]
+            if now - last.time > FOUL_DECK_STALE_S:
+                continue
+            pos = frame.position(pose, last.transform)
+            if (LANDING_AREA_FORWARD_M <= pos.along <= RAMP_ALONG_M and abs(pos.lateral) <= half_width
+                    and pos.hook_height <= ON_DECK_HEIGHT_M):
+                return True
+        return False
 
     def provisional(self, carrier_id: int, aircraft_id: int) -> PassResult | None:
         """The pass in progress as it stands now (e.g. graded for the welcome, before it has ended)."""

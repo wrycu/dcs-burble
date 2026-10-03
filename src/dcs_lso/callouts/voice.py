@@ -8,19 +8,21 @@ replaced by real recordings with the same file names. A call may have several ph
 from __future__ import annotations
 
 import json
+from array import array
 import random
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..srs.audio import load_wav
-from ..srs.opus import encode_pcm
+from ..srs.opus import FRAME_SAMPLES, encode_pcm
 from .rules import Call
 
 # What the LSO says for each call (a tuple is a set of variants to pick from).
 # Wording follows DCS's own LSO (Scripts/Speech/common_events.lua).
 PHRASES: dict[Call, str | tuple[str, ...]] = {
     Call.WAVE_OFF: "Wave off, wave off, wave off!",
+    Call.WAVE_OFF_FOUL_DECK: "Wave off, wave off, foul deck!",
     Call.WAVE_OFF_GEAR: "Wave off, gear!",
     Call.BOLTER: "Bolter, bolter, bolter!",
     Call.TRAPPED: ("Welcome aboard.", "Welcome home.", "Welcome aboard, nice trap.", "Welcome home, good trap.",
@@ -38,6 +40,8 @@ PHRASES: dict[Call, str | tuple[str, ...]] = {
     Call.EASY_WITH_IT: "Easy with it.",
     Call.RIGHT_FOR_LINEUP: "Right for lineup.",
     Call.COME_LEFT: "Come left.",
+    Call.DONT_SETTLE: "Don't settle.",
+    Call.DONT_CLIMB: "Don't climb.",
     Call.GOING_LOW: "You're going low.",
     Call.LITTLE_LOW: "You're a little low.",
     Call.LITTLE_HIGH: "You're a little high.",
@@ -50,7 +54,16 @@ PHRASES: dict[Call, str | tuple[str, ...]] = {
     Call.EASY_NOSE: "Easy with the nose.",
     Call.FAST: "You're fast.",
     Call.SLOW: "You're slow.",
+    Call.KEEP_TURN_IN: "Keep your turn in.",
+    Call.KEEP_IT_COMING: ("Keep it coming.", "Keep it coming, looking good."),
 }
+# Spoken digit by digit to put a side number in front of a call ("three zero one, power") when more
+# than one aircraft is in the groove.
+DIGITS = {"0": "Zero", "1": "One", "2": "Two", "3": "Three", "4": "Four", "5": "Five", "6": "Six", "7": "Seven",
+          "8": "Eight", "9": "Nine"}
+SIDE_NUMBER_GAP_FRAMES = 2  # a short pause (80 ms) between the side number and the call
+SILENCE_LEVEL = 150  # trimmed from the ends of digit clips (16-bit samples)...
+TRIM_MARGIN = 480  # ...keeping 30 ms either side so soft consonants ("eight", "two") survive
 
 
 for _wire, _word in ((1, "one"), (2, "two"), (3, "three"), (4, "four")):
@@ -102,6 +115,12 @@ def build_clips(model: str | Path, out_dir: str | Path, speed: float = 1.15) -> 
             with wave.open(str(path), "wb") as wav:
                 voice.synthesize_wav(text, wav, syn_config=config)
             entries.append({"file": path.name, "text": text})
+    manifest["numbers"] = {}
+    for digit, word in DIGITS.items():
+        path = out / f"number_{digit}.wav"
+        with wave.open(str(path), "wb") as wav:
+            voice.synthesize_wav(word, wav, syn_config=config)
+        manifest["numbers"][digit] = {"file": path.name, "text": word}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return out
 
@@ -116,10 +135,29 @@ class Clip:
         return len(self.frames) * 0.04
 
 
+def _trim(pcm: array) -> array:
+    """Drop the near-silence Piper leaves before and after a word."""
+    loud = [i for i, v in enumerate(pcm) if abs(v) >= SILENCE_LEVEL]
+    if not loud:
+        return pcm
+    return array("h", pcm[max(0, loud[0] - TRIM_MARGIN):loud[-1] + 1 + TRIM_MARGIN])
+
+
 class ClipLibrary:
-    def __init__(self, clips: dict[Call, list[Clip]], voice: str) -> None:
+    def __init__(self, clips: dict[Call, list[Clip]], voice: str, numbers: dict[str, Clip] | None = None) -> None:
         self.clips = clips  # every variant of each call
         self.voice = voice
+        self.numbers = numbers or {}  # "0".."9", for side numbers (clip sets built before them have none)
+
+    def with_side_number(self, clip: Clip, side_number: str | None) -> Clip:
+        """`clip` preceded by the side number, digit by digit ("301, Power."); unchanged without one or
+        without digit clips."""
+        digits = "".join(ch for ch in (side_number or "") if ch.isdigit())
+        if not digits or any(d not in self.numbers for d in digits):
+            return clip
+        frames = [f for d in digits for f in self.numbers[d].frames]
+        gap = encode_pcm(array("h", [0] * (FRAME_SAMPLES * SIDE_NUMBER_GAP_FRAMES)))
+        return Clip(f"{digits}, {clip.text}", frames + gap + clip.frames)
 
     @classmethod
     def load(cls, directory: str | Path) -> ClipLibrary:
@@ -133,7 +171,9 @@ class ClipLibrary:
             if isinstance(entries, dict):  # clip sets built before variants existed
                 entries = [entries]
             clips[call] = [Clip(e["text"], encode_pcm(load_wav(directory / e["file"]))) for e in entries]
-        return cls(clips, manifest.get("voice", "unknown"))
+        numbers = {d: Clip(e["text"], encode_pcm(_trim(load_wav(directory / e["file"]))))
+                   for d, e in (manifest.get("numbers") or {}).items()}
+        return cls(clips, manifest.get("voice", "unknown"), numbers)
 
     def __getitem__(self, call: Call) -> Clip:
         return self.clips[call][0]

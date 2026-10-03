@@ -13,9 +13,9 @@ FIXTURE = Path(__file__).parent / "fixtures" / "ai_hornet_trap_cvn75.zip.acmi"
 
 
 def state(t=0.0, along=0.5 * NM, gs=0.0, gs_rate=0.0, lineup=0.0, lineup_rate=0.0, lateral=0.0, aoa=8.1,
-          heading_error=0.0, roll=0.0, pitch_rate=0.0, gear=None) -> GrooveState:
+          heading_error=0.0, roll=0.0, pitch_rate=0.0, gear=None, foul_deck=False) -> GrooveState:
     return GrooveState(t, along, gs, gs_rate, lineup, lineup_rate, lateral, aoa, False, heading_error, roll, 5,
-                       pitch_rate=pitch_rate, gear=gear)
+                       pitch_rate=pitch_rate, gear=gear, foul_deck=foul_deck)
 
 
 def test_conditions_zones():
@@ -110,3 +110,46 @@ def test_spacing_and_repeats_count_from_the_end_of_the_phrase():
         assert len(times) >= 2
         assert times[1] - times[0] >= duration + th.repeat_s - 1e-9
         assert times[1] - times[0] < duration + th.repeat_s + 0.2
+
+
+
+def test_foul_deck_wave_off():
+    th = Thresholds()
+    assert Call.WAVE_OFF_FOUL_DECK in conditions(state(along=0.3 * NM, foul_deck=True), th)
+    assert Call.WAVE_OFF_FOUL_DECK in conditions(state(along=100.0, foul_deck=True), th)  # still, at the ramp
+    assert Call.WAVE_OFF_FOUL_DECK not in conditions(state(along=0.5 * NM, foul_deck=True), th)  # not yet
+    engine = CalloutEngine()
+    calls = feed(engine, [state(t=i * 0.1, along=0.4 * NM - i * 7, foul_deck=i >= 10) for i in range(40)])
+    assert calls == [Call.WAVE_OFF_FOUL_DECK]  # once, and nothing after it
+    assert engine.waved_off
+
+
+def test_dont_settle_or_climb_in_close():
+    th = Thresholds()
+    assert conditions(state(along=0.3 * NM, gs_rate=-0.2), th) == {Call.GOING_LOW}
+    assert conditions(state(along=0.2 * NM, gs_rate=-0.2), th) == {Call.DONT_SETTLE}
+    assert conditions(state(along=0.2 * NM, gs_rate=0.2), th) == {Call.DONT_CLIMB}
+
+
+def test_keep_it_coming_when_steady_and_quiet():
+    engine = CalloutEngine()
+    good = [state(t=i * 0.1, along=0.6 * NM - i * 7) for i in range(120)]  # 12 s on glideslope and centerline
+    calls = [(e.call, e.time) for s in good if (e := engine.update(s)) is not None]
+    assert [c for c, _ in calls] == [Call.KEEP_IT_COMING, Call.KEEP_IT_COMING]  # at most two per pass
+    assert calls[1][1] - calls[0][1] >= 4.0  # with quiet between them
+    # Not for a pass that's off, even a little.
+    engine = CalloutEngine()
+    assert Call.KEEP_IT_COMING not in feed(engine, [state(t=i * 0.1, along=0.6 * NM - i * 7, gs=0.3)
+                                                    for i in range(120)])
+
+
+def test_keep_your_turn_in_when_overshooting():
+    engine = CalloutEngine()
+    # Still in the turn (not in the groove) at 1 nm, already 30 m right of centerline and heading further right.
+    turning = [state(t=i * 0.1, along=1.0 * NM - i * 5, lateral=30.0, heading_error=25.0, roll=-30.0)
+               for i in range(30)]
+    assert feed(engine, turning) == [Call.KEEP_TURN_IN]  # once
+    # Heading back toward the centerline: no call.
+    engine = CalloutEngine()
+    assert feed(engine, [state(t=i * 0.1, along=1.0 * NM, lateral=30.0, heading_error=-20.0, roll=-30.0)
+                         for i in range(30)]) == []

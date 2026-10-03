@@ -343,6 +343,10 @@ class Collector:
                           segmenters={} if c.mode == "pilot" else None)
         if callouts is not None:
             callouts.grade_for = lambda carrier_id, aircraft_id: _provisional_grade(session, carrier_id, aircraft_id)
+            callouts.deck_foul = session.detector.landing_area_foul
+            if self.hooks is not None:
+                hooks = self.hooks
+                callouts.side_number_for = lambda pilot, t: (hooks.slot_for(pilot, t) or {}).get("onboard_num")
         if callouts is not None:
             await callouts.sink.start()
         log.info("connected to Tacview stream from %r; archiving to %s%s", info.name, session.archive.path,

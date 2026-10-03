@@ -38,6 +38,8 @@ BOLTER_SPEED_RATIO = 0.85
 TRAP_SPEED_RATIO = 0.5
 TOUCHDOWN_HOOK_HEIGHT_M = 0.5
 KEEP_CALLS_S = 900.0
+# Another aircraft counts as in the groove for this long after its last sample there.
+GROOVE_BUSY_S = 2.0
 # Welcomes that compliment the landing ("nice trap") only for these grades.
 PRAISE_GRADES = frozenset({Grade.PERFECT, Grade.OK})
 # On a trap, wait this long for DCS's wire (its LSO grade arrives ~0.3 s after we detect the trap)
@@ -187,6 +189,11 @@ class LiveCallouts:
         self.wire_for = wire_for
         # Our grade of a pass in progress (carrier id, aircraft id), for the welcome; set by the collector.
         self.grade_for: Callable[[int, int], Grade | None] | None = None
+        # Is another aircraft in the landing area (carrier id, pose, frame, this aircraft's id, time)?
+        self.deck_foul: Callable[[int, CarrierPose, DeckFrame, int, float], bool] | None = None
+        # A pilot's side number at a mission time (from the hook), to say before calls when the groove is busy.
+        self.side_number_for: Callable[[str | None, float], str | None] | None = None
+        self._groove_seen: dict[tuple[int, int], float] = {}  # (carrier, aircraft) -> last time in the groove
         self.clips = clips
         self.sink = sink
         self._engines: dict[tuple[int, int], tuple[LiveEstimator, CalloutEngine]] = {}
@@ -209,12 +216,17 @@ class LiveCallouts:
         pos = frame.position(pose, t)
         heading_error = ((t.heading or 0.0) - (pose.heading - frame.carrier.deck_angle) + 180.0) % 360.0 - 180.0
         wind = self.wind_for(carrier.pilot) if self.wind_for else None
+        foul = self.deck_foul(carrier.id, pose, frame, plane.id, sample.time) if self.deck_foul else False
         state = estimator.update(LiveInput(
             time=sample.time, along=pos.along, lateral=pos.lateral, hook_height=pos.hook_height,
             pitch=t.pitch or 0.0, alt=t.alt or 0.0, u=t.u or 0.0, v=t.v or 0.0, aoa=sample.aoa,
             heading_error=heading_error, roll=t.roll or 0.0, gear=_gear(plane), heading=t.heading,
-            wind=wind.at(t.alt or 0.0) if wind else (0.0, 0.0)))
+            wind=wind.at(t.alt or 0.0) if wind else (0.0, 0.0), foul_deck=foul))
         event = engine.update(state)
+        if engine.in_groove:
+            self._groove_seen[key] = sample.time
+        else:
+            self._groove_seen.pop(key, None)
         outcome = self._outcome(key, sample.time, pos, frame)
         if outcome is Call.TRAPPED and engine.waved_off:
             outcome = Call.TRAPPED_WAVED_OFF  # landed through our wave-off: a saltier welcome
@@ -227,7 +239,9 @@ class LiveCallouts:
             grade = self.grade_for(carrier.id, plane.id) if self.grade_for is not None else None
             welcome = self._welcome(carrier, plane, event, grade)  # may wait briefly for DCS's wire
         else:
-            welcome = self._say(carrier, plane, event.call, event)
+            # Decided now (the groove may have changed by the time the call is spoken).
+            side_number = self._side_number(carrier.id, plane, event.time) if event.call not in (Call.BOLTER,) else None
+            welcome = self._say(carrier, plane, event.call, event, side_number=side_number)
         task = asyncio.get_running_loop().create_task(welcome)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -248,11 +262,17 @@ class LiveCallouts:
         await self._say(carrier, plane, call if call in self.clips else event.call, event,
                         praise=grade in PRAISE_GRADES)
 
+    def _side_number(self, carrier_id: int, plane: ObjectTrack, now: float) -> str | None:
+        """The pilot's side number, if another aircraft is in this carrier's groove too."""
+        if self.side_number_for is None or not self._groove_busy(carrier_id, plane.id, now):
+            return None
+        return self.side_number_for(plane.pilot, now)
+
     async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent,
-                   praise: bool = False) -> None:
+                   praise: bool = False, side_number: str | None = None) -> None:
         self.made.append(MadeCall(plane.id, event.time, event.along, call))
         radio = self.settings.radio_for(carrier.pilot)
-        clip = self.clips.pick(call, praise)
+        clip = self.clips.with_side_number(self.clips.pick(call, praise), side_number)  # whose call, if busy
         log.info("CALL %s -> %s (%.2f nm, %s): %r", call.value, plane.pilot or hex(plane.id),
                  event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}", clip.text)
         await self.sink.say(call, clip, radio, time.monotonic())
@@ -281,8 +301,14 @@ class LiveCallouts:
             return Call.TRAPPED
         return None
 
+    def _groove_busy(self, carrier_id: int, aircraft_id: int, now: float) -> bool:
+        """Another aircraft is in this carrier's groove too (seen there in the last couple of seconds)."""
+        return any(c == carrier_id and a != aircraft_id and now - seen <= GROOVE_BUSY_S
+                   for (c, a), seen in self._groove_seen.items())
+
     def pass_ended(self, carrier_id: int, aircraft_id: int) -> None:
         key = (carrier_id, aircraft_id)
+        self._groove_seen.pop(key, None)
         self._engines.pop(key, None)
         self._track.pop(key, None)
         self._touchdown_speed.pop(key, None)
