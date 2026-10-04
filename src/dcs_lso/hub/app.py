@@ -11,10 +11,11 @@ from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
+from starlette.concurrency import run_in_threadpool
 
 from ..cards import render_card
 from ..cards.overlay import render_overlay
@@ -77,6 +78,28 @@ def create_app(hub: Hub) -> FastAPI:
                     raise HTTPException(413, f"{upload.filename} is larger than {limit // (1024 * 1024)} MB")
                 out.write(chunk)
         return size
+
+    @app.post("/api/v1/pilot-hook/approaches")
+    async def pilot_hook_approach(request: Request, authorization: Annotated[str | None, Header()] = None):
+        """One approach from the pilot hook (JSON, see `hub.pilothook`), with the pilot's token in the
+        Authorization header or the body's "token". Plain HTTP is fine: DCS's Lua has no HTTPS."""
+        raw = await request.body()
+        if len(raw) > MAX_SLICE_BYTES:
+            raise HTTPException(413, "upload too large")
+        try:
+            body = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(400, f"invalid JSON: {exc}") from exc
+        token = (authorization or "").removeprefix("Bearer ").strip() or str((body or {}).get("token") or "")
+        source = hub.authenticate(token) if token else None
+        if source is None:
+            raise HTTPException(401, "a pilot token is needed")
+        try:
+            results = await run_in_threadpool(hub.ingest_pilot_hook, source.id, body)
+        except IngestError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"reports": [{"pass_id": r.pass_id, "created": r.created, "grade": r.grade, "text": r.text,
+                             "url": f"/passes/{r.pass_id}"} for r in results]}
 
     @app.post("/api/v1/recordings", status_code=202)
     async def upload_recording(recording: Annotated[UploadFile, File(description="a whole .zip.acmi or .txt.acmi recording")],

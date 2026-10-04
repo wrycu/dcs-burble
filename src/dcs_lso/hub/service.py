@@ -24,6 +24,7 @@ from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
 from .db import Grade, Pass, Pilot, PilotAlias, Slice, Source, Upload, make_engine, make_sessionmaker
+from .pilothook import HookUploadError, parse_upload, track_reports
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
 from .storage import SliceStore
 
@@ -276,7 +277,7 @@ class Hub:
         with self.sessions() as own:
             return [landing, *own.scalars(q)]
 
-    def load_pass(self, p: Pass, reports: list[Pass] | None = None) -> PassResult:
+    def load_pass(self, p: Pass, reports: list[Pass] | None = None, s: Session | None = None) -> PassResult:
         """Rebuild the landing from its stored slices: the most detailed aircraft track among its
         reports, graded against the carrier in this (gradable) report, plus DCS's grade and wire."""
         if p.is_track:
@@ -287,7 +288,7 @@ class Hub:
         wind = WindProfile.from_dict((p.slice.sidecar or {}).get("wind"))
         aircraft_id, tolerance = p.aircraft_id, START_TIME_TOLERANCE_S
         if best is not p:
-            recording, aircraft_id = self._with_track(recording, p, best)
+            recording, aircraft_id = self._with_track(recording, p, best, s)
             tolerance = MERGED_START_TOLERANCE_S  # passes are detected a little differently at another rate
         candidates = [c for c in find_passes(recording, wind) if c.aircraft_id == aircraft_id
                       and abs(c.start_time - p.start_time) <= tolerance]
@@ -299,11 +300,12 @@ class Hub:
         result.track_source = best.source.name if best.source is not None else None
         return result
 
-    def _with_track(self, recording: Recording, landing: Pass, other: Pass) -> tuple[Recording, int]:
+    def _with_track(self, recording: Recording, landing: Pass, other: Pass,
+                    s: Session | None = None) -> tuple[Recording, int]:
         """`recording` with the landing's aircraft track replaced by `other`'s, moved onto this
         recording's clock. Both count from their own ReferenceTime (mission time)."""
         theirs = load_recording(self.store.path(other.slice.sha256))
-        offset = _reference_offset(theirs.globals, recording.globals)
+        offset = self._clock_offset(other, landing, s)
         track = theirs.objects[other.aircraft_id]
         objects = {i: t for i, t in recording.objects.items() if i != landing.aircraft_id}
         new_id = other.aircraft_id if other.aircraft_id not in objects else max(objects) + 1
@@ -311,19 +313,47 @@ class Hub:
                                       [Sample(x.time + offset, x.transform, x.aoa) for x in track.samples])
         return Recording(recording.globals, objects, recording.first_frame), new_id
 
-    def _same_landing(self, a: Pass, b: Pass) -> bool:
+    def _same_landing(self, a: Pass, b: Pass, s: Session | None = None) -> bool:
         """Two reports of the same landing: same pilot, aircraft and mission (checked by the caller),
         overlapping in mission time, and the aircraft in the same place at the same moments."""
-        wa, wb = _mission_window(a), _mission_window(b)
+        wa, wb = _mission_window(a, self._reference_time(a, s)), _mission_window(b, self._reference_time(b, s))
         if wa is None or wb is None or not (wa[0] < wb[1] and wb[0] < wa[1]):
             return False
         ra = load_recording(self.store.path(a.slice.sha256))
         rb = load_recording(self.store.path(b.slice.sha256))
-        offset = _reference_offset(rb.globals, ra.globals)
+        offset = self._clock_offset(b, a, s)
         ta, tb = ra.objects.get(a.aircraft_id), rb.objects.get(b.aircraft_id)
         if ta is None or tb is None:
             return False
         return _median_distance(ta.samples, tb.samples, offset) <= SAME_POSITION_M
+
+    def _reference_time(self, p: Pass, s: Session | None = None) -> datetime | None:
+        """When the report's clock starts (its time 0). Usually the recording's ReferenceTime. A pilot hook's
+        report is on the mission clock: it starts at mission start, which is the ReferenceTime of a server
+        agent's recording of the same mission (a server's recording starts at mission start; a mission's
+        start date and time are fixed in the mission file). None until such a report is known."""
+        sidecar = p.slice.sidecar or {}
+        if sidecar.get("clock") != "mission":
+            return _parse_time((sidecar.get("recording") or {}).get("ReferenceTime"))
+        if p.mission is None:
+            return None
+        q = (select(Slice.sidecar).join(Pass, Pass.slice_id == Slice.id).join(Source, Pass.source_id == Source.id)
+             .where(Pass.mission == p.mission, Source.kind == "server").order_by(Pass.id.desc()).limit(20))
+        if s is None:
+            with self.sessions() as own:
+                sidecars = list(own.scalars(q))
+        else:
+            sidecars = list(s.scalars(q))  # within an ingest: includes the report being stored
+        for other in sidecars:
+            if (other or {}).get("clock") != "mission":
+                if (ref := _parse_time(((other or {}).get("recording") or {}).get("ReferenceTime"))) is not None:
+                    return ref
+        return None
+
+    def _clock_offset(self, theirs: Pass, ours: Pass, s: Session | None = None) -> float:
+        """Seconds to add to a time in `theirs` to get the same moment on `ours`'s clock."""
+        a, b = self._reference_time(theirs, s), self._reference_time(ours, s)
+        return (a - b).total_seconds() if a is not None and b is not None else 0.0
 
     def _attach(self, s: Session, landing: Pass, report: Pass) -> None:
         report.merged_into_id = landing.id
@@ -339,7 +369,7 @@ class Hub:
         s.flush()
 
     def _regrade(self, s: Session, row: Pass) -> GradeResult:
-        result = grade_pass(self.load_pass(row, self.reports(row, s)))
+        result = grade_pass(self.load_pass(row, self.reports(row, s), s))
         current = next((g for g in row.grades if g.version == result.version), None)
         if current is not None:
             row.grades.remove(current)
@@ -419,7 +449,7 @@ class Hub:
             s.add(row)
             s.flush()
 
-            matches = [m for m in self._candidates(s, row) if self._same_landing(m, row)]
+            matches = [m for m in self._candidates(s, row) if self._same_landing(m, row, s)]
             landing = next((m for m in matches if not m.is_track), None)
             if landing is None and not row.is_track:
                 landing = row
@@ -463,6 +493,23 @@ class Hub:
              .order_by(Pass.id).options(selectinload(Pass.slice)))
         q = q.where(Pass.mission == row.mission) if row.mission is not None else q.where(Pass.mission.is_(None))
         return list(s.scalars(q))
+
+    # -- the pilot hook ---------------------------------------------------------------------------
+
+    def ingest_pilot_hook(self, source_id: int, body: dict) -> list[IngestResult]:
+        """An upload from the pilot hook (one approach of the pilot's own jet, see `hub.pilothook`), sent with
+        the pilot's token: stored as own-jet track reports, merged with the server agent's reports."""
+        with self.sessions() as s:
+            source = s.get(Source, source_id)
+            if source is None or source.pilot_id is None:
+                raise IngestError("the pilot hook needs a pilot token")
+        try:
+            upload = parse_upload(body)
+        except HookUploadError as exc:
+            raise IngestError(str(exc)) from exc
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = track_reports(upload, Path(tmp))
+        return [self.ingest(source_id, data, meta) for data, meta in reports]
 
     # -- backfill: whole recordings --------------------------------------------------------------
 
@@ -782,20 +829,12 @@ def _detail(report: Pass, is_landing: bool) -> tuple:
     return bool(info.get("aoa_recorded")), float(info.get("sample_rate_hz") or 0.0), is_landing
 
 
-def _reference(globals_: dict) -> datetime | None:
-    return _parse_time(globals_.get("ReferenceTime"))
 
 
-def _reference_offset(theirs: dict, ours: dict) -> float:
-    """Seconds to add to a time in `theirs` to get the same moment in `ours`."""
-    a, b = _reference(theirs), _reference(ours)
-    return (a - b).total_seconds() if a is not None and b is not None else 0.0
-
-
-def _mission_window(p: Pass) -> tuple[datetime, datetime] | None:
-    """When the report's pass (or a track report's whole window) happened, in mission time."""
+def _mission_window(p: Pass, ref: datetime | None) -> tuple[datetime, datetime] | None:
+    """When the report's pass (or a track report's whole window) happened, in mission time (`ref`: when the
+    report's clock starts)."""
     sidecar = p.slice.sidecar or {}
-    ref = _parse_time((sidecar.get("recording") or {}).get("ReferenceTime"))
     if ref is None:
         return None
     window = sidecar.get("window") or {}
