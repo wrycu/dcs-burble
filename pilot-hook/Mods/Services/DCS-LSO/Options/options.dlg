@@ -1,0 +1,127 @@
+local EditBoxSkin = { ["params"] = { ["name"] = "editBoxSkin_login" } }
+local CheckBoxSkin = { ["params"] = { ["name"] = "checkBoxSkin_options" } }
+local TitleSkin = { ["params"] = { ["name"] = "staticOptionsTitleSkin" },
+	["states"] = { ["released"] = { [1] = { ["text"] = { ["horzAlign"] = { ["type"] = "min" } } } } } }
+local LabelSkin = { ["params"] = { ["name"] = "staticOptionsCaptionSkin" } }
+local HelpSkin = { ["params"] = { ["name"] = "staticSkin2" },
+	["states"] = { ["released"] = { [1] = { ["text"] = { ["fontSize"] = 10, ["horzAlign"] = { ["type"] = "min" } } } } } }
+
+dialog = {
+	["children"] = {
+		["containerPlugin"] = {
+			["children"] = {
+			["lsoTitleLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 30, ["w"] = 850, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$DCS_LSO" },
+				["skin"] = TitleSkin,
+				["type"] = "Static",
+			},
+			["lsoIntroLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 62, ["w"] = 850, ["h"] = 20 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$INTRO" },
+				["skin"] = HelpSkin,
+				["type"] = "Static",
+			},
+			["sendToAllCheckbox"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 94, ["w"] = 850, ["h"] = 20 },
+					["enabled"] = true, ["state"] = false, ["text"] = "$SEND_TO_ALL", ["tooltip"] = "",
+					["visible"] = true, ["zindex"] = 0, ["tabOrder"] = 0 },
+				["skin"] = CheckBoxSkin,
+				["type"] = "CheckBox",
+			},
+			["hub1UrlLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 140, ["w"] = 210, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$HUB_URL" },
+				["skin"] = LabelSkin,
+				["type"] = "Static",
+			},
+			["hub1UrlEditBox"] = {
+				["params"] = { ["bounds"] = { ["x"] = 276, ["y"] = 140, ["w"] = 560, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "",
+					["numeric"] = false },
+				["skin"] = EditBoxSkin,
+				["type"] = "EditBox",
+			},
+			["hub1TokenLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 172, ["w"] = 210, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$HUB_TOKEN" },
+				["skin"] = LabelSkin,
+				["type"] = "Static",
+			},
+			["hub1TokenEditBox"] = {
+				["params"] = { ["bounds"] = { ["x"] = 276, ["y"] = 172, ["w"] = 560, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "",
+					["numeric"] = false },
+				["skin"] = EditBoxSkin,
+				["type"] = "EditBox",
+			},
+			["hub2UrlLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 224, ["w"] = 210, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$HUB_URL" },
+				["skin"] = LabelSkin,
+				["type"] = "Static",
+			},
+			["hub2UrlEditBox"] = {
+				["params"] = { ["bounds"] = { ["x"] = 276, ["y"] = 224, ["w"] = 560, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "",
+					["numeric"] = false },
+				["skin"] = EditBoxSkin,
+				["type"] = "EditBox",
+			},
+			["hub2TokenLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 256, ["w"] = 210, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$HUB_TOKEN" },
+				["skin"] = LabelSkin,
+				["type"] = "Static",
+			},
+			["hub2TokenEditBox"] = {
+				["params"] = { ["bounds"] = { ["x"] = 276, ["y"] = 256, ["w"] = 560, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "",
+					["numeric"] = false },
+				["skin"] = EditBoxSkin,
+				["type"] = "EditBox",
+			},
+			["hub3UrlLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 308, ["w"] = 210, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$HUB_URL" },
+				["skin"] = LabelSkin,
+				["type"] = "Static",
+			},
+			["hub3UrlEditBox"] = {
+				["params"] = { ["bounds"] = { ["x"] = 276, ["y"] = 308, ["w"] = 560, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "",
+					["numeric"] = false },
+				["skin"] = EditBoxSkin,
+				["type"] = "EditBox",
+			},
+			["hub3TokenLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 340, ["w"] = 210, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$HUB_TOKEN" },
+				["skin"] = LabelSkin,
+				["type"] = "Static",
+			},
+			["hub3TokenEditBox"] = {
+				["params"] = { ["bounds"] = { ["x"] = 276, ["y"] = 340, ["w"] = 560, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "",
+					["numeric"] = false },
+				["skin"] = EditBoxSkin,
+				["type"] = "EditBox",
+			},
+			["lsoHintLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 392, ["w"] = 850, ["h"] = 40 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$HINT" },
+				["skin"] = HelpSkin,
+				["type"] = "Static",
+			},
+			},
+			["type"] = "Panel",
+			["skin"] = { ["params"] = { ["name"] = "panelSkin" } },
+			["params"] = { ["enabled"] = true, ["bounds"] = { ["x"] = 0, ["y"] = 0, ["w"] = 974, ["h"] = 600 },
+				["visible"] = true, ["tooltip"] = "", ["zindex"] = 2, ["text"] = "" },
+		},
+	},
+	["type"] = "Window",
+	["skin"] = { ["params"] = { ["name"] = "windowSkin" } },
+	["params"] = { ["bounds"] = { ["h"] = 851, ["w"] = 1135, ["x"] = 0, ["y"] = 0 }, ["draggable"] = true,
+		["enabled"] = true, ["hasCursor"] = true, ["lockFlow"] = false, ["modal"] = false, ["text"] = "dialog", ["zOrder"] = 1 },
+}
