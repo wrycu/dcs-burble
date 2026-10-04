@@ -34,6 +34,10 @@ table.board td.num { padding: 4px 8px; text-align: right; font-variant-numeric: 
         font-size: 11px; font-weight: 700; line-height: 30px; text-align: center; }
 .cell.empty { background: var(--empty); }
 .cell.night { position: relative; }
+.token-once { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+.token-once code { word-break: break-all; font-size: 13px; }
+form.inline { display: flex; gap: 6px; align-items: center; margin: 0; }
+form.inline input { width: 9em; }
 .cell.night::after, .legend span.night-dot { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px;
         border-radius: 50%; background: #111; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6); }
 .legend span.night-dot { position: relative; display: inline-block; top: 0; right: 0; vertical-align: 0; margin-right: 6px; }
@@ -485,8 +489,10 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
     return _page(f"{name}: recent passes", body)
 
 
-def pilot_settings_page(pilot, done: str | None, error: str | None) -> str:
-    """Set or change the pilot's password; with it, change their side number."""
+def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list | None = None,
+                        aliases: list | None = None, new_token: str | None = None) -> str:
+    """Set or change the pilot's password; with it, change their side number, create and revoke pilot
+    tokens, and claim other in-game names. `new_token`: a token just created, shown this once."""
     name = pilot.name
     quoted = quote(name, safe="")
     note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
@@ -513,7 +519,41 @@ def pilot_settings_page(pilot, done: str | None, error: str | None) -> str:
            '<button type="submit">Save side number</button>' if has else
            '<p class="sub">Set a password first to change it.</p>')
         + "</form>")
+    password_field = '<label>Password <input name="password" type="password" required autocomplete="current-password"></label>'
+    shown = (f'<div class="token-once"><p><strong>Your new pilot token</strong> (copy it now: it won\'t be shown again)</p>'
+             f'<code>{escape(new_token)}</code></div>' if new_token else "")
+    rows = "".join(
+        f'<tr><td>{escape(t.label or t.name)}</td><td>{_when(t.created_at)}</td>'
+        f'<td>{_when(t.last_used_at) if t.last_used_at else "never"}</td><td>'
+        + ("revoked" if t.revoked_at else
+           f'<form method="post" action="/pilots/{quoted}/settings/tokens/{t.id}/revoke" class="inline">'
+           '<input name="password" type="password" required placeholder="Password" autocomplete="current-password">'
+           '<button type="submit">Revoke</button></form>')
+        + "</td></tr>" for t in tokens or [])
+    listed = (f'<div class="scroll"><table class="results"><thead><tr><th>Token</th><th>Created</th><th>Last used</th>'
+              f'<th></th></tr></thead><tbody>{rows}</tbody></table></div>' if rows else "")
+    tokens_form = (
+        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/tokens"><h2>Pilot tokens</h2>'
+        '<p class="sub">A pilot token lets the pilot hook or pilot uploader send your passes here. Everything sent '
+        "with it is credited to you, whatever name you fly under.</p>" + shown + listed
+        + (password_field + '<label>What it\'s for <input name="label" maxlength="100" placeholder="e.g. my PC"></label>'
+           '<button type="submit">Create a pilot token</button>' if has else
+           '<p class="sub">Set a password first to create one.</p>')
+        + "</form>")
+    names = "".join(f'<li>{escape(a.name)}{"" if a.claimed else " (seen with your pilot token)"}</li>'
+                    for a in aliases or [])
+    aliases_form = (
+        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/aliases"><h2>Other names</h2>'
+        '<p class="sub">Other in-game names you fly under (e.g. with a squadron tag). Passes reported under them '
+        "count as yours.</p>"
+        + (f'<ul class="themes">{names}</ul>' if names else '<p class="sub">None yet.</p>')
+        + (password_field + '<label>Claim a name <input name="alias" required maxlength="100"></label>'
+           '<span class="hint">Only a name nobody else has claimed. Its passes on this board move to you.</span>'
+           '<button type="submit">Claim name</button>' if has else '<p class="sub">Set a password first to claim one.</p>')
+        + "</form>")
     body = (f'<p class="sub"><a href="/pilots/{quoted}">← {escape(name)}</a></p><h1>{escape(name)}: settings</h1>'
             f'{note}<div class="panel">{password_form}</div><div class="panel" style="margin-top:12px">{modex_form}</div>'
+            f'<div class="panel" style="margin-top:12px">{tokens_form}</div>'
+            f'<div class="panel" style="margin-top:12px">{aliases_form}</div>'
             '<p class="sub" style="margin-top:12px">Forgot your password? Ask the server\'s admin to reset it.</p>')
     return _page(f"{name}: settings", body)

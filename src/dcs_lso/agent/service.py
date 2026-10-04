@@ -530,6 +530,11 @@ class Agent:
                      approach.start_time, approach.end_time, TAIL_S)
 
     def _queue(self, session: Session, result: PassResult) -> None:
+        if self.config.mode == "pilot" and not _own_jet(result):
+            # The pilot uploader sends only this PC's own jet (other players' jets are seen here at the
+            # same rate the server sees them, and they aren't the pilot's to send).
+            log.debug("pass by %s skipped (not this PC's own jet)", result.pilot or hex(result.aircraft_id))
+            return
         objects = slice_objects(session.detector.recording(dict(session.parser.globals)), result)
         session.pending.append(_Pending(result, objects, result.end_time + TAIL_S))
         session.pass_windows.append((result.aircraft_id, result.start_time - LEAD_S, result.end_time + TAIL_S))
@@ -714,3 +719,8 @@ def _radios(settings: CalloutSettings):
         if r not in radios:
             radios.append(r)
     return radios
+
+
+def _own_jet(result: PassResult) -> bool:
+    """Flown on this PC: Tacview records AOA only for the local player's jet."""
+    return bool(result.samples) and not result.samples[0].aoa_derived

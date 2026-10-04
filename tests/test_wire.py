@@ -62,7 +62,7 @@ def test_estimate_from_the_pilots_own_track_against_the_servers_carrier(tmp_path
 
     hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
     hub.add_source("server1")
-    hub.add_source("pilot", kind="pilot")
+    hub.add_pilot_token("Wrycu", "pilot")
     server = load_recording(SERVER)
     (sp,) = find_passes(server)
     hub.ingest(1, SERVER.read_bytes(), sidecar(server, sp, "s", slice_objects(server, sp)))
@@ -72,4 +72,4 @@ def test_estimate_from_the_pilots_own_track_against_the_servers_carrier(tmp_path
     result = hub.ingest(2, PILOT.read_bytes(), track_sidecar(pilot, approach, "c"))
     with hub.sessions() as s:
         landing = hub.load_pass(s.get(Pass, result.pass_id))
-    assert landing.track_source == "pilot" and landing.wire_estimate == 2
+    assert landing.track_source == "Wrycu: pilot" and landing.wire_estimate == 2

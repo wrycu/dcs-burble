@@ -23,7 +23,7 @@ from ..sun import is_night
 from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
-from .db import Grade, Pass, Pilot, Slice, Source, Upload, make_engine, make_sessionmaker
+from .db import Grade, Pass, Pilot, PilotAlias, Slice, Source, Upload, make_engine, make_sessionmaker
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
 from .storage import SliceStore
 
@@ -107,17 +107,150 @@ class Hub:
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self._fail_interrupted_uploads()
         self._backfill_night()
+        self._backfill_reported_names()
 
     # -- sources ----------------------------------------------------------------------------
 
     def add_source(self, name: str, kind: str = "server") -> str:
-        """Create an upload source; returns its token (only the hash is stored)."""
+        """Add a server agent (or, kind "pilot", an uploader not tied to a pilot, used only internally
+        for token-less uploads); returns its token (only the hash is stored)."""
         if kind not in ("server", "pilot"):
             raise ValueError("kind must be 'server' or 'pilot'")
         token = secrets.token_urlsafe(32)
         with self.sessions.begin() as s:
             s.add(Source(name=name, kind=kind, token_hash=_hash_token(token)))
         return token
+
+    # -- pilot tokens -----------------------------------------------------------------------
+
+    def create_pilot_token(self, name: str, password: str | None, label: str = "") -> str:
+        """A pilot creates a pilot token with their password (they must have set one). Everything
+        uploaded with it is credited to them. Returns the token, which is shown only once."""
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            if pilot.password_hash is None:
+                raise PermissionError("set a password first")
+            self._check_password(pilot, password)
+            return self._new_pilot_token(s, pilot, label)
+
+    def add_pilot_token(self, name: str, label: str = "") -> str:
+        """Admin: create a pilot token for a pilot (no password needed; the pilot is added if they have no
+        passes here yet)."""
+        with self.sessions.begin() as s:
+            return self._new_pilot_token(s, self._resolve_pilot(s, name), label)
+
+    def _new_pilot_token(self, s: Session, pilot: Pilot, label: str) -> str:
+        label = (label or "").strip()[:100] or "pilot token"
+        base = f"{pilot.name}: {label}"[:90]
+        names = set(s.scalars(select(Source.name).where(Source.name.like(f"{base}%"))))
+        source_name = next(n for n in (base, *(f"{base} ({i})" for i in range(2, 1000))) if n not in names)
+        token = secrets.token_urlsafe(32)
+        s.add(Source(name=source_name, kind="pilot", token_hash=_hash_token(token), pilot_id=pilot.id, label=label))
+        return token
+
+    def pilot_tokens(self, name: str) -> list[Source]:
+        """A pilot's tokens, newest first (revoked ones included)."""
+        with self.sessions() as s:
+            pilot = self._pilot(s, name)
+            return list(s.scalars(select(Source).where(Source.pilot_id == pilot.id).order_by(Source.id.desc())))
+
+    def revoke_pilot_token(self, name: str, password: str | None, token_id: int) -> None:
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            self._check_password(pilot, password)
+            source = s.get(Source, token_id)
+            if source is None or source.pilot_id != pilot.id:
+                raise LookupError("no such token")
+            source.revoked_at = source.revoked_at or datetime.now(UTC)
+
+    # -- aliases ----------------------------------------------------------------------------
+
+    def pilot_aliases(self, name: str) -> list[PilotAlias]:
+        with self.sessions() as s:
+            pilot = self._pilot(s, name)
+            return list(s.scalars(select(PilotAlias).where(PilotAlias.pilot_id == pilot.id).order_by(PilotAlias.name)))
+
+    def claim_alias(self, name: str, password: str | None, alias: str) -> int:
+        """A pilot claims another in-game name with their password: passes reported under it are credited to
+        them from now on, and existing ones move over. Only a name nobody owns can be claimed: not another
+        pilot's alias, and not a pilot who has set a password. Returns how many passes moved."""
+        alias = (alias or "").strip()[:100]
+        if not alias:
+            raise ValueError("enter a name")
+        if is_default_pilot(alias):
+            raise ValueError("DCS's default name can't be claimed")
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            self._check_password(pilot, password)
+            if alias == pilot.name:
+                raise ValueError("that's already your name")
+            existing = s.scalar(select(PilotAlias).where(PilotAlias.name == alias))
+            if existing is not None and existing.pilot_id != pilot.id:
+                raise PermissionError(f"{alias!r} is already another pilot's name")
+            other = s.scalar(select(Pilot).where(Pilot.name == alias))
+            if other is not None and other.password_hash is not None:
+                raise PermissionError(f"{alias!r} is a pilot who has set a password")
+            if existing is None:
+                s.add(PilotAlias(name=alias, pilot_id=pilot.id, claimed=True))
+            else:
+                existing.claimed = True
+            moved = 0
+            if other is not None:
+                for row in s.scalars(select(Pass).where(Pass.pilot_id == other.id)):
+                    row.pilot_id = pilot.id
+                    moved += 1
+                for a in s.scalars(select(PilotAlias).where(PilotAlias.pilot_id == other.id)):
+                    a.pilot_id = pilot.id
+                if pilot.modex is None:
+                    pilot.modex = other.modex
+                s.flush()
+                s.delete(other)
+            return moved
+
+    def remove_alias(self, alias: str) -> int:
+        """Admin: undo an alias. Passes reported under that name (other than with the pilot's own tokens) go
+        back to a pilot of that name. Returns how many passes moved."""
+        with self.sessions.begin() as s:
+            row = s.scalar(select(PilotAlias).where(PilotAlias.name == alias))
+            if row is None:
+                raise LookupError(f"no alias {alias!r}")
+            owner_id = row.pilot_id
+            s.delete(row)
+            s.flush()
+            own_tokens = select(Source.id).where(Source.pilot_id == owner_id)
+            passes = list(s.scalars(select(Pass).where(Pass.pilot_id == owner_id, Pass.reported_name == alias,
+                                                       Pass.source_id.not_in(own_tokens))))
+            if passes:
+                target = self._resolve_pilot(s, alias)
+                for p in passes:
+                    p.pilot_id = target.id
+            return len(passes)
+
+    def _resolve_pilot(self, s: Session, name: str) -> Pilot:
+        """The pilot a report under this in-game name belongs to: an alias's pilot, else the pilot of that
+        name (created on first sight)."""
+        alias = s.scalar(select(PilotAlias).where(PilotAlias.name == name))
+        if alias is not None:
+            return s.get(Pilot, alias.pilot_id)
+        pilot = s.scalar(select(Pilot).where(Pilot.name == name))
+        if pilot is None:
+            pilot = Pilot(name=name)
+            s.add(pilot)
+            s.flush()
+        return pilot
+
+    @staticmethod
+    def _note_alias(s: Session, pilot: Pilot, reported: str | None) -> None:
+        """A name seen on an upload with the pilot's own token becomes their alias, unless someone already
+        has it (a pilot of that name, or another pilot's alias), which needs a claim instead."""
+        if not reported or reported == pilot.name or is_default_pilot(reported):
+            return
+        if s.scalar(select(PilotAlias).where(PilotAlias.name == reported)) is not None:
+            return
+        if s.scalar(select(Pilot).where(Pilot.name == reported)) is not None:
+            return
+        s.add(PilotAlias(name=reported[:100], pilot_id=pilot.id, claimed=False))
+        s.flush()
 
     def set_config(self, name: str, config: dict) -> None:
         with self.sessions.begin() as s:
@@ -128,7 +261,7 @@ class Hub:
 
     def authenticate(self, token: str) -> Source | None:
         with self.sessions() as s:
-            return s.scalar(select(Source).where(Source.token_hash == _hash_token(token)))
+            return s.scalar(select(Source).where(Source.token_hash == _hash_token(token), Source.revoked_at.is_(None)))
 
     # -- passes -----------------------------------------------------------------------------
 
@@ -221,9 +354,15 @@ class Hub:
             kind = sidecar.get("kind") or "pass"
         except (KeyError, TypeError, ValueError) as exc:
             raise IngestError(f"invalid sidecar: {exc}") from exc
-        if is_default_pilot(info.get("pilot")):
-            raise IngestError(DEFAULT_PILOT_REFUSED)
         with self.sessions.begin() as s:
+            source = s.get(Source, source_id)
+            token_pilot = s.get(Pilot, source.pilot_id) if source is not None and source.pilot_id else None
+            if token_pilot is None and source is not None and source.kind == "pilot" and source.name != PUBLIC_UPLOADS:
+                raise IngestError("this pilot token isn't tied to a pilot; create a new one on your settings page")
+            if token_pilot is None and is_default_pilot(info.get("pilot")):
+                raise IngestError(DEFAULT_PILOT_REFUSED)
+            if source is not None:
+                source.last_used_at = datetime.now(UTC)
             existing = s.scalar(select(Pass).where(Pass.source_id == source_id, Pass.pass_key == key))
             if existing is not None:
                 # The only thing a re-upload can add: DCS's grade, if it wasn't known the first time
@@ -245,17 +384,18 @@ class Hub:
                 s.add(slice_row)
                 s.flush()
 
-            name = info.get("pilot") or f"id {int(info['aircraft_id']):x}"
-            pilot = s.scalar(select(Pilot).where(Pilot.name == name))
-            if pilot is None:
-                pilot = Pilot(name=name)
-                s.add(pilot)
-                s.flush()
+            reported = info.get("pilot") or None
+            if token_pilot is not None:
+                pilot = token_pilot  # a pilot token: theirs, whatever name they flew under
+                self._note_alias(s, pilot, reported)
+            else:
+                pilot = self._resolve_pilot(s, reported or f"id {int(info['aircraft_id']):x}")
 
             dcs = sidecar.get("dcs") or {}
             try:
                 row = Pass(
                     pass_key=key, source_id=source_id, slice=slice_row, pilot=pilot, kind=kind,
+                    reported_name=(reported or "")[:100] or None,
                     occurred_at=occurred_at(sidecar), mission=(sidecar.get("recording") or {}).get("Title"),
                     carrier_type=info.get("carrier_type") or "", carrier_unit=info.get("carrier_unit"),
                     aircraft_type=info["aircraft_type"], aircraft_id=int(info["aircraft_id"]),
@@ -306,6 +446,14 @@ class Hub:
                  .options(selectinload(Pass.slice)))
             for p in s.scalars(q):
                 p.night = self._night(p)
+
+    def _backfill_reported_names(self) -> None:
+        """Record the in-game name of passes stored before it was kept (from their sidecars)."""
+        with self.sessions.begin() as s:
+            for p in s.scalars(select(Pass).where(Pass.reported_name.is_(None)).options(selectinload(Pass.slice))):
+                name = (((p.slice.sidecar or {}).get("pass") or {}).get("pilot") or "")[:100]
+                if name:
+                    p.reported_name = name
 
     def _candidates(self, s: Session, row: Pass) -> list[Pass]:
         """Unmerged reports that could be the same landing as `row`: from other sources, or from the same
@@ -502,6 +650,8 @@ class Hub:
             upload = s.get(Upload, upload_id)
             upload.status = "processing"
             source_id, pilot, own_only = upload.source_id, upload.pilot, bool(upload.choose_pilot)
+            if upload.source is not None and upload.source.pilot_id is not None:
+                own_only = True  # a pilot token: only the jet flown on the PC that recorded it, credited to its pilot
             path, debrief_path = self.upload_path(upload_id, upload.filename), self.debrief_path(upload_id)
         try:
             debrief = load_debrief(debrief_path) if debrief_path.exists() else None

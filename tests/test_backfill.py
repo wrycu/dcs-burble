@@ -57,7 +57,7 @@ def with_recording_time(path: Path, out: Path, recording_time: str) -> Path:
 def hub(tmp_path):
     c = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
     c.add_source("server1")
-    c.add_source("pilot", kind="pilot")
+    c.add_pilot_token("Wrycu", "pilot")
     return c
 
 
@@ -101,14 +101,14 @@ def test_backfill_merges_and_never_duplicates(hub, tmp_path):
     assert r["kind"] == "track" and r["grade"]
     (landing,) = landings(hub)
     assert landing["wire"] == 2 and landing["dcs_grade"].startswith("LSO: GRADE:C")
-    assert sorted(x["source"] for x in landing["reports"]) == ["pilot", "server1", "server1"]
+    assert sorted(x["source"] for x in landing["reports"]) == ["Wrycu: pilot", "server1", "server1"]
     # Uploading the same file again changes nothing.
     (again,) = hub.ingest_recording(2, PILOT)
     assert again["created"] is False and len(landings(hub)) == 1
 
 
 def test_upload_api(hub, tmp_path):
-    token = hub.add_source("uploader", kind="pilot")
+    token = hub.add_source("uploader")  # a server agent token: imports everything
     client = TestClient(create_app(hub))
     assert client.get("/upload").status_code == 200
     assert client.post("/api/v1/recordings", headers={"Authorization": "Bearer wrong"},

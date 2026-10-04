@@ -42,7 +42,7 @@ def pilot_report(kind: str) -> tuple[bytes, dict]:
 def hub(tmp_path):
     c = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
     c.server = c.add_source("server1")  # tokens unused here; ingest takes the source id
-    c.pilot = c.add_source("wrycu-pc", kind="pilot")
+    c.pilot = c.add_pilot_token("Wrycu", "wrycu-pc")
     return c
 
 
@@ -64,7 +64,7 @@ def test_reports_of_one_landing_are_combined(hub, pilot_first):
     assert r2.grade
 
     (landing,) = landings(hub)
-    assert sorted(r["source"] for r in landing["reports"]) == ["server1", "wrycu-pc"]
+    assert sorted(r["source"] for r in landing["reports"]) == ["Wrycu: wrycu-pc", "server1"]
     # The server's knowledge is kept...
     assert landing["wire"] == 3 and landing["dcs_grade"] == "LSO: GRADE:OK : WIRE# 3" and landing["calls"] == CALLS
     # ...and the pilot's track (recorded AOA, higher rate) is what's graded.
@@ -72,7 +72,7 @@ def test_reports_of_one_landing_are_combined(hub, pilot_first):
         from dcs_lso.hub.db import Pass
         row = s.get(Pass, landing["id"])
         result = hub.load_pass(row)
-    assert result.track_source == "wrycu-pc"
+    assert result.track_source == "Wrycu: wrycu-pc"
     assert result.outcome.value == "trap"
     groove = [x for x in result.samples if 150 < x.along < 1389]
     assert groove and not any(x.aoa_derived for x in groove)
@@ -95,7 +95,7 @@ def test_the_board_lists_a_landing_under_every_source_that_reported_it(hub):
     hub.ingest(1, *server_report("trap"))
     hub.ingest(2, *pilot_report("trap"))
     client = TestClient(create_app(hub))
-    for source in ("server1", "wrycu-pc"):
+    for source in ("server1", "Wrycu: wrycu-pc"):
         (row,) = client.get("/api/v1/passes", params={"days": 0, "source": source}).json()
     page = client.get(f"/passes/{row['id']}").text
     assert "Reports" in page and "track used" in page and "wrycu-pc" in page

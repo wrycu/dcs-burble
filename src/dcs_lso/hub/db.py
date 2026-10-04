@@ -23,7 +23,8 @@ class Base(DeclarativeBase):
 
 
 class Source(Base):
-    """Something that uploads passes: a DCS server's agent, or a pilot uploader."""
+    """Something that uploads passes, with its own token: a DCS server's agent (kind "server": its server
+    agent token), or a pilot (kind "pilot": a pilot token, tied to that pilot by `pilot_id`)."""
 
     __tablename__ = "sources"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -33,6 +34,12 @@ class Source(Base):
     # Settings the source's agent fetches (e.g. callouts: SRS server, LSO frequencies).
     config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # A pilot token's pilot: everything uploaded with it is credited to them, whatever name the pilot
+    # flew under in DCS (that name becomes one of their aliases).
+    pilot_id: Mapped[int | None] = mapped_column(ForeignKey("pilots.id"), nullable=True)
+    label: Mapped[str | None] = mapped_column(String(100), nullable=True)  # e.g. "my PC", shown to the pilot
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Pilot(Base):
@@ -45,6 +52,19 @@ class Pilot(Base):
     # Set by the pilot (first come, first served; an admin can reset it): then uploads without a token
     # need it to import this pilot's passes. A salted scrypt hash (hub.passwords).
     password_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class PilotAlias(Base):
+    """Another in-game name of a pilot (e.g. "CVW-17 | Wrycu" for Wrycu): passes reported under it are
+    credited to the pilot. Seen on an upload with the pilot's token (`claimed` False), or claimed by the
+    pilot with their password (`claimed` True)."""
+
+    __tablename__ = "pilot_aliases"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    pilot_id: Mapped[int] = mapped_column(ForeignKey("pilots.id"), index=True)
+    claimed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Slice(Base):
@@ -86,6 +106,8 @@ class Pass(Base):
     kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The aircraft's livery, from the mission via the dcs-lso hook, when known.
     livery: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # The pilot's name as reported (the in-game name), which may be an alias of `pilot`.
+    reported_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # Flown at night (the sun below the horizon at the carrier when the pass ended); None if unknown.
     night: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Another report of the same landing (e.g. the pilot's own and the server's) is merged into the

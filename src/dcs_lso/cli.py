@@ -263,11 +263,27 @@ def _hub_serve(args: argparse.Namespace) -> int:
 
 
 def _hub_add_agent(args: argparse.Namespace) -> int:
-    kind = getattr(args, "kind", "server")  # "pilot" for add-pilot-uploader
-    token = _hub(args).add_source(args.name, kind)
-    what = "server agent" if kind == "server" else "pilot uploader"
-    print(f"{what} {args.name!r} added. Its token (shown once, keep it secret):")
+    token = _hub(args).add_source(args.name)
+    print(f"server agent {args.name!r} added. Its server agent token (shown once, keep it secret):")
     print(token)
+    return 0
+
+
+def _hub_add_pilot_token(args: argparse.Namespace) -> int:
+    token = _hub(args).add_pilot_token(args.pilot, args.label)
+    print(f"pilot token for {args.pilot!r} created. Everything uploaded with it is credited to them "
+          "(shown once, keep it secret):")
+    print(token)
+    return 0
+
+
+def _hub_remove_alias(args: argparse.Namespace) -> int:
+    try:
+        moved = _hub(args).remove_alias(args.alias)
+    except LookupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"alias {args.alias!r} removed; {moved} passes reported under it moved back to a pilot of that name")
     return 0
 
 
@@ -474,9 +490,14 @@ def main(argv: list[str] | None = None) -> int:
     add_agent = hub_sub.add_parser("add-agent", help="add a server agent and print its server agent token")
     add_agent.add_argument("name")
     add_agent.set_defaults(func=_hub_add_agent)
-    add_pilot = hub_sub.add_parser("add-pilot-uploader", help="add a pilot uploader and print its pilot token")
-    add_pilot.add_argument("name")
-    add_pilot.set_defaults(func=_hub_add_agent, kind="pilot")
+    add_pilot = hub_sub.add_parser("add-pilot-token", help="create a pilot token for a pilot (pilots can also "
+                                                           "create their own on their settings page)")
+    add_pilot.add_argument("pilot", help="the pilot's name, as on the board (added if new)")
+    add_pilot.add_argument("--label", default="", help='what it\'s for, e.g. "Wrycu\'s PC"')
+    add_pilot.set_defaults(func=_hub_add_pilot_token)
+    remove_alias = hub_sub.add_parser("remove-alias", help="undo a pilot's alias (e.g. a name claimed by mistake)")
+    remove_alias.add_argument("alias")
+    remove_alias.set_defaults(func=_hub_remove_alias)
     regrade = hub_sub.add_parser("regrade", help="grade every stored pass with the current grading version")
     regrade.add_argument("--force", action="store_true", help="also redo passes already at the current version")
     regrade.set_defaults(func=_hub_regrade)

@@ -177,13 +177,51 @@ def create_app(hub: Hub) -> FastAPI:
         _pilot_step(lambda: hub.set_pilot_modex(name, password, modex))
         return {"pilot": name, "modex": modex.strip()}
 
-    @app.get("/pilots/{name}/settings", response_class=HTMLResponse)
-    def pilot_settings(name: str, done: str | None = None, error: str | None = None) -> str:
+    def _settings_page(name: str, done: str | None = None, error: str | None = None,
+                       new_token: str | None = None) -> str:
         with hub.sessions() as s:
             pilot = s.scalar(select(Pilot).where(Pilot.name == name))
         if pilot is None:
             raise HTTPException(404, "no such pilot")
-        return pages.pilot_settings_page(pilot, done, error)
+        return pages.pilot_settings_page(pilot, done, error, hub.pilot_tokens(name), hub.pilot_aliases(name), new_token)
+
+    @app.get("/pilots/{name}/settings", response_class=HTMLResponse)
+    def pilot_settings(name: str, done: str | None = None, error: str | None = None) -> str:
+        return _settings_page(name, done, error)
+
+    @app.post("/api/v1/pilots/{name}/tokens", status_code=201)
+    def pilot_token_api(name: str, password: Annotated[str, Form()], label: Annotated[str, Form()] = "") -> dict:
+        """A pilot creates a pilot token with their password (e.g. for the pilot hook's settings)."""
+        token: list[str] = []
+        _pilot_step(lambda: token.append(hub.create_pilot_token(name, password, label)))
+        return {"pilot": name, "token": token[0]}
+
+    @app.post("/pilots/{name}/settings/tokens", response_class=HTMLResponse)
+    def pilot_token_form(name: str, password: Annotated[str, Form()], label: Annotated[str, Form()] = ""):
+        # Rendered directly (not redirected), so the new token is never in a URL.
+        try:
+            token = hub.create_pilot_token(name, password, label)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (PermissionError, ValueError) as exc:
+            return HTMLResponse(_settings_page(name, error=str(exc)), status_code=403)
+        return _settings_page(name, done="Pilot token created.", new_token=token)
+
+    @app.post("/pilots/{name}/settings/tokens/{token_id}/revoke")
+    def pilot_token_revoke(name: str, token_id: int, password: Annotated[str, Form()]):
+        return _settings_redirect(name, lambda: hub.revoke_pilot_token(name, password, token_id), "Token revoked.")
+
+    @app.post("/pilots/{name}/settings/aliases")
+    def pilot_alias_form(name: str, password: Annotated[str, Form()], alias: Annotated[str, Form()]):
+        moved: list[int] = []
+        step = lambda: moved.append(hub.claim_alias(name, password, alias))  # noqa: E731
+        quoted = quote(name, safe="")
+        try:
+            _pilot_step(step)
+        except HTTPException as exc:
+            return RedirectResponse(f"/pilots/{quoted}/settings?error={quote(str(exc.detail))}", status_code=303)
+        done = f"{alias.strip()} is now one of your names" + (f"; {moved[0]} passes moved to you." if moved[0] else ".")
+        return RedirectResponse(f"/pilots/{quoted}/settings?done={quote(done)}", status_code=303)
 
     def _settings_redirect(name: str, step, done: str):
         quoted = quote(name, safe="")
