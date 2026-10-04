@@ -1,11 +1,11 @@
-"""Edge collector: live Tacview stream -> session archive -> per-pass slices -> central.
+"""Server agent (or pilot uploader): live Tacview stream -> session archive -> per-pass slices -> hub.
 
 Runs next to DCS. For each stream connection (a "session") it:
 - writes the raw stream to `archive/<start>.txt.acmi` (zipped when the session ends);
 - detects passes live; `TAIL_S` after a pass ends, slices it from the archive with the
   same code as `dcs-lso slice`, attaches DCS's grade and wire from the dcs-lso hook's
   events in dcs.log, and queues slice + sidecar in the outbox;
-- uploads the outbox to central, retrying until accepted;
+- uploads the outbox to hub, retrying until accepted;
 - at session end, reads debrief.log and fills in DCS grades the hook didn't provide (in pilot mode,
   the pilot's own DCS grades and wires for their track reports).
 """
@@ -64,7 +64,7 @@ CONFIG_REFRESH_S = 60.0
 
 
 @dataclass
-class CollectorConfig:
+class AgentConfig:
     work_dir: Path
     tacview_host: str = "127.0.0.1"
     tacview_port: int = DEFAULT_PORT
@@ -73,13 +73,13 @@ class CollectorConfig:
     debrief: Path | None = None
     url: str | None = None
     token: str | None = None
-    # "server": live callouts over SRS (if enabled in central's config); "pilot": record and upload
-    # only, never transmit (a pilot's collector would be talking on someone else's server).
+    # "server": live callouts over SRS (if enabled in the hub's config); "pilot": record and upload
+    # only, never transmit (a pilot uploader would be talking on someone else's server).
     mode: str = "server"
     voice_dir: Path | None = None  # clip set from `dcs-lso voice build`
     # Retention, in days (0: keep forever). Session archives allow re-slicing; uploaded slices are kept
-    # on central, so the local copies only matter for a while (e.g. adding debrief.log grades). None:
-    # not set here, so central's configuration for this source ("retention") applies, else the default.
+    # on the hub, so the local copies only matter for a while (e.g. adding debrief.log grades). None:
+    # not set here, so the hub's configuration for this source ("retention") applies, else the default.
     keep_archives_days: float | None = None
     keep_sent_days: float | None = None
     keep_rejected_days: float | None = None
@@ -266,8 +266,8 @@ class Session:
     first_seen: dict[int, float] = field(default_factory=dict)
 
 
-class Collector:
-    def __init__(self, config: CollectorConfig, client: httpx.AsyncClient | None = None) -> None:
+class Agent:
+    def __init__(self, config: AgentConfig, client: httpx.AsyncClient | None = None) -> None:
         self.config = config
         self.outbox = Outbox(config.work_dir / "outbox")
         self.archive_dir = config.work_dir / "archive"
@@ -283,7 +283,7 @@ class Collector:
         # Overridable for tests; by default calls go to the SRS server named in the config.
         self.sink_factory = lambda settings: SrsSink(settings.srs, _radios(settings))
 
-    # -- configuration from central -------------------------------------------------------------
+    # -- configuration from the hub -------------------------------------------------------------
 
     def _load_cached_config(self) -> dict:
         try:
@@ -292,7 +292,7 @@ class Collector:
             return {}
 
     async def refresh_config(self) -> None:
-        """Fetch this source's configuration from central; keep the cached copy if that fails."""
+        """Fetch this source's configuration from the hub; keep the cached copy if that fails."""
         if self.client is None:
             return
         try:
@@ -308,7 +308,7 @@ class Collector:
             self.remote_config = config
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             self.config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-            log.info("configuration updated from central (applies from the next session)")
+            log.info("configuration updated from the hub (applies from the next session)")
 
     def _callouts(self) -> LiveCallouts | None:
         if self.config.mode != "server":
@@ -316,11 +316,11 @@ class Collector:
             return None
         settings = CalloutSettings.from_config(self.remote_config)
         if not settings.enabled:
-            log.info("live callouts OFF (not enabled in this source's config on central; "
-                     "see `dcs-lso central set-config`)")
+            log.info("live callouts OFF (not enabled in this source's config on the hub; "
+                     "see `dcs-lso hub set-config`)")
             return None
         if self.clips is None:
-            log.warning("live callouts OFF: enabled in central's config, but no --voice-dir was given")
+            log.warning("live callouts OFF: enabled in the hub's config, but no --voice-dir was given")
             return None
         callouts = LiveCallouts(settings, self.clips, self.sink_factory(settings),
                                 wind_for=self.hooks.wind_for if self.hooks is not None else None,
@@ -332,15 +332,15 @@ class Collector:
     # -- top level ----------------------------------------------------------------------------
 
     def retention(self) -> dict[str, float]:
-        """Days to keep each kind of file (0: forever): set locally, else from central's configuration
+        """Days to keep each kind of file (0: forever): set locally, else from the hub's configuration
         for this source (`{"retention": {"archives_days": 90, "sent_days": 14, "rejected_days": 30}}`),
         else the defaults."""
-        central = (self.remote_config or {}).get("retention") or {}
+        hub = (self.remote_config or {}).get("retention") or {}
         out = {}
         for kind, default in RETENTION_DEFAULT_DAYS.items():
             local = getattr(self.config, f"keep_{kind}_days")
             try:
-                out[kind] = float(local if local is not None else central.get(f"{kind}_days", default))
+                out[kind] = float(local if local is not None else hub.get(f"{kind}_days", default))
             except (TypeError, ValueError):
                 out[kind] = default
         return out
@@ -393,7 +393,7 @@ class Collector:
 
     async def upload_loop(self) -> None:
         if self.client is None:
-            log.warning("no central URL/token: passes stay in %s", self.outbox.pending_dir)
+            log.warning("no hub URL/token: passes stay in %s", self.outbox.pending_dir)
             return
         last_config = 0.0
         while True:
@@ -544,7 +544,7 @@ class Collector:
         loop = asyncio.get_running_loop()
         try:
             name = await loop.run_in_executor(None, self._make_slice, session, item, calls)
-        except Exception:  # never let one bad pass take the collector down
+        except Exception:  # never let one bad pass take the agent down
             log.exception("could not slice pass at %.1fs", item.result.start_time)
             return
         if name:
@@ -561,7 +561,7 @@ class Collector:
         try:
             name = await asyncio.get_running_loop().run_in_executor(None, self._make_track_slice, session, approach,
                                                                     ended_at)
-        except Exception:  # never let one bad approach take the collector down
+        except Exception:  # never let one bad approach take the agent down
             log.exception("could not slice approach at %.1fs", approach.start_time)
             return
         session.names.append(name)
@@ -581,7 +581,7 @@ class Collector:
             meta["pass"]["aircraft_first_seen"] = session.first_seen.get(approach.aircraft_id)
             name = track_slice_name(recording, approach)
             self.outbox.put(name, path, meta)
-        log.info("queued %s (own track; central grades it with the server's report of this landing)", name)
+        log.info("queued %s (own track; the hub grades it with the server's report of this landing)", name)
         return name
 
     def _make_slice(self, session: Session, item: _Pending, calls: list[dict] | None = None) -> str | None:
@@ -684,7 +684,7 @@ def _pass_grade(recording, info: dict, debrief: Debrief) -> LsoGrade | None:
 
 
 def _track_grade(recording, info: dict, debrief: Debrief) -> LsoGrade | None:
-    """DCS's grade for an own-track report (a pilot's collector), from the pilot's debrief.log: a
+    """DCS's grade for an own-track report (the pilot uploader), from the pilot's debrief.log: a
     multiplayer client's DCS grades its own traps (with the wire) and writes them there at mission end."""
     aircraft = int(info["aircraft_id"])
     approach = Approach(aircraft, float(info["start_time"]), float(info["end_time"]), 0.0)
@@ -707,7 +707,7 @@ def _provisional_grade(session: Session, carrier_id: int, aircraft_id: int) -> G
 
 
 def _radios(settings: CalloutSettings):
-    """Every LSO frequency this collector may transmit on (the SRS client announces them)."""
+    """Every LSO frequency this agent may transmit on (the SRS client announces them)."""
     radios = [settings.radio_for("")]
     for unit in settings.carriers:
         r = settings.radio_for(unit)

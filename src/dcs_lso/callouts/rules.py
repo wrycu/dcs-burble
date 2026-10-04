@@ -20,7 +20,7 @@ class Call(StrEnum):
     WAVE_OFF = "wave off"
     WAVE_OFF_FOUL_DECK = "wave off, foul deck"  # another aircraft is in the landing area
     WAVE_OFF_GEAR = "wave off, gear"
-    BOLTER = "bolter"  # decided by the bolter detector in the live collector, not by CalloutEngine
+    BOLTER = "bolter"  # decided by the bolter detector in the live agent, not by CalloutEngine
     TRAPPED = "welcome aboard"  # likewise (arrestment detected); spoken as one of several variants
     TRAPPED_WAVED_OFF = "welcome aboard, despite the wave off"  # trapped after ignoring our wave-off
     # TRAPPED with the wire, when DCS reports it in time (its LSO grade, or the wire animation).

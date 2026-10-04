@@ -2,9 +2,9 @@
 
 A multiplayer client's Tacview often records only the player's own jet (servers commonly don't
 let clients export other objects), so passes can't be detected against a carrier. The pilot's
-track is still the best one available (higher rate, real AOA), so the pilot-mode collector uploads
-it around each approach and central grades it against the carrier from the server's report of the
-same landing (see `central.service`).
+track is still the best one available (higher rate, real AOA), so the pilot-mode agent uploads
+it around each approach and the hub grades it against the carrier from the server's report of the
+same landing (see `hub.service`).
 
 An approach: the jet comes down from pattern altitude to near deck height, and ends when it climbs
 away again (bolter, wave-off, touch-and-go) or stops (trap).

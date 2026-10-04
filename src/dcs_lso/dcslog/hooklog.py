@@ -1,4 +1,4 @@
-"""Events written to dcs.log by `hooks/dcs-lso-hook.lua`, and a tail-follower for dcs.log."""
+"""Events written to dcs.log by `hooks/dcs-lso-server-hook.lua`, and a tail-follower for dcs.log."""
 
 from __future__ import annotations
 

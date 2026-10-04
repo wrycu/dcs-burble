@@ -1,11 +1,12 @@
--- dcs-lso metadata hook.
+-- dcs-lso server hook.
 --
--- Install: copy to Saved Games/DCS/Scripts/Hooks/ (or DCS.server/ on a dedicated server).
+-- Install: copy to the DCS server's Saved Games/<DCS folder>/Scripts/Hooks/. If an older copy named
+-- dcs-lso-hook.lua is there, delete it (both would run).
 --
 -- When a mission loads, installs an event handler inside the mission scripting
 -- environment that writes carrier-relevant events (touchdown, landing, and DCS's
 -- LSO grade with the wire) to dcs.log as single `DCSLSO {json}` lines. The
--- collector tails dcs.log. The mission environment is sandboxed (no sockets or
+-- server agent tails dcs.log. The mission environment is sandboxed (no sockets or
 -- file I/O), so the log is the channel.
 
 local HANDLER = [==[
@@ -187,7 +188,7 @@ local function log_slot(player_id)
 end
 
 -- Each carrier in the mission with the radio frequency set for it in the mission editor (Hz, and
--- modulation 0 = AM, 1 = FM), so the collector can make its LSO calls there without configuration.
+-- modulation 0 = AM, 1 = FM), so the server agent can make its LSO calls there without configuration.
 local CARRIER_TYPES = { 'CVN', 'Stennis', 'Forrestal', 'LHA', 'CV_1143' }
 
 local function log_carriers()

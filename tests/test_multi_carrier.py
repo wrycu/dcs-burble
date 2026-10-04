@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from dcs_lso.acmi import load_recording
-from dcs_lso.central.service import Central
+from dcs_lso.hub.service import Hub
 from dcs_lso.detect import find_passes
 from dcs_lso.slices import sidecar, slice_objects
 from dcs_lso.srs import Radio
@@ -87,7 +87,7 @@ def test_each_carriers_calls_go_out_on_its_own_frequency(tmp_path, clips, record
     config = {"callouts": {k: v for k, v in CONFIG["callouts"].items() if k != "carriers"}}  # nothing per carrier
     original, test_live_callouts.CONFIG = test_live_callouts.CONFIG, config
     try:
-        collector, session, sink = asyncio.run(run_collector(
+        agent, session, sink = asyncio.run(run_collector(
             recording, tmp_path / "edge", clips, hooks=CarrierSlotHooks({"Wrycu": "301", "Maverick": "302"})))
     finally:
         test_live_callouts.CONFIG = original
@@ -103,18 +103,18 @@ def test_each_carriers_calls_go_out_on_its_own_frequency(tmp_path, clips, record
     assert not any(text[:3] in ("301", "302") for text in sink.texts)
     assert Call.WAVE_OFF_FOUL_DECK not in {call for call, _ in sink.said}
     # Each uploaded pass names its carrier.
-    units = sorted(item.meta()["pass"]["carrier_unit"] for item in collector.outbox.pending())
+    units = sorted(item.meta()["pass"]["carrier_unit"] for item in agent.outbox.pending())
     assert units == sorted([TRUMAN, WASHINGTON])
 
 
-def test_central_keeps_the_carrier_of_each_landing(tmp_path, recording):
-    central = Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central")
-    central.add_source("server1")
+def test_hub_keeps_the_carrier_of_each_landing(tmp_path, recording):
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    hub.add_source("server1")
     r = load_recording(recording)
     for p in find_passes(r):
-        central.ingest(1, recording.read_bytes(), sidecar(r, p, "x", slice_objects(r, p)))
+        hub.ingest(1, recording.read_bytes(), sidecar(r, p, "x", slice_objects(r, p)))
     from fastapi.testclient import TestClient
 
-    from dcs_lso.central.app import create_app
-    landings = TestClient(create_app(central)).get("/api/v1/passes", params={"days": 0}).json()
+    from dcs_lso.hub.app import create_app
+    landings = TestClient(create_app(hub)).get("/api/v1/passes", params={"days": 0}).json()
     assert sorted((x["pilot"], x["carrier"]) for x in landings) == [("Maverick", WASHINGTON), ("Wrycu", TRUMAN)]

@@ -1,4 +1,4 @@
-"""Command line entry point: `dcs-lso analyze <recording.acmi>`."""
+"""Command line entry point: `dcs-lso hub`, `dcs-lso agent`, `dcs-lso analyze <recording.acmi>`, ..."""
 
 from __future__ import annotations
 
@@ -244,35 +244,37 @@ def _cards(args: argparse.Namespace) -> int:
     return 0
 
 
-def _central(args: argparse.Namespace):
-    from .central.service import Central
+def _hub(args: argparse.Namespace):
+    from .hub.service import Hub
 
     data_dir = Path(args.data_dir)
     url = args.database_url or f"sqlite:///{(data_dir / 'lso.db').resolve()}"
     data_dir.mkdir(parents=True, exist_ok=True)
-    return Central(url, data_dir, require_upload_token=args.require_upload_token)
+    return Hub(url, data_dir, require_upload_token=args.require_upload_token)
 
 
-def _central_serve(args: argparse.Namespace) -> int:
+def _hub_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
-    from .central.app import create_app
+    from .hub.app import create_app
 
-    uvicorn.run(create_app(_central(args)), host=args.host, port=args.port)
+    uvicorn.run(create_app(_hub(args)), host=args.host, port=args.port)
     return 0
 
 
-def _central_add_source(args: argparse.Namespace) -> int:
-    token = _central(args).add_source(args.name, args.kind)
-    print(f"source {args.name!r} ({args.kind}) created. Its upload token (shown once, keep it secret):")
+def _hub_add_agent(args: argparse.Namespace) -> int:
+    kind = getattr(args, "kind", "server")  # "pilot" for add-pilot-uploader
+    token = _hub(args).add_source(args.name, kind)
+    what = "server agent" if kind == "server" else "pilot uploader"
+    print(f"{what} {args.name!r} added. Its token (shown once, keep it secret):")
     print(token)
     return 0
 
 
-def _central_set_config(args: argparse.Namespace) -> int:
+def _hub_set_config(args: argparse.Namespace) -> int:
     config = json.loads(Path(args.file).read_text(encoding="utf-8"))
-    _central(args).set_config(args.name, config)
-    print(f"configuration for {args.name!r} updated; its collector applies it when the next mission starts")
+    _hub(args).set_config(args.name, config)
+    print(f"configuration for {args.name!r} updated; its agent applies it when the next mission starts")
     return 0
 
 
@@ -288,9 +290,9 @@ def _voice_build(args: argparse.Namespace) -> int:
     return 0
 
 
-def _central_reset_password(args: argparse.Namespace) -> int:
+def _hub_reset_password(args: argparse.Namespace) -> int:
     try:
-        _central(args).reset_pilot_password(args.pilot)
+        _hub(args).reset_pilot_password(args.pilot)
     except LookupError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -298,8 +300,8 @@ def _central_reset_password(args: argparse.Namespace) -> int:
     return 0
 
 
-def _central_regrade(args: argparse.Namespace) -> int:
-    done, skipped = _central(args).regrade(force=args.force)
+def _hub_regrade(args: argparse.Namespace) -> int:
+    done, skipped = _hub(args).regrade(force=args.force)
     print(f"regraded {done} passes; {skipped} already had the current grading version")
     return 0
 
@@ -318,7 +320,7 @@ def _upload(args: argparse.Namespace) -> int:
             tempfile.TemporaryDirectory() as tmp:
         for path in args.recordings:
             debrief = args.debrief or _sibling_debrief(path)
-            # Every pass, plus own-jet approaches without a carrier (merged on central with the
+            # Every pass, plus own-jet approaches without a carrier (merged on the hub with the
             # server's report of each landing).
             for acmi, meta in slice_recording(path, Path(tmp) / Path(path).name, load_debrief(debrief) if debrief else None):
                 info = meta["pass"]
@@ -341,10 +343,10 @@ def _upload(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
-def _collect(args: argparse.Namespace) -> int:
+def _agent(args: argparse.Namespace) -> int:
     import logging
 
-    from .edge.collector import Collector, CollectorConfig
+    from .agent.service import Agent, AgentConfig
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
@@ -352,7 +354,7 @@ def _collect(args: argparse.Namespace) -> int:
         logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per request is just noise
     dcs_log = Path(args.dcs_log) if args.dcs_log else None
     debrief = Path(args.debrief) if args.debrief else (dcs_log.with_name("debrief.log") if dcs_log else None)
-    config = CollectorConfig(
+    config = AgentConfig(
         work_dir=Path(args.work_dir), tacview_host=args.tacview_host, tacview_port=args.tacview_port,
         tacview_password=args.tacview_password, dcs_log=dcs_log, debrief=debrief,
         url=args.url, token=args.token or os.environ.get("DCS_LSO_TOKEN"),
@@ -362,7 +364,7 @@ def _collect(args: argparse.Namespace) -> int:
     )
 
     async def run() -> None:
-        await Collector(config).run_forever()
+        await Agent(config).run_forever()
 
     try:
         asyncio.run(run())
@@ -400,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
     replay.add_argument("--speed", type=float, default=1.0, help="playback speed; 0 = as fast as possible")
     replay.set_defaults(func=_replay)
 
-    hook = sub.add_parser("hook-listen", help="P4: print events from the dcs-lso hook as they reach dcs.log")
+    hook = sub.add_parser("hook-listen", help="P4: print events from the dcs-lso server hook as they reach dcs.log")
     hook.add_argument("--log", default=str(DEFAULT_DCS_LOG), help="path to dcs.log")
     hook.add_argument("--from-start", action="store_true", help="also show events already in the file")
     hook.set_defaults(func=_hook_listen)
@@ -455,34 +457,36 @@ def main(argv: list[str] | None = None) -> int:
                        help="DCS debrief.log for all recordings (default: <name>.debrief.log next to each one)")
     cards.set_defaults(func=_cards)
 
-    central = sub.add_parser("central", help="run or manage the central service")
-    central.add_argument("--data-dir", default=os.environ.get("DCS_LSO_DATA_DIR", "data"),
-                         help="where slices (and the default SQLite database) live [$DCS_LSO_DATA_DIR]")
-    central.add_argument("--database-url", default=os.environ.get("DCS_LSO_DATABASE_URL"),
-                         help="SQLAlchemy URL; default sqlite in the data dir [$DCS_LSO_DATABASE_URL]")
-    central.add_argument("--require-upload-token", action="store_true",
-                         default=os.environ.get("DCS_LSO_REQUIRE_UPLOAD_TOKEN", "").lower() in ("1", "true", "yes"),
-                         help="only accept recordings uploaded with a source's token (by default anyone can upload "
-                              "a recording and import their own passes from it) [$DCS_LSO_REQUIRE_UPLOAD_TOKEN]")
-    central_sub = central.add_subparsers(dest="central_command", required=True)
-    serve = central_sub.add_parser("serve", help="serve the API, greenie board and pass pages")
+    hub = sub.add_parser("hub", help="run or manage the hub (website, database, grading)")
+    hub.add_argument("--data-dir", default=os.environ.get("DCS_LSO_DATA_DIR", "data"),
+                     help="where slices (and the default SQLite database) live [$DCS_LSO_DATA_DIR]")
+    hub.add_argument("--database-url", default=os.environ.get("DCS_LSO_DATABASE_URL"),
+                     help="SQLAlchemy URL; default sqlite in the data dir [$DCS_LSO_DATABASE_URL]")
+    hub.add_argument("--require-upload-token", action="store_true",
+                     default=os.environ.get("DCS_LSO_REQUIRE_UPLOAD_TOKEN", "").lower() in ("1", "true", "yes"),
+                     help="only accept recordings uploaded with a token (by default anyone can upload "
+                          "a recording and import their own passes from it) [$DCS_LSO_REQUIRE_UPLOAD_TOKEN]")
+    hub_sub = hub.add_subparsers(dest="hub_command", required=True)
+    serve = hub_sub.add_parser("serve", help="serve the API, greenie board and pass pages")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
-    serve.set_defaults(func=_central_serve)
-    add_source = central_sub.add_parser("add-source", help="create an upload source and print its token")
-    add_source.add_argument("name")
-    add_source.add_argument("--kind", choices=["server", "pilot"], default="server")
-    add_source.set_defaults(func=_central_add_source)
-    regrade = central_sub.add_parser("regrade", help="grade every stored pass with the current grading version")
+    serve.set_defaults(func=_hub_serve)
+    add_agent = hub_sub.add_parser("add-agent", help="add a server agent and print its server agent token")
+    add_agent.add_argument("name")
+    add_agent.set_defaults(func=_hub_add_agent)
+    add_pilot = hub_sub.add_parser("add-pilot-uploader", help="add a pilot uploader and print its pilot token")
+    add_pilot.add_argument("name")
+    add_pilot.set_defaults(func=_hub_add_agent, kind="pilot")
+    regrade = hub_sub.add_parser("regrade", help="grade every stored pass with the current grading version")
     regrade.add_argument("--force", action="store_true", help="also redo passes already at the current version")
-    regrade.set_defaults(func=_central_regrade)
-    reset = central_sub.add_parser("reset-password", help="clear a pilot's upload password (e.g. they forgot it)")
+    regrade.set_defaults(func=_hub_regrade)
+    reset = hub_sub.add_parser("reset-password", help="clear a pilot's upload password (e.g. they forgot it)")
     reset.add_argument("pilot", help="the pilot's name, as on the board")
-    reset.set_defaults(func=_central_reset_password)
-    set_config = central_sub.add_parser("set-config", help="set a source's collector configuration (JSON file)")
+    reset.set_defaults(func=_hub_reset_password)
+    set_config = hub_sub.add_parser("set-config", help="set a server agent's configuration (JSON file)")
     set_config.add_argument("name")
     set_config.add_argument("file")
-    set_config.set_defaults(func=_central_set_config)
+    set_config.set_defaults(func=_hub_set_config)
 
     voice = sub.add_parser("voice", help="LSO voice clips")
     voice_sub = voice.add_subparsers(dest="voice_command", required=True)
@@ -492,10 +496,10 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--speed", type=float, default=1.15, help="speaking speed (1 = Piper's normal pace)")
     build.set_defaults(func=_voice_build)
 
-    upload = sub.add_parser("upload", help="slice recordings and upload every pass to the central service")
+    upload = sub.add_parser("upload", help="slice recordings and upload every pass to the hub")
     upload.add_argument("recordings", nargs="+")
     upload.add_argument("--url", default=os.environ.get("DCS_LSO_URL", "http://127.0.0.1:8000"),
-                        help="central service URL [$DCS_LSO_URL]")
+                        help="hub URL [$DCS_LSO_URL]")
     upload.add_argument("--token", help="upload token [$DCS_LSO_TOKEN]")
     upload.add_argument("--debrief", metavar="PATH",
                         help="DCS debrief.log for all recordings (default: <name>.debrief.log next to each one)")
@@ -503,29 +507,31 @@ def main(argv: list[str] | None = None) -> int:
 
     from .acmi.stream import DEFAULT_PORT as TACVIEW_PORT
 
-    collect = sub.add_parser("collect", help="edge collector: live Tacview stream -> passes -> central")
-    collect.add_argument("--work-dir", default="collector", help="session archive and upload outbox")
-    collect.add_argument("--tacview-host", default="127.0.0.1")
-    collect.add_argument("--tacview-port", type=int, default=TACVIEW_PORT)
-    collect.add_argument("--tacview-password")
-    collect.add_argument("--dcs-log", metavar="PATH", help="DCS Logs/dcs.log, for the dcs-lso hook's events")
-    collect.add_argument("--debrief", metavar="PATH", help="DCS Logs/debrief.log (default: next to --dcs-log)")
-    collect.add_argument("--url", default=os.environ.get("DCS_LSO_URL"), help="central service URL [$DCS_LSO_URL]")
-    collect.add_argument("--token", help="upload token [$DCS_LSO_TOKEN]")
-    collect.add_argument("--mode", choices=["server", "pilot"], default="server",
-                         help="server: live callouts over SRS when enabled in central's config; "
-                              "pilot: record and upload only, never transmit")
-    collect.add_argument("--voice-dir", metavar="DIR", help="LSO voice clips (from `dcs-lso voice build`)")
-    for name, default, what in (("archives", 90, "session archives (raw recordings, for re-slicing)"),
-                                ("sent", 14, "local copies of uploaded slices (central keeps its own)"),
-                                ("rejected", 30, "slices central rejected")):
-        env = f"DCS_LSO_KEEP_{name.upper()}_DAYS"
-        collect.add_argument(f"--keep-{name}-days", type=float,
-                             default=float(os.environ[env]) if os.environ.get(env) else None, metavar="DAYS",
-                             help=f"keep {what} this long; 0 = forever. Default: central's \"retention\" setting "
-                                  f"for this source, else {default} [${env}]")
-    collect.add_argument("-v", "--verbose", action="store_true")
-    collect.set_defaults(func=_collect)
+    def agent_args(p: argparse.ArgumentParser, mode: str) -> None:
+        p.add_argument("--work-dir", default="agent", help="session archive and upload outbox")
+        p.add_argument("--tacview-host", default="127.0.0.1")
+        p.add_argument("--tacview-port", type=int, default=TACVIEW_PORT)
+        p.add_argument("--tacview-password")
+        p.add_argument("--dcs-log", metavar="PATH", help="DCS Logs/dcs.log, for the dcs-lso server hook's events")
+        p.add_argument("--debrief", metavar="PATH", help="DCS Logs/debrief.log (default: next to --dcs-log)")
+        p.add_argument("--url", default=os.environ.get("DCS_LSO_URL"), help="hub URL [$DCS_LSO_URL]")
+        p.add_argument("--token", help="server agent or pilot token [$DCS_LSO_TOKEN]")
+        p.set_defaults(mode=mode)
+        p.add_argument("--voice-dir", metavar="DIR", help="LSO voice clips (from `dcs-lso voice build`)")
+        for name, default, what in (("archives", 90, "session archives (raw recordings, for re-slicing)"),
+                                    ("sent", 14, "local copies of uploaded slices (the hub keeps its own)"),
+                                    ("rejected", 30, "slices the hub rejected")):
+            env = f"DCS_LSO_KEEP_{name.upper()}_DAYS"
+            p.add_argument(f"--keep-{name}-days", type=float,
+                           default=float(os.environ[env]) if os.environ.get(env) else None, metavar="DAYS",
+                           help=f"keep {what} this long; 0 = forever. Default: the hub's \"retention\" setting "
+                                f"for this agent, else {default} [${env}]")
+        p.add_argument("-v", "--verbose", action="store_true")
+        p.set_defaults(func=_agent)
+
+    agent_args(sub.add_parser("agent", help="server agent: live Tacview stream -> passes, LSO calls -> hub"), "server")
+    agent_args(sub.add_parser("pilot-uploader", help="pilot uploader: your own jet's passes from your PC -> hub "
+                                                     "(never transmits)"), "pilot")
     args = parser.parse_args(argv)
     return args.func(args)
 

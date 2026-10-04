@@ -1,4 +1,4 @@
-"""Central service logic: sources, ingest, regrading. No web concerns here."""
+"""Hub service logic: sources, ingest, regrading. No web concerns here."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ UPLOAD_PILOT_WAIT = timedelta(days=1)  # how long an upload waits for its upload
 DEFAULT_PILOT_REFUSED = ("passes flown under DCS's default pilot name aren't recorded, since they can't be "
                          "credited to a pilot")
 UPLOAD_PASSWORD_ATTEMPTS = 5  # wrong pilot passwords before an upload is given up
-# Merging reports of one landing (see `Central.ingest`).
+# Merging reports of one landing (see `Hub.ingest`).
 MERGED_START_TOLERANCE_S = 15.0
 SAME_POSITION_M = 30.0  # median distance between the two tracks of the aircraft
 MIN_COMMON_SAMPLES = 5
@@ -93,7 +93,7 @@ class IngestResult:
     text: str
 
 
-class Central:
+class Hub:
     def __init__(self, database_url: str, data_dir: str | Path, require_upload_token: bool = False) -> None:
         # Refuse recordings uploaded without a source's token (by default anyone may upload their passes).
         self.require_upload_token = require_upload_token
@@ -309,7 +309,7 @@ class Central:
 
     def _candidates(self, s: Session, row: Pass) -> list[Pass]:
         """Unmerged reports that could be the same landing as `row`: from other sources, or from the same
-        one (e.g. a server's Tacview file backfilled after its collector already sent the pass live)."""
+        one (e.g. a server's Tacview file backfilled after its agent already sent the pass live)."""
         q = (select(Pass).where(Pass.id != row.id, Pass.pilot_id == row.pilot_id,
                                 Pass.aircraft_type == row.aircraft_type, Pass.merged_into_id.is_(None))
              .order_by(Pass.id).options(selectinload(Pass.slice)))

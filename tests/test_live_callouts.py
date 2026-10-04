@@ -11,10 +11,10 @@ import pytest
 from dcs_lso.acmi.stream import serve_recording
 from dcs_lso.callouts.rules import Call
 from dcs_lso.callouts.voice import DIGITS, PHRASES, ClipLibrary, clip_name, variants
-from dcs_lso.central.app import create_app
-from dcs_lso.central.service import Central
-from dcs_lso.edge.callouts import CalloutSettings, SrsSink
-from dcs_lso.edge.collector import Collector, CollectorConfig
+from dcs_lso.hub.app import create_app
+from dcs_lso.hub.service import Hub
+from dcs_lso.agent.callouts import CalloutSettings, SrsSink
+from dcs_lso.agent.service import Agent, AgentConfig
 from dcs_lso.srs import Modulation, Radio, SrsClient
 from dcs_lso.srs.opus import tone
 
@@ -91,14 +91,14 @@ async def run_collector(source: Path, work: Path, clips: Path, mode: str = "serv
     port = server.sockets[0].getsockname()[1]
     sink = RecordingSink()
     async with server:
-        collector = Collector(CollectorConfig(work_dir=work, tacview_port=port, mode=mode, voice_dir=clips),
+        agent = Agent(AgentConfig(work_dir=work, tacview_port=port, mode=mode, voice_dir=clips),
                               client=client)
-        collector.hooks = hooks
-        collector.remote_config = CONFIG
-        collector.refresh_config = _no_refresh  # keep the config set above
-        collector.sink_factory = lambda settings: sink
-        session = await collector.run_session()
-    return collector, session, sink
+        agent.hooks = hooks
+        agent.remote_config = CONFIG
+        agent.refresh_config = _no_refresh  # keep the config set above
+        agent.sink_factory = lambda settings: sink
+        session = await agent.run_session()
+    return agent, session, sink
 
 
 async def _no_refresh() -> None:
@@ -106,15 +106,15 @@ async def _no_refresh() -> None:
 
 
 def test_live_calls_are_spoken_and_uploaded(tmp_path, clips):
-    central = Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central")
-    token = central.add_source("edge")
-    app = create_app(central)
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    token = hub.add_source("edge")
+    app = create_app(hub)
 
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://central",
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://hub",
                                      headers={"Authorization": f"Bearer {token}"}) as client:
-            collector, session, sink = await run_collector(FLAT_LOW_CUT, tmp_path / "edge", clips, client=client)
-            assert await collector.upload_once() == (1, 0)
+            agent, session, sink = await run_collector(FLAT_LOW_CUT, tmp_path / "edge", clips, client=client)
+            assert await agent.upload_once() == (1, 0)
             page = (await client.get("/passes/1")).text
             listed = (await client.get("/api/v1/passes", params={"days": 0})).json()
         return sink, listed, page
@@ -139,22 +139,22 @@ def test_pilot_mode_never_transmits(tmp_path, clips):
 
 
 def test_config_is_fetched_and_cached(tmp_path):
-    central = Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central")
-    token = central.add_source("edge")
-    central.set_config("edge", CONFIG)
-    app = create_app(central)
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    token = hub.add_source("edge")
+    hub.set_config("edge", CONFIG)
+    app = create_app(hub)
 
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://central",
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://hub",
                                      headers={"Authorization": f"Bearer {token}"}) as client:
-            collector = Collector(CollectorConfig(work_dir=tmp_path / "edge"), client=client)
-            await collector.refresh_config()
-            return collector
+            agent = Agent(AgentConfig(work_dir=tmp_path / "edge"), client=client)
+            await agent.refresh_config()
+            return agent
 
-    collector = asyncio.run(run())
-    assert collector.remote_config == CONFIG
-    # A restarted collector with central unreachable still has the cached copy.
-    offline = Collector(CollectorConfig(work_dir=tmp_path / "edge"))
+    agent = asyncio.run(run())
+    assert agent.remote_config == CONFIG
+    # A restarted agent with hub unreachable still has the cached copy.
+    offline = Agent(AgentConfig(work_dir=tmp_path / "edge"))
     assert offline.remote_config == CONFIG
 
 
@@ -193,7 +193,7 @@ def test_old_database_gets_new_columns(tmp_path):
                 "token_hash varchar(64) unique, created_at datetime)")
     con.commit()
     con.close()
-    Central(f"sqlite:///{db}", tmp_path)
+    Hub(f"sqlite:///{db}", tmp_path)
     cols = {r[1] for r in sqlite3.connect(db).execute("pragma table_info(sources)")}
     assert "config" in cols
 
@@ -305,20 +305,20 @@ class WireHooks:
     ("20260927-204347_Wrycu_4769s", None, Call.TRAPPED_WAVED_OFF),
 ])
 def test_welcome_names_dcs_wire(tmp_path, clips, monkeypatch, name, wire, expected):
-    import dcs_lso.edge.callouts as callouts_mod
+    import dcs_lso.agent.callouts as callouts_mod
     monkeypatch.setattr(callouts_mod, "WIRE_WAIT_S", 0.2)
     hooks = WireHooks(wire)
-    collector, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / f"{name}.zip.acmi", tmp_path / "edge",
+    agent, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / f"{name}.zip.acmi", tmp_path / "edge",
                                                    clips, hooks=hooks))
     said = [call for call, _ in sink.said]
     assert said[-1] is expected and hooks.asked >= 1
-    (item,) = collector.outbox.pending()
+    (item,) = agent.outbox.pending()
     assert item.meta()["calls"][-1]["call"] == expected.value  # the trap card shows what was said
 
 
 def test_hook_feed_reads_the_wire_from_dcs_grade(tmp_path):
     from dcs_lso.dcslog import HookEvent
-    from dcs_lso.edge.collector import HookFeed
+    from dcs_lso.agent.service import HookFeed
     feed = HookFeed.__new__(HookFeed)  # no dcs.log follower thread
     import threading
     feed._events, feed._lock = [], threading.Lock()
@@ -367,7 +367,7 @@ def test_side_number_goes_before_a_call(clips):
 
 def test_foul_deck_is_another_aircraft_in_the_landing_area():
     from dcs_lso.acmi import ObjectTrack, Sample, Transform
-    from dcs_lso.edge.live import LivePassDetector
+    from dcs_lso.agent.live import LivePassDetector
     from dcs_lso.geometry import FA18C, NIMITZ, CarrierPose, DeckFrame
     frame = DeckFrame(NIMITZ, FA18C)
     pose = CarrierPose(u=0.0, v=0.0, alt=0.0, heading=0.0)
@@ -402,7 +402,7 @@ def test_foul_deck_is_another_aircraft_in_the_landing_area():
 
 
 def test_foul_deck_waves_the_pilot_off(tmp_path, clips, monkeypatch):
-    from dcs_lso.edge.live import LivePassDetector
+    from dcs_lso.agent.live import LivePassDetector
     monkeypatch.setattr(LivePassDetector, "landing_area_foul", lambda self, *args: True)
     _, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi",
                                            tmp_path / "edge", clips))
@@ -444,7 +444,7 @@ def test_hook_feed_reads_each_carriers_mission_frequency():
     import threading
 
     from dcs_lso.dcslog import parse_hook_line
-    from dcs_lso.edge.collector import HookFeed
+    from dcs_lso.agent.service import HookFeed
     feed = HookFeed.__new__(HookFeed)
     feed._events, feed._lock = [], threading.Lock()
     line = ('2026-10-03 12:00:00.000 INFO    DCSLSO (Main): DCSLSO {"event":"carrier","t":0,'
@@ -508,13 +508,13 @@ def test_calls_go_out_on_the_frequency_set_in_the_mission(tmp_path, clips):
         server = await serve_recording(FLAT_LOW_CUT, port=0, speed=0)
         sink = RecordingSink()
         async with server:
-            collector = Collector(CollectorConfig(work_dir=tmp_path, tacview_port=server.sockets[0].getsockname()[1],
+            agent = Agent(AgentConfig(work_dir=tmp_path, tacview_port=server.sockets[0].getsockname()[1],
                                                   voice_dir=clips))
-            collector.hooks = CarrierHooks()
-            collector.remote_config = {"callouts": {"enabled": True, "frequency_mhz": 127.5}}  # no carrier settings
-            collector.refresh_config = _no_refresh
-            collector.sink_factory = lambda settings: sink
-            await collector.run_session()
+            agent.hooks = CarrierHooks()
+            agent.remote_config = {"callouts": {"enabled": True, "frequency_mhz": 127.5}}  # no carrier settings
+            agent.refresh_config = _no_refresh
+            agent.sink_factory = lambda settings: sink
+            await agent.run_session()
         return sink
 
     sink = asyncio.run(run())

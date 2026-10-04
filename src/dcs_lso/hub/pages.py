@@ -1,4 +1,4 @@
-"""HTML pages for the central service: the greenie board and per-pass pages."""
+"""HTML pages for the hub: the greenie board and per-pass pages."""
 
 from __future__ import annotations
 
@@ -438,7 +438,7 @@ KIND_LABELS = {"fault": "Fault", "bias": "Leaning", "speed": "Speed", "outcome":
 
 
 def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, overlay_src: str = "") -> str:
-    """Meta grading: themes across the pilot's recent passes (`summary`: central's PilotSummary)."""
+    """Meta grading: themes across the pilot's recent passes (`summary`: the hub's PilotSummary)."""
     result, rows = summary.trends, summary.rows
     first = summary.first_seen.strftime("%Y-%m-%d") if summary.first_seen else "?"
     last = summary.last_seen.strftime("%Y-%m-%d") if summary.last_seen else "?"

@@ -7,9 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dcs_lso.acmi import load_recording
-from dcs_lso.central.app import create_app
-from dcs_lso.central.passwords import FailureLimiter, hash_password, verify_password
-from dcs_lso.central.service import Central
+from dcs_lso.hub.app import create_app
+from dcs_lso.hub.passwords import FailureLimiter, hash_password, verify_password
+from dcs_lso.hub.service import Hub
 from dcs_lso.detect import find_passes
 from dcs_lso.slices import sidecar, slice_objects
 
@@ -38,8 +38,8 @@ def test_failure_limiter():
 
 
 @pytest.fixture
-def central(tmp_path):
-    c = Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central")
+def hub(tmp_path):
+    c = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
     c.add_source("server1")
     r = load_recording(OTHER)  # puts Wrycu on the board
     (p,) = find_passes(r)
@@ -47,31 +47,31 @@ def central(tmp_path):
     return c
 
 
-def test_setting_and_changing_a_password(central):
+def test_setting_and_changing_a_password(hub):
     with pytest.raises(LookupError):
-        central.set_pilot_password("Nobody", "long enough")
+        hub.set_pilot_password("Nobody", "long enough")
     with pytest.raises(ValueError):
-        central.set_pilot_password("Wrycu", "short")
-    central.set_pilot_password("Wrycu", "first password")  # claims the name
+        hub.set_pilot_password("Wrycu", "short")
+    hub.set_pilot_password("Wrycu", "first password")  # claims the name
     with pytest.raises(PermissionError):
-        central.set_pilot_password("Wrycu", "hijacked!!")  # changing needs the current one
+        hub.set_pilot_password("Wrycu", "hijacked!!")  # changing needs the current one
     with pytest.raises(PermissionError):
-        central.set_pilot_password("Wrycu", "hijacked!!", current="wrong guess")
-    central.set_pilot_password("Wrycu", "second password", current="first password")
-    central.reset_pilot_password("Wrycu")  # admin
-    central.set_pilot_password("Wrycu", "third password")
+        hub.set_pilot_password("Wrycu", "hijacked!!", current="wrong guess")
+    hub.set_pilot_password("Wrycu", "second password", current="first password")
+    hub.reset_pilot_password("Wrycu")  # admin
+    hub.set_pilot_password("Wrycu", "third password")
 
 
-def test_changing_the_side_number_needs_the_password(central):
+def test_changing_the_side_number_needs_the_password(hub):
     with pytest.raises(PermissionError):
-        central.set_pilot_modex("Wrycu", "anything", "305")  # no password set yet
-    central.set_pilot_password("Wrycu", "first password")
+        hub.set_pilot_modex("Wrycu", "anything", "305")  # no password set yet
+    hub.set_pilot_password("Wrycu", "first password")
     with pytest.raises(PermissionError):
-        central.set_pilot_modex("Wrycu", "wrong", "305")
+        hub.set_pilot_modex("Wrycu", "wrong", "305")
     with pytest.raises(ValueError):
-        central.set_pilot_modex("Wrycu", "first password", "3o5")
-    central.set_pilot_modex("Wrycu", "first password", "305")
-    client = TestClient(create_app(central))
+        hub.set_pilot_modex("Wrycu", "first password", "3o5")
+    hub.set_pilot_modex("Wrycu", "first password", "305")
+    client = TestClient(create_app(hub))
     assert client.get("/api/v1/pilots/Wrycu/trends").json()["modex"] == "305"
 
 
@@ -89,9 +89,9 @@ def upload(client, path, **form):
     return r.json()
 
 
-def test_upload_of_a_protected_pilot_needs_the_password(central):
-    central.set_pilot_password("Wrycu", "first password")
-    client = TestClient(create_app(central))
+def test_upload_of_a_protected_pilot_needs_the_password(hub):
+    hub.set_pilot_password("Wrycu", "first password")
+    client = TestClient(create_app(hub))
     body = upload(client, OWN)
     status = wait(client, body["status_url"])
     assert status["status"] == "needs_password" and status["pilot"] == "Wrycu"
@@ -107,16 +107,16 @@ def test_upload_of_a_protected_pilot_needs_the_password(central):
     assert status["status"] == "done" and status["results"][0]["pilot"] == "Wrycu"
 
 
-def test_password_given_with_the_upload(central):
-    central.set_pilot_password("Wrycu", "first password")
-    client = TestClient(create_app(central))
+def test_password_given_with_the_upload(hub):
+    hub.set_pilot_password("Wrycu", "first password")
+    client = TestClient(create_app(hub))
     status = wait(client, upload(client, OWN, password="first password")["status_url"])
     assert status["status"] == "done" and status["results"]
 
 
-def test_too_many_wrong_passwords_end_the_upload(central):
-    central.set_pilot_password("Wrycu", "first password")
-    client = TestClient(create_app(central))
+def test_too_many_wrong_passwords_end_the_upload(hub):
+    hub.set_pilot_password("Wrycu", "first password")
+    client = TestClient(create_app(hub))
     body = upload(client, OWN)
     wait(client, body["status_url"])
     url = f"/api/v1/recordings/{body['upload_id']}/password"
@@ -126,13 +126,13 @@ def test_too_many_wrong_passwords_end_the_upload(central):
     assert status["status"] == "failed" and "too many" in status["message"]
 
 
-def test_unprotected_pilots_upload_as_before(central):
-    client = TestClient(create_app(central))
+def test_unprotected_pilots_upload_as_before(hub):
+    client = TestClient(create_app(hub))
     assert wait(client, upload(client, OWN)["status_url"])["status"] == "done"
 
 
-def test_settings_page(central):
-    client = TestClient(create_app(central))
+def test_settings_page(hub):
+    client = TestClient(create_app(hub))
     page = client.get("/pilots/Wrycu").text
     assert "no upload password" in page and 'href="/pilots/Wrycu/settings"' in page
     assert "Set a password" in client.get("/pilots/Wrycu/settings").text

@@ -1,4 +1,4 @@
-"""Central database (SQLAlchemy 2). SQLite for development; Postgres-compatible.
+"""Hub database (SQLAlchemy 2). SQLite for development; Postgres-compatible.
 
 Stored ACMI slices are the source of truth; grades are derived, versioned, and can be
 rebuilt at any time by regrading.
@@ -23,14 +23,14 @@ class Base(DeclarativeBase):
 
 
 class Source(Base):
-    """Something that uploads passes: a DCS server's collector, or a pilot's."""
+    """Something that uploads passes: a DCS server's agent, or a pilot uploader."""
 
     __tablename__ = "sources"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
     kind: Mapped[str] = mapped_column(String(16), default="server")  # server | pilot
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    # Settings the source's collector fetches (e.g. callouts: SRS server, LSO frequencies).
+    # Settings the source's agent fetches (e.g. callouts: SRS server, LSO frequencies).
     config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -43,7 +43,7 @@ class Pilot(Base):
     # (except by the pilot, once they've set a password).
     modex: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Set by the pilot (first come, first served; an admin can reset it): then uploads without a token
-    # need it to import this pilot's passes. A salted scrypt hash (central.passwords).
+    # need it to import this pilot's passes. A salted scrypt hash (hub.passwords).
     password_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
@@ -79,7 +79,7 @@ class Pass(Base):
     outcome: Mapped[str] = mapped_column(String(16))
     wire: Mapped[int | None] = mapped_column(Integer)  # from DCS's LSO only
     dcs_grade: Mapped[str | None] = mapped_column(String(200))
-    # Live LSO calls the collector made during this pass: [{"time", "along", "call"}].
+    # Live LSO calls the agent made during this pass: [{"time", "along", "call"}].
     calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # "pass" (None in older rows): a gradable report with the carrier. "track": one aircraft's own
     # track, no carrier (a multiplayer client's recording), graded only as part of a landing.
@@ -89,7 +89,7 @@ class Pass(Base):
     # Flown at night (the sun below the horizon at the carrier when the pass ended); None if unknown.
     night: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Another report of the same landing (e.g. the pilot's own and the server's) is merged into the
-    # landing's first gradable report, which is the one shown; see `Central.ingest`.
+    # landing's first gradable report, which is the one shown; see `Hub.ingest`.
     merged_into_id: Mapped[int | None] = mapped_column(ForeignKey("passes.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

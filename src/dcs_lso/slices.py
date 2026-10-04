@@ -104,7 +104,7 @@ def approach_window(a: Approach) -> tuple[float, float]:
 
 
 def track_sidecar(recording: Recording, a: Approach, source: str | Path) -> dict:
-    """Sidecar of a track report: one aircraft's own track around an approach, no carrier. Central
+    """Sidecar of a track report: one aircraft's own track around an approach, no carrier. Hub
     grades it against the carrier from another report of the same landing."""
     start, end = approach_window(a)
     plane = recording.objects[a.aircraft_id]
@@ -169,7 +169,7 @@ def _own(track) -> bool:
 
 
 # DCS's default pilot name (single player, or a player who never set one): passes flown under it can't be
-# credited to anyone, so central doesn't record them.
+# credited to anyone, so the hub doesn't record them.
 DEFAULT_PILOT_NAMES = frozenset({"new callsign"})
 
 

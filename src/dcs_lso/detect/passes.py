@@ -80,7 +80,7 @@ class PassResult:
     wind: WindProfile | None = None
     # Estimated from where the jet stopped (detect.wire); DCS's `wire` takes priority when known.
     wire_estimate: int | None = None
-    # Which report's aircraft track this result was built from, when central merged several.
+    # Which report's aircraft track this result was built from, when the hub merged several.
     track_source: str | None = None
 
     @property
@@ -176,7 +176,7 @@ class PassTracker:
         positions = [self.frame.position(c, p) for _, c, p, _ in raw]
         out: list[PassSample] = []
         for i, ((t, _, plane, aoa), pos) in enumerate(zip(raw, positions)):
-            # Central differences (one-sided at the ends).
+            # Hub differences (one-sided at the ends).
             j, k = max(i - 1, 0), min(i + 1, len(raw) - 1)
             dt = raw[k][0] - raw[j][0]
             pj, pk = raw[j][2], raw[k][2]

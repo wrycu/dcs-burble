@@ -1,12 +1,14 @@
-# dcs-lso collector for one DCS server instance (instance name = dcs-server-wine's, e.g. "server1"),
+# dcs-lso server agent for one DCS server instance (instance name = dcs-server-wine's, e.g. "server1"),
 # as a systemd *user* service next to dcs-server@.service.
 # Settings: ~/.config/dcs-lso/<instance>.env with
 #   DCS_LSO_URL=http://127.0.0.1:8000
-#   DCS_LSO_TOKEN=<token from `dcs-lso central add-source <name>`>
+#   DCS_LSO_TOKEN=<server agent token from `dcs-lso hub add-agent <name>`>
 #   TACVIEW_PASSWORD=<tacviewRealTimeTelemetryPassword>
-# Enable: systemctl --user enable --now dcs-lso-collector@server1
+# Enable: systemctl --user enable --now dcs-lso-agent@server1
+# Replaces dcs-lso-collector@.service (same work directory and settings file):
+#   systemctl --user disable --now dcs-lso-collector@server1
 [Unit]
-Description=dcs-lso collector for DCS.%i
+Description=dcs-lso server agent for DCS.%i
 After=dcs-server@%i.service
 
 [Install]
@@ -15,7 +17,7 @@ WantedBy=default.target
 [Service]
 WorkingDirectory=%h/dcs-lso
 EnvironmentFile=%h/.config/dcs-lso/%i.env
-ExecStart=%h/.local/bin/uv run --frozen dcs-lso collect \
+ExecStart=%h/.local/bin/uv run --frozen dcs-lso agent \
     --work-dir %h/dcs-lso-data/%i/collector \
     --dcs-log %h/.wine/drive_c/DCS_configs/DCS.%i/Logs/dcs.log \
     --tacview-password ${TACVIEW_PASSWORD} \

@@ -6,8 +6,8 @@ talks pilots down over SRS in real time, grades each landing, and keeps a greeni
 card for every pass.
 
 It uses **Tacview's** real-time telemetry as its data source. You don't need DCS-gRPC,
-and pilots don't need to install anything. An optional DCS hook (a small Lua script in
-`Scripts/Hooks`) adds what Tacview can't see: DCS's own grade and wire, wind, side numbers and
+and pilots don't need to install anything. An optional server hook (a small Lua script in
+the DCS server's `Scripts/Hooks`) adds what Tacview can't see: DCS's own grade and wire, wind, side numbers and
 liveries, and each carrier's radio frequency.
 
 > **Status:** in active development. Expect rough edges.
@@ -27,7 +27,7 @@ liveries, and each carrier's radio frequency.
   - **Trap cards:** glideslope and lineup plots colored by AOA. Includes LSO callouts made during approach!
   - **Pilot pages:** recurring themes over the last passes ("lined up left at the ramp") and all traps overlaid
 - **Multiple ways to import data**
-  - **Sources:** supports a server-side collector (zero mission and pilot setup!), a client-side collector (for servers not using the bot), and uploading Tacview recordings
+  - **Sources:** supports a server agent next to each DCS server (zero mission and pilot setup!), a pilot uploader on a pilot's PC (for servers not using the bot), and uploading Tacview recordings
   - **Merging:** reports of the same landing merge into one, graded from the most detailed track (a
     pilot's own recording has their real AOA and twice the sample rate)
 - **Uploads**

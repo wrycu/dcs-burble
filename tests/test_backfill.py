@@ -1,4 +1,4 @@
-"""Backfill: whole Tacview recordings uploaded to central, sliced and merged with known landings."""
+"""Backfill: whole Tacview recordings uploaded to hub, sliced and merged with known landings."""
 
 import io
 import time
@@ -9,8 +9,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dcs_lso.acmi import load_recording
-from dcs_lso.central.app import create_app
-from dcs_lso.central.service import Central
+from dcs_lso.hub.app import create_app
+from dcs_lso.hub.service import Hub
 from dcs_lso.dcslog import Debrief, DcsEvent, track_dcs_grades
 from dcs_lso.detect import find_passes
 from dcs_lso.detect.approaches import find_approaches
@@ -42,7 +42,7 @@ def client_debrief(path: Path, offset: float, comment: str = "LSO: GRADE:C : _EG
 
 def with_recording_time(path: Path, out: Path, recording_time: str) -> Path:
     """A copy of a recording that looks like a different recording of the same session (e.g. the
-    server's own Tacview file of a pass its collector already sent)."""
+    server's own Tacview file of a pass its agent already sent)."""
     with zipfile.ZipFile(path) as z:
         (name,) = z.namelist()
         text = z.read(name).decode("utf-8-sig")
@@ -54,15 +54,15 @@ def with_recording_time(path: Path, out: Path, recording_time: str) -> Path:
 
 
 @pytest.fixture
-def central(tmp_path):
-    c = Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central")
+def hub(tmp_path):
+    c = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
     c.add_source("server1")
     c.add_source("pilot", kind="pilot")
     return c
 
 
-def landings(central):
-    return TestClient(create_app(central)).get("/api/v1/passes", params={"days": 0}).json()
+def landings(hub):
+    return TestClient(create_app(hub)).get("/api/v1/passes", params={"days": 0}).json()
 
 
 def test_slice_recording_finds_passes_and_own_tracks(tmp_path):
@@ -87,29 +87,29 @@ def test_client_debrief_grades_are_matched_across_the_clock_offset():
     assert track_dcs_grades(recording, approaches, other) == {}
 
 
-def test_backfill_merges_and_never_duplicates(central, tmp_path):
-    # The collector sent the pass live, without DCS's grade (no comms).
+def test_backfill_merges_and_never_duplicates(hub, tmp_path):
+    # The agent sent the pass live, without DCS's grade (no comms).
     server = load_recording(SERVER)
     (p,) = find_passes(server)
-    central.ingest(1, SERVER.read_bytes(), sidecar(server, p, "live", slice_objects(server, p)))
+    hub.ingest(1, SERVER.read_bytes(), sidecar(server, p, "live", slice_objects(server, p)))
     # The server's own Tacview file of the same session, backfilled: same landing, nothing new.
     copy = with_recording_time(SERVER, tmp_path / "server-file.zip.acmi", "2026-10-02T19:39:00Z")
-    (r,) = central.ingest_recording(1, copy)
-    assert r["kind"] == "pass" and r["grade"] and len(landings(central)) == 1
+    (r,) = hub.ingest_recording(1, copy)
+    assert r["kind"] == "pass" and r["grade"] and len(landings(hub)) == 1
     # The pilot's own recording and debrief.log: merged into the same landing, bringing DCS's wire.
-    (r,) = central.ingest_recording(2, PILOT, client_debrief(PILOT, 129.0))
+    (r,) = hub.ingest_recording(2, PILOT, client_debrief(PILOT, 129.0))
     assert r["kind"] == "track" and r["grade"]
-    (landing,) = landings(central)
+    (landing,) = landings(hub)
     assert landing["wire"] == 2 and landing["dcs_grade"].startswith("LSO: GRADE:C")
     assert sorted(x["source"] for x in landing["reports"]) == ["pilot", "server1", "server1"]
     # Uploading the same file again changes nothing.
-    (again,) = central.ingest_recording(2, PILOT)
-    assert again["created"] is False and len(landings(central)) == 1
+    (again,) = hub.ingest_recording(2, PILOT)
+    assert again["created"] is False and len(landings(hub)) == 1
 
 
-def test_upload_api(central, tmp_path):
-    token = central.add_source("uploader", kind="pilot")
-    client = TestClient(create_app(central))
+def test_upload_api(hub, tmp_path):
+    token = hub.add_source("uploader", kind="pilot")
+    client = TestClient(create_app(hub))
     assert client.get("/upload").status_code == 200
     assert client.post("/api/v1/recordings", headers={"Authorization": "Bearer wrong"},
                        files={"recording": ("x.acmi", b"x")}).status_code == 401
@@ -128,7 +128,7 @@ def test_upload_api(central, tmp_path):
     assert result["kind"] == "pass" and result["created"] and result["grade"]
     page = client.get(body["page"]).text
     assert f'href="/passes/{result["pass_id"]}"' in page
-    assert not list(central.uploads_dir.glob("*.acmi"))  # the recording isn't kept, only its slices
+    assert not list(hub.uploads_dir.glob("*.acmi"))  # the recording isn't kept, only its slices
 
     broken = client.post("/api/v1/recordings", headers=auth, files={"recording": ("bad.zip.acmi", io.BytesIO(b"not a zip"))})
     while (status := client.get(broken.json()["status_url"]).json())["status"] in ("queued", "processing"):
@@ -137,12 +137,12 @@ def test_upload_api(central, tmp_path):
 
 
 def test_interrupted_uploads_are_marked_failed(tmp_path):
-    db, data = f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central"
-    c = Central(db, data)
+    db, data = f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub"
+    c = Hub(db, data)
     c.add_source("s")
     upload_id, _ = c.add_upload(1, "session.zip.acmi", 123, choose_pilot=False)
     c.upload_path(upload_id, "session.zip.acmi").write_bytes(b"x")
-    Central(db, data)  # restarted before the upload was processed
+    Hub(db, data)  # restarted before the upload was processed
     status = TestClient(create_app(c)).get(f"/api/v1/recordings/{upload_id}").json()
     assert status["status"] == "failed" and "upload again" in status["message"]
     assert not c.upload_path(upload_id, "session.zip.acmi").exists()
@@ -189,36 +189,36 @@ def upload(client, path: Path, **headers) -> dict:
     return r.json()
 
 
-def test_the_own_pilot_is_imported_without_asking(central):
-    client = TestClient(create_app(central))
+def test_the_own_pilot_is_imported_without_asking(hub):
+    client = TestClient(create_app(hub))
     status = wait(client, upload(client, OWN)["status_url"])
     assert status["status"] == "done" and status["pilots"] == ["Wrycu"] and status["pilot"] == "Wrycu"
     (result,) = status["results"]
     assert result["created"] and result["grade"]
-    assert landings(central)[0]["source"] == "uploads"
+    assert landings(hub)[0]["source"] == "uploads"
 
 
-def test_a_recording_without_an_own_pilot_needs_a_token(central):
+def test_a_recording_without_an_own_pilot_needs_a_token(hub):
     # Like a dedicated server's recording: nobody flew on the PC that made it (here: AI only).
-    client = TestClient(create_app(central))
+    client = TestClient(create_app(hub))
     status = wait(client, upload(client, AI_TRAP)["status_url"])
     assert status["status"] == "done" and status["results"] == [] and "token" in status["message"]
-    assert landings(central) == []
+    assert landings(hub) == []
 
 
-def test_other_aircraft_in_the_recording_are_not_imported(central, tmp_path):
+def test_other_aircraft_in_the_recording_are_not_imported(hub, tmp_path):
     from dcs_lso.slices import own_pilots
     path = two_pilots(OWN, tmp_path / "hosted.zip.acmi")  # Maverick: another player in the host's recording
     assert own_pilots(load_recording(path)) == ["Wrycu"]
-    client = TestClient(create_app(central))
+    client = TestClient(create_app(hub))
     status = wait(client, upload(client, path)["status_url"])
     assert [r["pilot"] for r in status["results"]] == ["Wrycu"]
-    assert [x["pilot"] for x in landings(central)] == ["Wrycu"]
+    assert [x["pilot"] for x in landings(hub)] == ["Wrycu"]
 
 
-def test_with_several_own_pilots_the_uploader_picks(central, tmp_path):
+def test_with_several_own_pilots_the_uploader_picks(hub, tmp_path):
     path = two_pilots(OWN, tmp_path / "session.zip.acmi", other_own=True)
-    client = TestClient(create_app(central))
+    client = TestClient(create_app(hub))
     body = upload(client, path)
     status = wait(client, body["status_url"])
     assert status["status"] == "choose_pilot" and status["pilots"] == ["Maverick", "Wrycu"]
@@ -232,11 +232,11 @@ def test_with_several_own_pilots_the_uploader_picks(central, tmp_path):
     status = wait(client, body["status_url"])
     (result,) = status["results"]
     assert status["status"] == "done" and result["pilot"] == "Maverick"
-    assert [x["pilot"] for x in landings(central)] == ["Maverick"]
+    assert [x["pilot"] for x in landings(hub)] == ["Maverick"]
 
 
-def test_the_page_form_picks_the_pilot(central, tmp_path):
-    client = TestClient(create_app(central))
+def test_the_page_form_picks_the_pilot(hub, tmp_path):
+    client = TestClient(create_app(hub))
     body = upload(client, two_pilots(OWN, tmp_path / "session.zip.acmi", other_own=True))
     wait(client, body["status_url"])
     r = client.post(f"/uploads/{body['upload_id']}/pilot", data={"key": body["key"], "pilot": "Wrycu"},
@@ -246,7 +246,7 @@ def test_the_page_form_picks_the_pilot(central, tmp_path):
 
 
 def test_a_server_can_require_a_token(tmp_path):
-    strict = Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central", require_upload_token=True)
+    strict = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", require_upload_token=True)
     token = strict.add_source("server1")
     client = TestClient(create_app(strict))
     r = client.post("/api/v1/recordings", files={"recording": (AI_TRAP.name, AI_TRAP.read_bytes())})
@@ -259,9 +259,9 @@ def test_a_server_can_require_a_token(tmp_path):
 def test_an_upload_waits_a_day_for_its_pilot(tmp_path):
     from datetime import UTC, datetime, timedelta
 
-    from dcs_lso.central.db import Upload
-    db, data = f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central"
-    c = Central(db, data)
+    from dcs_lso.hub.db import Upload
+    db, data = f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub"
+    c = Hub(db, data)
     c.add_source("s")
     fresh, _ = c.add_upload(1, "a.zip.acmi", 1, choose_pilot=True)
     old, _ = c.add_upload(1, "b.zip.acmi", 1, choose_pilot=True)
@@ -270,7 +270,7 @@ def test_an_upload_waits_a_day_for_its_pilot(tmp_path):
             s.get(Upload, upload_id).status = "choose_pilot"
         s.get(Upload, old).created_at = datetime.now(UTC) - timedelta(days=2)
     c.upload_path(old, "b.zip.acmi").write_bytes(b"x")
-    Central(db, data)  # restarted
+    Hub(db, data)  # restarted
     client = TestClient(create_app(c))
     assert client.get(f"/api/v1/recordings/{fresh}").json()["status"] == "choose_pilot"
     status = client.get(f"/api/v1/recordings/{old}").json()
@@ -279,47 +279,47 @@ def test_an_upload_waits_a_day_for_its_pilot(tmp_path):
 
 
 def test_upload_leftovers_are_cleaned_at_startup(tmp_path):
-    db, data = f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central"
-    c = Central(db, data)
+    db, data = f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub"
+    c = Hub(db, data)
     c.add_source("s")
     waiting, _ = c.add_upload(1, "a.zip.acmi", 1, choose_pilot=True)
-    from dcs_lso.central.db import Upload
+    from dcs_lso.hub.db import Upload
     with c.sessions.begin() as s:
         s.get(Upload, waiting).status = "choose_pilot"
     c.upload_path(waiting, "a.zip.acmi").write_bytes(b"x")  # waiting for its pilot: kept
     (c.uploads_dir / "incoming-deadbeef.acmi").write_bytes(b"x")  # a transfer cut off by a crash
     (c.uploads_dir / "999.zip.acmi").write_bytes(b"x")  # belongs to no upload in progress
     (c.uploads_dir / "999.debrief.log").write_bytes(b"x")
-    Central(db, data)
+    Hub(db, data)
     assert sorted(p.name for p in c.uploads_dir.iterdir()) == [f"{waiting}.zip.acmi"]
 
 
 NEW_CALLSIGN = FIXTURES / "passes" / "20260928-025423_New_callsign_86s.zip.acmi"  # flown under DCS's default name
 
 
-def test_dcs_default_pilot_name_is_refused(central):
-    client = TestClient(create_app(central))
+def test_dcs_default_pilot_name_is_refused(hub):
+    client = TestClient(create_app(hub))
     body = upload(client, NEW_CALLSIGN)
     status = wait(client, body["status_url"])
     assert status["status"] == "failed" and "default pilot name" in status["message"]
     assert "Logbook" in client.get(body["page"]).text  # says how to fix it
-    assert landings(central) == []
+    assert landings(hub) == []
 
 
-def test_default_name_is_never_offered_as_a_pilot(central, tmp_path):
+def test_default_name_is_never_offered_as_a_pilot(hub, tmp_path):
     # Two own pilots, one of them "New callsign": the real one is imported without asking.
     path = two_pilots(OWN, tmp_path / "session.zip.acmi", other="New callsign", other_own=True)
-    client = TestClient(create_app(central))
+    client = TestClient(create_app(hub))
     status = wait(client, upload(client, path)["status_url"])
     assert status["status"] == "done" and status["pilot"] == "Wrycu"
-    assert [x["pilot"] for x in landings(central)] == ["Wrycu"]
+    assert [x["pilot"] for x in landings(hub)] == ["Wrycu"]
 
 
-def test_default_name_passes_are_skipped_in_a_token_upload(central, tmp_path):
-    token = central.add_source("uploader", kind="server")
+def test_default_name_passes_are_skipped_in_a_token_upload(hub, tmp_path):
+    token = hub.add_source("uploader", kind="server")
     path = two_pilots(OWN, tmp_path / "server.zip.acmi", other="New callsign")
-    client = TestClient(create_app(central))
+    client = TestClient(create_app(hub))
     status = wait(client, upload(client, path, Authorization=f"Bearer {token}")["status_url"])
     results = {r["pilot"]: r for r in status["results"] if r["kind"] == "pass"}
     assert results["Wrycu"]["created"] and "default pilot name" in results["New callsign"]["error"]
-    assert [x["pilot"] for x in landings(central)] == ["Wrycu"]
+    assert [x["pilot"] for x in landings(hub)] == ["Wrycu"]

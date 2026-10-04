@@ -7,12 +7,12 @@ import pytest
 
 from dcs_lso.acmi import AcmiParser, iter_lines, load_recording
 from dcs_lso.acmi.stream import serve_recording
-from dcs_lso.central.app import create_app
-from dcs_lso.central.service import Central
+from dcs_lso.hub.app import create_app
+from dcs_lso.hub.service import Hub
 from dcs_lso.dcslog import Debrief, HookEvent
 from dcs_lso.detect import find_passes
-from dcs_lso.edge.collector import Collector, CollectorConfig, to_dcs_event, wind_profile
-from dcs_lso.edge.live import LivePassDetector
+from dcs_lso.agent.service import Agent, AgentConfig, to_dcs_event, wind_profile
+from dcs_lso.agent.live import LivePassDetector
 from dcs_lso.slices import TAIL_S
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -60,46 +60,46 @@ class StubHooks:
 
 
 @pytest.fixture
-def central(tmp_path):
-    return Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central")
+def hub(tmp_path):
+    return Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
 
 
-def make_client(central) -> httpx.AsyncClient:
-    token = central.add_source("edge")
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(central)), base_url="http://central",
+def make_client(hub) -> httpx.AsyncClient:
+    token = hub.add_source("edge")
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(hub)), base_url="http://hub",
                              headers={"Authorization": f"Bearer {token}"})
 
 
-async def collect(source: Path, work: Path, port_holder: list, client=None, hooks=None) -> Collector:
+async def collect(source: Path, work: Path, port_holder: list, client=None, hooks=None) -> Agent:
     server = await serve_recording(source, port=0, speed=0)
     port = server.sockets[0].getsockname()[1]
     async with server:
-        collector = Collector(CollectorConfig(work_dir=work, tacview_port=port), client=client)
-        collector.hooks = hooks
-        port_holder.append(await collector.run_session())
-    return collector
+        agent = Agent(AgentConfig(work_dir=work, tacview_port=port), client=client)
+        agent.hooks = hooks
+        port_holder.append(await agent.run_session())
+    return agent
 
 
-def passes_on(central) -> list[dict]:
-    with central.sessions() as s:
-        from dcs_lso.central.db import Pass
+def passes_on(hub) -> list[dict]:
+    with hub.sessions() as s:
+        from dcs_lso.hub.db import Pass
         return [{"outcome": p.outcome, "wire": p.wire, "dcs": p.dcs_grade, "grade": p.grade.grade}
                 for p in s.query(Pass).all()]
 
 
-def test_stream_to_central_with_hook_grade(tmp_path, central):
+def test_stream_to_central_with_hook_grade(tmp_path, hub):
     async def run():
         sessions: list = []
-        async with make_client(central) as client:
-            collector = await collect(AI_TRAP, tmp_path / "edge", sessions, client, StubHooks())
-            assert await collector.upload_once() == (1, 0)
-        return collector, sessions[0]
+        async with make_client(hub) as client:
+            agent = await collect(AI_TRAP, tmp_path / "edge", sessions, client, StubHooks())
+            assert await agent.upload_once() == (1, 0)
+        return agent, sessions[0]
 
-    collector, session = asyncio.run(run())
-    assert passes_on(central) == [{"outcome": "trap", "wire": 3, "dcs": "LSO: GRADE:C : LNFIW  WIRE# 3", "grade": "C"}]
+    agent, session = asyncio.run(run())
+    assert passes_on(hub) == [{"outcome": "trap", "wire": 3, "dcs": "LSO: GRADE:C : LNFIW  WIRE# 3", "grade": "C"}]
     archives = list((tmp_path / "edge" / "archive").glob("*.zip.acmi"))
     assert len(archives) == 1 and not list((tmp_path / "edge" / "archive").glob("*.txt.acmi"))
-    (sent,) = collector.outbox.sent()
+    (sent,) = agent.outbox.sent()
     meta = sent.meta()
     assert meta["recording"]["first_frame_time"] == pytest.approx(0.04)
     assert meta["aircraft"] == {"livery": "VFA-37", "onboard_num": "300", "unit": "Aerial-1-1"}
@@ -108,56 +108,56 @@ def test_stream_to_central_with_hook_grade(tmp_path, central):
     assert [p.outcome.value for p in find_passes(load_recording(archives[0]))] == ["trap"]
 
 
-def test_outbox_survives_central_outage(tmp_path, central):
+def test_outbox_survives_central_outage(tmp_path, hub):
     down = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(503)),
-                             base_url="http://central")
+                             base_url="http://hub")
 
     async def run():
-        collector = await collect(AI_TRAP, tmp_path / "edge", [], down)
-        assert await collector.upload_once() == (0, 1)
-        assert len(collector.outbox.pending()) == 1
-        async with make_client(central) as up:
-            collector.client = up
-            assert await collector.upload_once() == (1, 0)
-        return collector
+        agent = await collect(AI_TRAP, tmp_path / "edge", [], down)
+        assert await agent.upload_once() == (0, 1)
+        assert len(agent.outbox.pending()) == 1
+        async with make_client(hub) as up:
+            agent.client = up
+            assert await agent.upload_once() == (1, 0)
+        return agent
 
-    collector = asyncio.run(run())
-    assert len(collector.outbox.sent()) == 1 and len(passes_on(central)) == 1
+    agent = asyncio.run(run())
+    assert len(agent.outbox.sent()) == 1 and len(passes_on(hub)) == 1
 
 
-def test_debrief_fills_in_missing_dcs_grade(tmp_path, central):
+def test_debrief_fills_in_missing_dcs_grade(tmp_path, hub):
     async def run():
         sessions: list = []
-        async with make_client(central) as client:
-            collector = await collect(AI_TRAP, tmp_path / "edge", sessions, client)  # no hook events
-            await collector.upload_once()
-            assert passes_on(central)[0]["dcs"] is None
-            updated = collector.apply_debrief(sessions[0].names, FIXTURES / "ai_hornet_trap_cvn75.debrief.log")
+        async with make_client(hub) as client:
+            agent = await collect(AI_TRAP, tmp_path / "edge", sessions, client)  # no hook events
+            await agent.upload_once()
+            assert passes_on(hub)[0]["dcs"] is None
+            updated = agent.apply_debrief(sessions[0].names, FIXTURES / "ai_hornet_trap_cvn75.debrief.log")
             assert updated == 1
-            assert await collector.upload_once() == (1, 0)
+            assert await agent.upload_once() == (1, 0)
 
     asyncio.run(run())
-    assert passes_on(central) == [{"outcome": "trap", "wire": 3, "dcs": "LSO: GRADE:C : LNFIW  WIRE# 3", "grade": "C"}]
+    assert passes_on(hub) == [{"outcome": "trap", "wire": 3, "dcs": "LSO: GRADE:C : LNFIW  WIRE# 3", "grade": "C"}]
 
 
 def test_rejected_upload_is_set_aside(tmp_path):
     bad = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(400, json={"detail": "x"})),
-                            base_url="http://central")
+                            base_url="http://hub")
 
     async def run():
-        collector = await collect(AI_TRAP, tmp_path / "edge", [], bad)
-        assert await collector.upload_once() == (0, 0)
-        return collector
+        agent = await collect(AI_TRAP, tmp_path / "edge", [], bad)
+        assert await agent.upload_once() == (0, 0)
+        return agent
 
-    collector = asyncio.run(run())
-    assert collector.outbox.pending() == [] and len(list(collector.outbox.rejected_dir.glob("*.json"))) == 1
+    agent = asyncio.run(run())
+    assert agent.outbox.pending() == [] and len(list(agent.outbox.rejected_dir.glob("*.json"))) == 1
 
 
 def test_warns_when_connection_has_no_frames(tmp_path, monkeypatch, caplog):
     """A Tacview host that sends the header and then nothing (Export.lua missing Tacview)."""
     import logging
 
-    import dcs_lso.edge.collector as collector_mod
+    import dcs_lso.agent.service as collector_mod
 
     monkeypatch.setattr(collector_mod, "NO_FRAMES_WARNING_S", 0.2)
     monkeypatch.setattr(collector_mod, "WATCH_INTERVAL_S", 0.05)
@@ -176,9 +176,9 @@ def test_warns_when_connection_has_no_frames(tmp_path, monkeypatch, caplog):
         server = await asyncio.start_server(handle, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         async with server:
-            await Collector(CollectorConfig(work_dir=tmp_path / "edge", tacview_port=port)).run_session()
+            await Agent(AgentConfig(work_dir=tmp_path / "edge", tacview_port=port)).run_session()
 
-    with caplog.at_level(logging.WARNING, logger="dcs_lso.edge.collector"):
+    with caplog.at_level(logging.WARNING, logger="dcs_lso.agent.service"):
         asyncio.run(run())
     assert any("no new frames" in r.message and "Export.lua" in r.message for r in caplog.records)
 
@@ -186,7 +186,7 @@ def test_warns_when_connection_has_no_frames(tmp_path, monkeypatch, caplog):
 def test_pass_is_sliced_when_the_server_pauses_after_it(tmp_path, monkeypatch):
     """The pilot leaves right after trapping, DCS pauses the empty server, and frames stop while the
     connection stays open: the waiting pass is still sliced, from what was recorded."""
-    import dcs_lso.edge.collector as collector_mod
+    import dcs_lso.agent.service as collector_mod
 
     monkeypatch.setattr(collector_mod, "STALLED_SLICE_S", 0.3)
     monkeypatch.setattr(collector_mod, "WATCH_INTERVAL_S", 0.05)
@@ -199,7 +199,7 @@ def test_pass_is_sliced_when_the_server_pauses_after_it(tmp_path, monkeypatch):
     queued_while_paused = []
 
     async def run():
-        collector = Collector(CollectorConfig(work_dir=tmp_path / "edge", tacview_port=0))
+        agent = Agent(AgentConfig(work_dir=tmp_path / "edge", tacview_port=0))
 
         async def handle(reader, writer):
             writer.write(b"XtraLib.Stream.0\nTacview.RealTimeTelemetry.0\nhost\n\0")
@@ -207,27 +207,27 @@ def test_pass_is_sliced_when_the_server_pauses_after_it(tmp_path, monkeypatch):
             writer.write("".join(lines).encode())
             await writer.drain()
             await asyncio.sleep(1.0)  # paused: connected, no frames
-            queued_while_paused.extend(i.name for i in collector.outbox.pending())
+            queued_while_paused.extend(i.name for i in agent.outbox.pending())
             writer.close()
 
         server = await asyncio.start_server(handle, "127.0.0.1", 0)
-        collector.config.tacview_port = server.sockets[0].getsockname()[1]
+        agent.config.tacview_port = server.sockets[0].getsockname()[1]
         async with server:
-            await collector.run_session()
+            await agent.run_session()
 
     from datetime import UTC, datetime
     started = datetime.now(UTC)
     asyncio.run(run())
     assert len(queued_while_paused) == 1
     # Stamped with the wall clock (mission time says nothing about how long the server was paused).
-    (item,) = Collector(CollectorConfig(work_dir=tmp_path / "edge")).outbox.pending()
+    (item,) = Agent(AgentConfig(work_dir=tmp_path / "edge")).outbox.pending()
     stamped = datetime.fromisoformat(item.meta()["pass"]["occurred_at"])
     assert abs((stamped - started).total_seconds()) < 120
 
 
 def test_wire_from_carrier_animation_without_dcs_grade(tmp_path):
     """No DCS comms: the hook's wire-animation samples still give the wire."""
-    from dcs_lso.edge.collector import HookFeed
+    from dcs_lso.agent.service import HookFeed
 
     feed = HookFeed.__new__(HookFeed)
     import threading
@@ -246,13 +246,13 @@ def test_wire_from_carrier_animation_without_dcs_grade(tmp_path):
         server = await serve_recording(AI_TRAP, port=0, speed=0)
         port = server.sockets[0].getsockname()[1]
         async with server:
-            collector = Collector(CollectorConfig(work_dir=tmp_path / "edge", tacview_port=port))
-            collector.hooks = feed
-            await collector.run_session()
-        return collector
+            agent = Agent(AgentConfig(work_dir=tmp_path / "edge", tacview_port=port))
+            agent.hooks = feed
+            await agent.run_session()
+        return agent
 
-    collector = asyncio.run(run())
-    (item,) = collector.outbox.pending()
+    agent = asyncio.run(run())
+    (item,) = agent.outbox.pending()
     meta = item.meta()
     assert meta["dcs"]["wire"] == 3 and meta["dcs"]["grade"] is None and meta["wire_source"] == "carrier-animation"
 
@@ -261,7 +261,7 @@ def test_hook_events_are_scoped_to_the_current_mission():
     """Mission time restarts at 0, so a previous mission's grade/wire must not match a new pass."""
     import threading
 
-    from dcs_lso.edge.collector import HookFeed
+    from dcs_lso.agent.service import HookFeed
 
     feed = HookFeed.__new__(HookFeed)
     feed._events, feed._lock = [], threading.Lock()
@@ -280,7 +280,7 @@ def test_hook_events_are_scoped_to_the_current_mission():
 def test_retention(tmp_path):
     import os
     import time
-    collector = Collector(CollectorConfig(work_dir=tmp_path, keep_archives_days=30, keep_sent_days=14,
+    agent = Agent(AgentConfig(work_dir=tmp_path, keep_archives_days=30, keep_sent_days=14,
                                           keep_rejected_days=0))
     now = time.time()
 
@@ -290,31 +290,31 @@ def test_retention(tmp_path):
         os.utime(path, (now - days * 86400, now - days * 86400))
         return path
 
-    archives = collector.archive_dir
+    archives = agent.archive_dir
     old_archive, new_archive = aged(archives / "a-session.zip.acmi", 40), aged(archives / "b-session.zip.acmi", 5)
     open_session = aged(archives / "c-session.txt.acmi", 90)  # a session still being written
-    box = collector.outbox
+    box = agent.outbox
     for directory, name, days in ((box.sent_dir, "old", 20), (box.sent_dir, "new", 2), (box.rejected_dir, "bad", 400),
                                   (box.pending_dir, "waiting", 400)):
         aged(directory / f"{name}.zip.acmi", days)
         aged(directory / f"{name}.json", days)
-    assert collector.prune(now) == {"archives": 1, "sent": 1, "rejected": 0}  # rejected: kept forever (0)
+    assert agent.prune(now) == {"archives": 1, "sent": 1, "rejected": 0}  # rejected: kept forever (0)
     assert not old_archive.exists() and new_archive.exists() and open_session.exists()
     assert [i.name for i in box.sent()] == ["new"] and [i.name for i in box.pending()] == ["waiting"]
     assert (box.rejected_dir / "bad.json").exists()
     # 0 everywhere: nothing is ever removed.
-    keep = Collector(CollectorConfig(work_dir=tmp_path, keep_archives_days=0, keep_sent_days=0, keep_rejected_days=0))
+    keep = Agent(AgentConfig(work_dir=tmp_path, keep_archives_days=0, keep_sent_days=0, keep_rejected_days=0))
     assert keep.prune(now + 10 * 365 * 86400) == {"archives": 0, "sent": 0, "rejected": 0}
 
 
 
 def test_retention_settings_from_central(tmp_path):
-    collector = Collector(CollectorConfig(work_dir=tmp_path))
-    assert collector.retention() == {"archives": 90.0, "sent": 14.0, "rejected": 30.0}  # the defaults
-    collector.remote_config = {"retention": {"archives_days": 365, "sent_days": 0}}
-    assert collector.retention() == {"archives": 365.0, "sent": 0.0, "rejected": 30.0}
-    local = Collector(CollectorConfig(work_dir=tmp_path, keep_archives_days=7))  # set on the collector: wins
+    agent = Agent(AgentConfig(work_dir=tmp_path))
+    assert agent.retention() == {"archives": 90.0, "sent": 14.0, "rejected": 30.0}  # the defaults
+    agent.remote_config = {"retention": {"archives_days": 365, "sent_days": 0}}
+    assert agent.retention() == {"archives": 365.0, "sent": 0.0, "rejected": 30.0}
+    local = Agent(AgentConfig(work_dir=tmp_path, keep_archives_days=7))  # set on the agent: wins
     local.remote_config = {"retention": {"archives_days": 365}}
     assert local.retention()["archives"] == 7.0
-    collector.remote_config = {"retention": {"archives_days": "lots"}}
-    assert collector.retention()["archives"] == 90.0  # a bad value falls back to the default
+    agent.remote_config = {"retention": {"archives_days": "lots"}}
+    assert agent.retention()["archives"] == 90.0  # a bad value falls back to the default

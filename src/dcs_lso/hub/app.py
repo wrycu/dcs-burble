@@ -23,7 +23,7 @@ from ..grading import grade_pass
 from ..grading.trends import DEFAULT_PASSES
 from . import pages
 from .db import Pass, Pilot, Source, Upload
-from .service import Central, IngestError
+from .service import Hub, IngestError
 
 MAX_SLICE_BYTES = 20 * 1024 * 1024
 MAX_RECORDING_BYTES = 1024 * 1024 * 1024  # a whole session's Tacview recording (backfill)
@@ -32,15 +32,15 @@ BOARD_COLUMNS = 20
 MIN_ZOOM_M = 15.0  # the narrowest stretch the overlay zooms to
 
 
-def create_app(central: Central) -> FastAPI:
-    app = FastAPI(title="dcs-lso central", docs_url="/api/docs", redoc_url=None)
+def create_app(hub: Hub) -> FastAPI:
+    app = FastAPI(title="dcs-lso hub", docs_url="/api/docs", redoc_url=None)
     # Uploaded recordings are processed one at a time, off the request threads.
     uploads = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload")
 
     def source_from_token(authorization: Annotated[str | None, Header()] = None) -> Source:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(401, "missing bearer token")
-        source = central.authenticate(authorization.removeprefix("Bearer ").strip())
+        source = hub.authenticate(authorization.removeprefix("Bearer ").strip())
         if source is None:
             raise HTTPException(401, "invalid token")
         return source
@@ -58,7 +58,7 @@ def create_app(central: Central) -> FastAPI:
             raise HTTPException(413, "slice too large")
         try:
             meta = json.loads(sidecar)
-            result = central.ingest(source.id, data, meta)
+            result = hub.ingest(source.id, data, meta)
         except (json.JSONDecodeError, IngestError) as exc:
             raise HTTPException(400, str(exc)) from exc
         body = {"pass_id": result.pass_id, "created": result.created, "grade": result.grade, "text": result.text,
@@ -90,29 +90,29 @@ def create_app(central: Central) -> FastAPI:
         (automatically if there's only one; otherwise POST it to `choose_url` with the `key`)."""
         if authorization:
             source_id, choose = source_from_token(authorization).id, False
-        elif central.require_upload_token:
+        elif hub.require_upload_token:
             raise HTTPException(401, "this server only accepts recordings uploaded with a source's token")
         else:
-            source_id, choose = central.upload_source(), True
+            source_id, choose = hub.upload_source(), True
         name = Path(recording.filename or "recording.acmi").name
         if not name.lower().endswith(".acmi"):
             raise HTTPException(400, "expected a Tacview .acmi recording")
-        incoming = central.uploads_dir / f"incoming-{uuid.uuid4().hex}.acmi"
+        incoming = hub.uploads_dir / f"incoming-{uuid.uuid4().hex}.acmi"
         size = await _save(recording, incoming, MAX_RECORDING_BYTES)
-        upload_id, key = central.add_upload(source_id, name, size, choose_pilot=choose)
-        incoming.rename(central.upload_path(upload_id, name))
+        upload_id, key = hub.add_upload(source_id, name, size, choose_pilot=choose)
+        incoming.rename(hub.upload_path(upload_id, name))
         if debrief is not None and debrief.filename:
-            await _save(debrief, central.debrief_path(upload_id), MAX_DEBRIEF_BYTES)
+            await _save(debrief, hub.debrief_path(upload_id), MAX_DEBRIEF_BYTES)
         if choose:
-            central.remember_upload_password(upload_id, password)
-        uploads.submit(_inspect_then_process if choose else central.process_upload, upload_id)
+            hub.remember_upload_password(upload_id, password)
+        uploads.submit(_inspect_then_process if choose else hub.process_upload, upload_id)
         return JSONResponse({"upload_id": upload_id, "key": key, "status_url": f"/api/v1/recordings/{upload_id}",
                              "choose_url": f"/api/v1/recordings/{upload_id}/pilot",
                              "page": f"/uploads/{upload_id}?key={key}"}, status_code=202)
 
     def _inspect_then_process(upload_id: int) -> None:
-        if central.inspect_upload(upload_id):
-            central.process_upload(upload_id)
+        if hub.inspect_upload(upload_id):
+            hub.process_upload(upload_id)
 
     def _queue_if(step) -> bool:
         """Run an uploader's step (choosing a pilot, giving a password); process the upload if it's ready."""
@@ -129,28 +129,28 @@ def create_app(central: Central) -> FastAPI:
                      password: Annotated[str | None, Form()] = None) -> dict:
         """Pick whose passes to import from a token-less upload with several own pilots (with their
         password, if they've set one)."""
-        if _queue_if(lambda: central.choose_pilot(upload_id, key, pilot, password)):
-            uploads.submit(central.process_upload, upload_id)
+        if _queue_if(lambda: hub.choose_pilot(upload_id, key, pilot, password)):
+            uploads.submit(hub.process_upload, upload_id)
         return {"upload_id": upload_id, "status_url": f"/api/v1/recordings/{upload_id}"}
 
     @app.post("/uploads/{upload_id}/pilot")
     def choose_pilot_form(upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()],
                           password: Annotated[str | None, Form()] = None):
-        if _queue_if(lambda: central.choose_pilot(upload_id, key, pilot, password)):
-            uploads.submit(central.process_upload, upload_id)
+        if _queue_if(lambda: hub.choose_pilot(upload_id, key, pilot, password)):
+            uploads.submit(hub.process_upload, upload_id)
         return RedirectResponse(f"/uploads/{upload_id}?key={key}", status_code=303)
 
     @app.post("/api/v1/recordings/{upload_id}/password", status_code=202)
     def give_password(upload_id: int, key: Annotated[str, Form()], password: Annotated[str, Form()]) -> dict:
         """The pilot's password, for a token-less upload of a pilot who has set one."""
-        if _queue_if(lambda: central.give_upload_password(upload_id, key, password)):
-            uploads.submit(central.process_upload, upload_id)
+        if _queue_if(lambda: hub.give_upload_password(upload_id, key, password)):
+            uploads.submit(hub.process_upload, upload_id)
         return {"upload_id": upload_id, "status_url": f"/api/v1/recordings/{upload_id}"}
 
     @app.post("/uploads/{upload_id}/password")
     def give_password_form(upload_id: int, key: Annotated[str, Form()], password: Annotated[str, Form()]):
-        if _queue_if(lambda: central.give_upload_password(upload_id, key, password)):
-            uploads.submit(central.process_upload, upload_id)
+        if _queue_if(lambda: hub.give_upload_password(upload_id, key, password)):
+            uploads.submit(hub.process_upload, upload_id)
         return RedirectResponse(f"/uploads/{upload_id}?key={key}", status_code=303)
 
     # -- pilot settings (password, side number) ---------------------------------------------------
@@ -168,18 +168,18 @@ def create_app(central: Central) -> FastAPI:
     @app.post("/api/v1/pilots/{name}/password")
     def pilot_password(name: str, new: Annotated[str, Form()], current: Annotated[str | None, Form()] = None) -> dict:
         """Set a pilot's password (the first time, this claims the name) or change it (needs `current`)."""
-        _pilot_step(lambda: central.set_pilot_password(name, new, current))
+        _pilot_step(lambda: hub.set_pilot_password(name, new, current))
         return {"pilot": name, "password": "set"}
 
     @app.post("/api/v1/pilots/{name}/modex")
     def pilot_modex(name: str, password: Annotated[str, Form()], modex: Annotated[str, Form()]) -> dict:
         """A pilot with a password changes their side number."""
-        _pilot_step(lambda: central.set_pilot_modex(name, password, modex))
+        _pilot_step(lambda: hub.set_pilot_modex(name, password, modex))
         return {"pilot": name, "modex": modex.strip()}
 
     @app.get("/pilots/{name}/settings", response_class=HTMLResponse)
     def pilot_settings(name: str, done: str | None = None, error: str | None = None) -> str:
-        with central.sessions() as s:
+        with hub.sessions() as s:
             pilot = s.scalar(select(Pilot).where(Pilot.name == name))
         if pilot is None:
             raise HTTPException(404, "no such pilot")
@@ -199,14 +199,14 @@ def create_app(central: Central) -> FastAPI:
         if new != confirm:
             return RedirectResponse(f"/pilots/{quote(name, safe='')}/settings?error={quote('the two new passwords differ')}",
                                     status_code=303)
-        return _settings_redirect(name, lambda: central.set_pilot_password(name, new, current), "Password saved.")
+        return _settings_redirect(name, lambda: hub.set_pilot_password(name, new, current), "Password saved.")
 
     @app.post("/pilots/{name}/settings/modex")
     def pilot_modex_form(name: str, password: Annotated[str, Form()], modex: Annotated[str, Form()]):
-        return _settings_redirect(name, lambda: central.set_pilot_modex(name, password, modex), "Side number saved.")
+        return _settings_redirect(name, lambda: hub.set_pilot_modex(name, password, modex), "Side number saved.")
 
     def _upload(upload_id: int) -> Upload:
-        with central.sessions() as s:
+        with hub.sessions() as s:
             upload = s.scalar(select(Upload).where(Upload.id == upload_id).options(selectinload(Upload.source)))
         if upload is None:
             raise HTTPException(404, "no such upload")
@@ -221,7 +221,7 @@ def create_app(central: Central) -> FastAPI:
 
     @app.get("/upload", response_class=HTMLResponse)
     def upload_form() -> str:
-        return pages.upload_page(token_required=central.require_upload_token)
+        return pages.upload_page(token_required=hub.require_upload_token)
 
     @app.get("/uploads/{upload_id}", response_class=HTMLResponse)
     def upload_detail(upload_id: int, key: str | None = None) -> str:
@@ -230,7 +230,7 @@ def create_app(central: Central) -> FastAPI:
         return pages.upload_status_page(upload, key if owner else None)
 
     def _passes(days: int, pilot: str | None, source: str | None) -> list[Pass]:
-        with central.sessions() as s:
+        with hub.sessions() as s:
             # Landings only: reports merged into another (same landing) and lone track reports are hidden.
             q = (select(Pass).where(Pass.merged_into_id.is_(None), or_(Pass.kind.is_(None), Pass.kind != "track"))
                  .options(selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.source)))
@@ -246,7 +246,7 @@ def create_app(central: Central) -> FastAPI:
 
     @app.get("/api/v1/config")
     def get_config(source: Annotated[Source, Depends(source_from_token)]) -> dict:
-        """Settings for this source's collector (callouts etc.)."""
+        """Settings for this source's agent (callouts etc.)."""
         return source.config or {}
 
     @app.get("/api/v1/passes")
@@ -254,7 +254,7 @@ def create_app(central: Central) -> FastAPI:
         out = []
         for p in _passes(days, pilot, source):
             g = p.grade
-            reports = central.reports(p)
+            reports = hub.reports(p)
             out.append({"id": p.id, "pilot": p.pilot.name, "source": p.source.name,
                         "reports": [{"id": r.id, "source": r.source.name, "kind": r.kind or "pass"} for r in reports],
                         "occurred_at": p.occurred_at.isoformat() if p.occurred_at else None,
@@ -270,7 +270,7 @@ def create_app(central: Central) -> FastAPI:
     @app.get("/api/v1/pilots/{name}/trends")
     def pilot_trends_api(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES) -> dict:
         """Themes across a pilot's recent passes: what keeps going wrong, biases, speed, outcomes, wires."""
-        found = central.pilot_trends(name, passes)
+        found = hub.pilot_trends(name, passes)
         if found is None:
             raise HTTPException(404, "no such pilot")
         return {"pilot": name, "modex": found.modex, "last_livery": found.last_livery, "landings": found.landings,
@@ -280,10 +280,10 @@ def create_app(central: Central) -> FastAPI:
 
     @app.get("/pilots/{name}", response_class=HTMLResponse)
     def pilot_page(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES) -> str:
-        found = central.pilot_trends(name, passes)
+        found = hub.pilot_trends(name, passes)
         if found is None:
             raise HTTPException(404, "no such pilot")
-        items = central.overlay(found.rows)
+        items = hub.overlay(found.rows)
         svg = render_overlay(items, uid="ov", title=f"{name}: last {len(items)} passes overlaid") if items else None
         return pages.pilot_page(name, found, passes, svg, overlay_src=f"/pilots/{quote(name, safe='')}/overlay.svg?passes={passes}")
 
@@ -292,7 +292,7 @@ def create_app(central: Central) -> FastAPI:
                       near: float | None = None, far: float | None = None) -> Response:
         """The pilot's passes overlaid; with `near`/`far` (meters short of the aim point), zoomed to that
         stretch of the approach."""
-        found = central.pilot_trends(name, passes)
+        found = hub.pilot_trends(name, passes)
         if found is None:
             raise HTTPException(404, "no such pilot")
         view = None
@@ -301,19 +301,19 @@ def create_app(central: Central) -> FastAPI:
             if far - near < MIN_ZOOM_M:
                 near, far = (near + far - MIN_ZOOM_M) / 2, (near + far + MIN_ZOOM_M) / 2
             view = (near, far)
-        svg = render_overlay(central.overlay(found.rows), uid="ov", title=f"{name}: passes overlaid", view=view)
+        svg = render_overlay(hub.overlay(found.rows), uid="ov", title=f"{name}: passes overlaid", view=view)
         return Response(svg, media_type="image/svg+xml")
 
     @app.get("/", response_class=HTMLResponse)
     def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None) -> str:
         passes = _passes(days, pilot or None, source or None)
-        with central.sessions() as s:
+        with hub.sessions() as s:
             pilots = sorted(s.scalars(select(Pilot.name)), key=str.lower)
             sources = sorted(s.scalars(select(Source.name)), key=str.lower)
         return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS)
 
     def _get(pass_id: int) -> Pass:
-        with central.sessions() as s:
+        with hub.sessions() as s:
             q = select(Pass).where(Pass.id == pass_id).options(
                 selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.source),
                 selectinload(Pass.slice))
@@ -327,9 +327,9 @@ def create_app(central: Central) -> FastAPI:
         p = _get(pass_id)
         if p.merged_into_id is not None:
             return RedirectResponse(f"/passes/{p.merged_into_id}", status_code=307)
-        reports = central.reports(p)
+        reports = hub.reports(p)
         try:
-            result = central.load_pass(p, reports)
+            result = hub.load_pass(p, reports)
             svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls,
                               night=bool(p.night))
             return pages.pass_page(p, svg, reports=reports, track_source=result.track_source)
@@ -343,7 +343,7 @@ def create_app(central: Central) -> FastAPI:
         if p.merged_into_id is not None:
             return RedirectResponse(f"/passes/{p.merged_into_id}/card.svg", status_code=307)
         try:
-            result = central.load_pass(p)
+            result = hub.load_pass(p)
         except (IngestError, OSError) as exc:
             raise HTTPException(404, f"trap card unavailable: {exc}") from exc
         svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"hover{p.id}", calls=p.calls,
@@ -355,7 +355,7 @@ def create_app(central: Central) -> FastAPI:
         p = _get(pass_id)
         stamp = p.occurred_at.strftime("%Y%m%d-%H%M%S") if p.occurred_at else f"pass{p.id}"
         name = "".join(c if c.isalnum() else "_" for c in p.pilot.name)
-        return FileResponse(central.store.path(p.slice.sha256), media_type="application/zip",
+        return FileResponse(hub.store.path(p.slice.sha256), media_type="application/zip",
                             filename=f"{stamp}_{name}_{p.id}.zip.acmi")
 
     return app

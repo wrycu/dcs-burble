@@ -10,7 +10,7 @@ import pytest
 
 from dcs_lso.dcslog import LsoGrade, follow, parse_hook_line
 
-HOOK = Path(__file__).parents[1] / "hooks" / "dcs-lso-hook.lua"
+HOOK = Path(__file__).parents[1] / "hooks" / "dcs-lso-server-hook.lua"
 
 STUBS = r"""
 LOG = {}

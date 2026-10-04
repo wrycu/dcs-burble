@@ -1,4 +1,4 @@
-"""Live LSO callouts in the server-mode collector.
+"""Live LSO callouts in the server agent.
 
 For every aircraft in a pass (as tracked by `LivePassDetector`), a `LiveEstimator` +
 `CalloutEngine` decide calls from the live stream; calls are spoken through a `CallSink`
@@ -59,7 +59,7 @@ class SrsSettings:
 
 @dataclass(frozen=True, slots=True)
 class CalloutSettings:
-    """Callout configuration (normally fetched from central; see `from_config`)."""
+    """Callout configuration (normally fetched from the hub; see `from_config`)."""
 
     enabled: bool = False
     srs: SrsSettings = SrsSettings()
@@ -197,7 +197,7 @@ class LiveCallouts:
         self.wind_for = wind_for  # the mission's wind at a carrier (by unit name), from the hook
         # DCS's wire for an aircraft (Tacview id) since a mission time, from the hook, if known yet.
         self.wire_for = wire_for
-        # Our grade of a pass in progress (carrier id, aircraft id), for the welcome; set by the collector.
+        # Our grade of a pass in progress (carrier id, aircraft id), for the welcome; set by the agent.
         self.grade_for: Callable[[int, int], Grade | None] | None = None
         # The frequency set for a carrier (by unit name) in the mission, from the hook.
         self.carrier_radio: Callable[[str], Radio | None] | None = None

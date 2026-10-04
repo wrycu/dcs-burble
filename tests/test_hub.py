@@ -7,8 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dcs_lso.acmi import load_recording
-from dcs_lso.central.app import create_app
-from dcs_lso.central.service import Central
+from dcs_lso.hub.app import create_app
+from dcs_lso.hub.service import Hub
 from dcs_lso.cli import main
 from dcs_lso.detect import find_passes
 from dcs_lso.grading import grade_pass
@@ -18,18 +18,18 @@ PASS_FILES = sorted((FIXTURES / "passes").glob("*.zip.acmi"))
 
 
 @pytest.fixture
-def central(tmp_path):
-    return Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "data")
+def hub(tmp_path):
+    return Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "data")
 
 
 @pytest.fixture
-def client(central):
-    return TestClient(create_app(central))
+def client(hub):
+    return TestClient(create_app(hub))
 
 
 @pytest.fixture
-def token(central):
-    return central.add_source("test-server")
+def token(hub):
+    return hub.add_source("test-server")
 
 
 def upload(client, token, acmi: Path, sidecar: dict | None = None, rename_default: bool = True):
@@ -107,21 +107,21 @@ def test_dcs_grade_from_sidecar_is_shown(client, token, tmp_path):
     assert "LNFIW  WIRE# 3" in client.get(f"/passes/{pass_id}").text
 
 
-def test_regrade_adds_new_version_and_keeps_slices(central, client, token, monkeypatch):
+def test_regrade_adds_new_version_and_keeps_slices(hub, client, token, monkeypatch):
     for acmi in PASS_FILES:
         upload(client, token, acmi)
-    slices = sorted((central.store.root).rglob("*.zip.acmi"))
+    slices = sorted((hub.store.root).rglob("*.zip.acmi"))
     before = [hashlib.sha256(p.read_bytes()).hexdigest() for p in slices]
-    assert central.regrade() == (0, len(PASS_FILES))
+    assert hub.regrade() == (0, len(PASS_FILES))
     monkeypatch.setattr("dcs_lso.grading.grade.GRADING_VERSION", "test-2")
-    monkeypatch.setattr("dcs_lso.central.service.GRADING_VERSION", "test-2")
-    assert central.regrade() == (len(PASS_FILES), 0)
+    monkeypatch.setattr("dcs_lso.hub.service.GRADING_VERSION", "test-2")
+    assert hub.regrade() == (len(PASS_FILES), 0)
     rows = client.get("/api/v1/passes", params={"days": 0}).json()
     assert {r["grading_version"] for r in rows} == {"test-2"}
     assert [hashlib.sha256(p.read_bytes()).hexdigest() for p in slices] == before
 
 
-def test_upload_command(central, client, token, monkeypatch, capsys):
+def test_upload_command(hub, client, token, monkeypatch, capsys):
     app = client.app
 
     def fake_client(*, base_url, headers, timeout):

@@ -1,9 +1,9 @@
 """Durable upload queue: a directory of slice + sidecar pairs.
 
-    pending/   waiting to upload (survives restarts and central outages)
-    sent/      accepted by central (kept as a local backup, and so a DCS grade found
+    pending/   waiting to upload (survives restarts and the hub outages)
+    sent/      accepted by hub (kept as a local backup, and so a DCS grade found
                later in debrief.log can be sent for them)
-    rejected/  refused by central (4xx); kept for inspection
+    rejected/  refused by hub (4xx); kept for inspection
 
 The sidecar JSON is written last, so a pair only counts once it is complete.
 """
@@ -108,13 +108,13 @@ class Outbox:
             if r.status_code in (200, 201):
                 body = r.json()
                 log.info("uploaded %s: %s (%s)", item.name, body.get("text"),
-                         "new" if body.get("created") else "already on central")
+                         "new" if body.get("created") else "already on the hub")
                 self._move(item, self.sent_dir)
                 uploaded += 1
             elif r.status_code in (401, 403, 429) or r.status_code >= 500:
-                log.warning("central refused %s for now (%s %s); will retry", item.name, r.status_code, r.text[:200])
+                log.warning("the hub refused %s for now (%s %s); will retry", item.name, r.status_code, r.text[:200])
                 return uploaded, len(items) - i
             else:
-                log.error("central rejected %s (%s %s); moved to rejected/", item.name, r.status_code, r.text[:200])
+                log.error("the hub rejected %s (%s %s); moved to rejected/", item.name, r.status_code, r.text[:200])
                 self._move(item, self.rejected_dir)
         return uploaded, 0

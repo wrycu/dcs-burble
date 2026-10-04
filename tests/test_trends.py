@@ -5,8 +5,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from dcs_lso.acmi import load_recording
-from dcs_lso.central.app import create_app
-from dcs_lso.central.service import Central
+from dcs_lso.hub.app import create_app
+from dcs_lso.hub.service import Hub
 from dcs_lso.detect import find_passes
 from dcs_lso.grading.trends import TrendPass, trends
 from dcs_lso.slices import sidecar, slice_objects
@@ -73,13 +73,13 @@ def test_from_stored_grade_details():
 
 
 def test_pilot_page_and_api(tmp_path):
-    central = Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central")
-    central.add_source("s")
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    hub.add_source("s")
     for f in sorted((FIXTURES / "passes").glob("20260927-*.zip.acmi")):
         r = load_recording(f)
         (p,) = find_passes(r)
-        central.ingest(1, f.read_bytes(), sidecar(r, p, f.name, slice_objects(r, p)))
-    client = TestClient(create_app(central))
+        hub.ingest(1, f.read_bytes(), sidecar(r, p, f.name, slice_objects(r, p)))
+    client = TestClient(create_app(hub))
     body = client.get("/api/v1/pilots/Wrycu/trends").json()
     assert body["passes"] == 4 and len(body["pass_ids"]) == 4 and body["analysis"]
     assert {t["kind"] for t in body["results"]} <= {"outcome", "wires"}
@@ -125,13 +125,13 @@ def test_overlay_card(tmp_path):
 def test_overlay_zoom(tmp_path):
     import re
     import xml.etree.ElementTree as ET
-    central = Central(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "central")
-    central.add_source("s")
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    hub.add_source("s")
     for f in sorted((FIXTURES / "passes").glob("20260927-*.zip.acmi")):
         r = load_recording(f)
         (p,) = find_passes(r)
-        central.ingest(1, f.read_bytes(), sidecar(r, p, f.name, slice_objects(r, p)))
-    client = TestClient(create_app(central))
+        hub.ingest(1, f.read_bytes(), sidecar(r, p, f.name, slice_objects(r, p)))
+    client = TestClient(create_app(hub))
     page = client.get("/pilots/Wrycu").text
     assert 'data-src="/pilots/Wrycu/overlay.svg?passes=12"' in page and "zoom-reset" in page
     full = ET.fromstring(client.get("/pilots/Wrycu/overlay.svg").text)
