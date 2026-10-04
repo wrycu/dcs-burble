@@ -250,7 +250,7 @@ def _hub(args: argparse.Namespace):
     data_dir = Path(args.data_dir)
     url = args.database_url or f"sqlite:///{(data_dir / 'lso.db').resolve()}"
     data_dir.mkdir(parents=True, exist_ok=True)
-    return Hub(url, data_dir, require_upload_token=args.require_upload_token)
+    return Hub(url, data_dir, require_upload_token=args.require_upload_token, pilot_hook_accept=args.pilot_hook_accept)
 
 
 def _hub_serve(args: argparse.Namespace) -> int:
@@ -482,6 +482,10 @@ def main(argv: list[str] | None = None) -> int:
                      default=os.environ.get("DCS_LSO_REQUIRE_UPLOAD_TOKEN", "").lower() in ("1", "true", "yes"),
                      help="only accept recordings uploaded with a token (by default anyone can upload "
                           "a recording and import their own passes from it) [$DCS_LSO_REQUIRE_UPLOAD_TOKEN]")
+    hub.add_argument("--pilot-hook-accept", choices=["ours", "any"],
+                     default=os.environ.get("DCS_LSO_PILOT_HOOK_ACCEPT", "ours"),
+                     help="pilot hook traps accepted: flown on this hub's own servers only (ours, the default), or "
+                          "from any server with a pilot token (any) [$DCS_LSO_PILOT_HOOK_ACCEPT]")
     hub_sub = hub.add_subparsers(dest="hub_command", required=True)
     serve = hub_sub.add_parser("serve", help="serve the API, greenie board and pass pages")
     serve.add_argument("--host", default="127.0.0.1")

@@ -214,6 +214,43 @@ local function log_carriers()
   end
 end
 
+-- Everyone connected (not the server itself): UCID (DCS account id), IP address and name, so the hub can
+-- recognise a pilot hook sent from a player on this server. Logged on every connect and disconnect, and
+-- once a minute (so a server agent that restarts mid-mission learns it again).
+local PLAYERS_EVERY_S = 60
+local last_players = -PLAYERS_EVERY_S
+
+local function log_players()
+  local players = {}
+  local server_id = net.get_server_id and net.get_server_id() or 1
+  for _, player_id in ipairs(net.get_player_list() or {}) do
+    if player_id ~= server_id then
+      local info = net.get_player_info(player_id) or {}
+      if info.ucid then
+        local ip = tostring(info.ipaddr or ''):gsub(':%d+$', '')  -- "a.b.c.d:port" -> "a.b.c.d"
+        players[#players + 1] = { id = player_id, ucid = info.ucid, ip = ip, name = info.name }
+      end
+    end
+  end
+  last_players = DCS.getRealTime and DCS.getRealTime() or 0
+  log.write('DCSLSO', log.INFO, 'DCSLSO ' .. net.lua2json({ event = 'players', t = DCS.getModelTime(), players = players }))
+end
+
+function callbacks.onPlayerConnect(player_id)
+  pcall(log_players)
+end
+
+function callbacks.onPlayerDisconnect(player_id)
+  pcall(log_players)
+end
+
+function callbacks.onSimulationFrame()
+  local now = DCS.getRealTime and DCS.getRealTime() or 0
+  if now - last_players >= PLAYERS_EVERY_S then
+    pcall(log_players)
+  end
+end
+
 function callbacks.onMissionLoadEnd()
   local ok, result = pcall(net.dostring_in, 'mission', 'a_do_script([====[' .. HANDLER .. ']====])')
   log.write('DCSLSO', ok and log.INFO or log.ERROR, 'handler injection: ' .. tostring(ok) .. ' ' .. tostring(result))
@@ -222,6 +259,7 @@ end
 
 function callbacks.onPlayerChangeSlot(player_id)
   pcall(log_slot, player_id)
+  pcall(log_players)
 end
 
 -- Players already in their slots when a mission starts (and the local player, also in single player).

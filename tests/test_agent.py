@@ -318,3 +318,30 @@ def test_retention_settings_from_central(tmp_path):
     assert local.retention()["archives"] == 7.0
     agent.remote_config = {"retention": {"archives_days": "lots"}}
     assert agent.retention()["archives"] == 90.0  # a bad value falls back to the default
+
+
+def test_server_agent_reports_connected_players(tmp_path, hub):
+    from dcs_lso.agent.service import HookFeed
+    from dcs_lso.dcslog import parse_hook_line
+
+    log_file = tmp_path / "dcs.log"
+    log_file.write_text("")
+    feed = HookFeed(log_file)
+    agent = Agent(AgentConfig(work_dir=tmp_path / "agent"), client=make_client(hub))
+    agent.hooks = feed
+    line = ('2026-10-03 20:33:05.817 INFO    DCSLSO (Main): DCSLSO {"event":"players","t":42.5,"players":'
+            '[{"id":2,"ucid":"fa26","ip":"69.222.184.25","name":"Wrycu"}]}')
+
+    async def run():
+        assert not await agent.report_players(now=0.0)  # no list from the hook yet
+        feed.add(parse_hook_line(line))
+        assert await agent.report_players(now=0.0)
+        assert not await agent.report_players(now=10.0)  # unchanged: not again yet
+        assert await agent.report_players(now=130.0)  # but every 2 minutes anyway
+        feed.add(parse_hook_line(line.replace('[{"id"', '[{"id":3,"ucid":"b0b0","ip":"10.0.0.5",'
+                                                                                 '"name":"Goose"},{"id"')))
+        assert await agent.report_players(now=131.0)  # changed
+
+    asyncio.run(run())
+    assert hub.pilot_hook_here("fa26", "69.222.184.25") and hub.pilot_hook_here("b0b0", "10.0.0.9")
+    assert not hub.pilot_hook_here("fa26", "8.8.4.4")

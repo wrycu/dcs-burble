@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
@@ -31,6 +31,12 @@ MAX_RECORDING_BYTES = 1024 * 1024 * 1024  # a whole session's Tacview recording 
 MAX_DEBRIEF_BYTES = 50 * 1024 * 1024
 BOARD_COLUMNS = 20
 MIN_ZOOM_M = 15.0  # the narrowest stretch the overlay zooms to
+
+
+def _client_ip(request: Request) -> str | None:
+    """The address a request came from. Behind a reverse proxy on the same machine, uvicorn already puts the
+    client's address here (from X-Forwarded-For, trusted only from 127.0.0.1 by default)."""
+    return request.client.host if request.client else None
 
 
 def create_app(hub: Hub) -> FastAPI:
@@ -81,8 +87,9 @@ def create_app(hub: Hub) -> FastAPI:
 
     @app.post("/api/v1/pilot-hook/approaches")
     async def pilot_hook_approach(request: Request, authorization: Annotated[str | None, Header()] = None):
-        """One approach from the pilot hook (JSON, see `hub.pilothook`), with the pilot's token in the
-        Authorization header or the body's "token". Plain HTTP is fine: DCS's Lua has no HTTPS."""
+        """One approach from the pilot hook (JSON, see `hub.pilothook`). Plain HTTP is fine: DCS's Lua has no
+        HTTPS. Accepted from a player on this hub's servers (by UCID and address, see
+        `Hub.pilot_hook_access`), or with the pilot's token in the Authorization header or the body."""
         raw = await request.body()
         if len(raw) > MAX_SLICE_BYTES:
             raise HTTPException(413, "upload too large")
@@ -90,16 +97,39 @@ def create_app(hub: Hub) -> FastAPI:
             body = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise HTTPException(400, f"invalid JSON: {exc}") from exc
-        token = (authorization or "").removeprefix("Bearer ").strip() or str((body or {}).get("token") or "")
-        source = hub.authenticate(token) if token else None
-        if source is None:
-            raise HTTPException(401, "a pilot token is needed")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "expected a JSON object")
+        token = (authorization or "").removeprefix("Bearer ").strip() or str(body.get("token") or "") or None
         try:
-            results = await run_in_threadpool(hub.ingest_pilot_hook, source.id, body)
+            source_id, pilot = hub.pilot_hook_access(token, body.get("ucid"), _client_ip(request))
+        except PermissionError as exc:
+            raise HTTPException(401, str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        try:
+            results = await run_in_threadpool(hub.ingest_pilot_hook, source_id, body, pilot)
         except IngestError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"reports": [{"pass_id": r.pass_id, "created": r.created, "grade": r.grade, "text": r.text,
                              "url": f"/passes/{r.pass_id}"} for r in results]}
+
+    @app.get("/api/v1/pilot-hook/here")
+    def pilot_hook_here(request: Request, ucid: str = "") -> dict:
+        """Is this player (UCID) on one of this hub's servers now? Answered only for the player's own address
+        (or the LAN), so it can't be used to look players up."""
+        return {"here": hub.pilot_hook_here(ucid, _client_ip(request)), "accept": hub.pilot_hook_accept}
+
+    @app.post("/api/v1/players")
+    def players(source: Annotated[Source, Depends(source_from_token)], body: Annotated[dict, Body()]) -> dict:
+        """A server agent's list of players connected to its DCS server: [{"ucid", "ip", "name"}]."""
+        listed = body.get("players")
+        if not isinstance(listed, list):
+            raise HTTPException(400, "expected {\"players\": [...]}")
+        try:
+            hub.report_players(source.id, listed)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        return {"players": len(listed)}
 
     @app.post("/api/v1/recordings", status_code=202)
     async def upload_recording(recording: Annotated[UploadFile, File(description="a whole .zip.acmi or .txt.acmi recording")],

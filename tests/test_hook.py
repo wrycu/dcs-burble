@@ -131,3 +131,47 @@ def test_follow_sees_appended_and_replaced_file(tmp_path):
     replacement.replace(log)
     thread.join(timeout=2)
     assert seen == ["appended", "partial", "after-replace"]
+
+
+PLAYER_STUBS = r"""
+log = { INFO = 'INFO', ERROR = 'ERROR', write = function(src, lvl, msg) print('HOOKLOG ' .. msg) end }
+local callbacks
+local now = 0
+DCS = { setUserCallbacks = function(c) callbacks = c end, getModelTime = function() return 42.5 end,
+        getRealTime = function() return now end }
+local function enc(v)
+  if type(v) == 'table' then
+    local parts = {}
+    if #v > 0 or next(v) == nil then
+      for _, x in ipairs(v) do parts[#parts + 1] = enc(x) end
+      return '[' .. table.concat(parts, ',') .. ']'
+    end
+    for k, x in pairs(v) do parts[#parts + 1] = string.format('%q', tostring(k)) .. ':' .. enc(x) end
+    return '{' .. table.concat(parts, ',') .. '}'
+  elseif type(v) == 'string' then return string.format('%q', v) end
+  return tostring(v)
+end
+net = { lua2json = enc, get_server_id = function() return 1 end, get_player_list = function() return { 1, 2, 3 } end,
+        get_player_info = function(id)
+          if id == 2 then return { name = 'Wrycu', ucid = 'fa26', ipaddr = '69.222.184.25:10308' } end
+          if id == 3 then return { name = 'Maverick', ucid = 'b0b0', ipaddr = '192.168.1.20' } end
+          return { name = 'Server' }
+        end }
+dofile(HOOK_PATH)
+callbacks.onPlayerConnect(2)
+now = 30; callbacks.onSimulationFrame()  -- under a minute: nothing
+now = 61; callbacks.onSimulationFrame()  -- a minute later: logged again
+"""
+
+
+def test_hook_logs_connected_players():
+    luajit = shutil.which("luajit")
+    if luajit is None:
+        pytest.skip("luajit not installed")
+    script = f"HOOK_PATH = {str(HOOK)!r}\n" + PLAYER_STUBS
+    out = subprocess.run([luajit, "-"], input=script, capture_output=True, text=True, check=True).stdout.splitlines()
+    snapshots = [e for e in map(parse_hook_line, out) if e and e.event == "players"]
+    assert len(snapshots) == 2
+    assert snapshots[0].raw["players"] == [  # the server itself left out, ports stripped
+        {"id": 2, "ucid": "fa26", "ip": "69.222.184.25", "name": "Wrycu"},
+        {"id": 3, "ucid": "b0b0", "ip": "192.168.1.20", "name": "Maverick"}]

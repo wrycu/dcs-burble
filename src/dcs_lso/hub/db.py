@@ -40,6 +40,8 @@ class Source(Base):
     label: Mapped[str | None] = mapped_column(String(100), nullable=True)  # e.g. "my PC", shown to the pilot
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When this server agent last reported its connected players (see PlayerSeen).
+    players_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Pilot(Base):
@@ -65,6 +67,21 @@ class PilotAlias(Base):
     pilot_id: Mapped[int] = mapped_column(ForeignKey("pilots.id"), index=True)
     claimed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PlayerSeen(Base):
+    """A player a server agent reported connected to its DCS server (from the server hook): lets the hub
+    recognise that player's pilot hook (same UCID, from the same IP address) without a token."""
+
+    __tablename__ = "players_seen"
+    __table_args__ = (UniqueConstraint("source_id", "ucid"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"))
+    ucid: Mapped[str] = mapped_column(String(64), index=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    connected: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Slice(Base):

@@ -61,6 +61,7 @@ NO_FRAMES_REPEAT_S = 600.0  # repeat the warning this rarely while frames stay a
 STALLED_SLICE_S = 10.0
 WATCH_INTERVAL_S = 2.0
 CONFIG_REFRESH_S = 60.0
+PLAYERS_REPORT_S = 120.0  # report the connected players at least this often (the hub's list stays fresh)
 
 
 @dataclass
@@ -110,7 +111,19 @@ class HookFeed:
                 # A new mission: its times restart at 0, so the previous mission's events would
                 # otherwise match this mission's passes.
                 self._events.clear()
+            if event.event == "players":  # only the latest list matters
+                self._events = [e for e in self._events if e.event != "players"]
             self._events.append(event)
+
+    def players(self) -> list[dict] | None:
+        """Who is connected to the DCS server now (UCID, IP, name), from the hook's latest list; None if it
+        hasn't logged one yet."""
+        with self._lock:
+            latest = next((e for e in reversed(self._events) if e.event == "players"), None)
+        if latest is None:
+            return None
+        return [{"ucid": str(x.get("ucid")), "ip": str(x.get("ip") or ""), "name": x.get("name")}
+                for x in latest.raw.get("players") or [] if isinstance(x, dict) and x.get("ucid")]
 
     def wire_for(self, tacview_id: int, start: float, end: float) -> int | None:
         """The wire caught by this aircraft between `start` and `end` (mission time), from the hook's
@@ -277,6 +290,8 @@ class Agent:
                                        timeout=60)
         self.client = client
         self._wake_uploader = asyncio.Event()
+        self._players_reported: list | None = None  # the last player list reported to the hub
+        self._players_reported_at = -PLAYERS_REPORT_S
         self.config_path = config.work_dir / "config.json"
         self.remote_config: dict = self._load_cached_config()
         self.clips = ClipLibrary.load(config.voice_dir) if config.voice_dir else None
@@ -400,12 +415,37 @@ class Agent:
             if time.monotonic() - last_config >= CONFIG_REFRESH_S:
                 await self.refresh_config()
                 last_config = time.monotonic()
+            await self.report_players()
             await self.upload_once()
             try:
                 await asyncio.wait_for(self._wake_uploader.wait(), UPLOAD_INTERVAL_S)
             except TimeoutError:
                 pass
             self._wake_uploader.clear()
+
+    async def report_players(self, now: float | None = None) -> bool:
+        """Tell the hub who is connected to this DCS server (from the server hook), so it can recognise their
+        pilot hooks without a token: when the list changes, and every PLAYERS_REPORT_S anyway (the hub treats
+        an old list as stale). Returns whether it reported."""
+        if self.client is None or self.hooks is None or self.config.mode != "server":
+            return False
+        players = self.hooks.players()
+        if players is None:
+            return False
+        now = time.monotonic() if now is None else now
+        key = sorted((p["ucid"], p["ip"]) for p in players)
+        if key == self._players_reported and now - self._players_reported_at < PLAYERS_REPORT_S:
+            return False
+        try:
+            r = await self.client.post("/api/v1/players", json={"players": players})
+        except httpx.HTTPError as exc:
+            log.debug("player list not reported: %s", exc)
+            return False
+        if r.status_code != 200:
+            log.warning("hub refused the player list (%s %s)", r.status_code, r.text[:200])
+            return False
+        self._players_reported, self._players_reported_at = key, now
+        return True
 
     async def upload_once(self) -> tuple[int, int]:
         if self.client is None:

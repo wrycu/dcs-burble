@@ -7,7 +7,8 @@ import math
 import secrets
 import statistics
 import tempfile
-from dataclasses import dataclass
+import ipaddress
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -23,13 +24,21 @@ from ..sun import is_night
 from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
-from .db import Grade, Pass, Pilot, PilotAlias, Slice, Source, Upload, make_engine, make_sessionmaker
+from .db import Grade, Pass, Pilot, PilotAlias, PlayerSeen, Slice, Source, Upload, make_engine, make_sessionmaker
 from .pilothook import HookUploadError, parse_upload, track_reports
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
 from .storage import SliceStore
 
 START_TIME_TOLERANCE_S = 0.5
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
+PILOT_HOOKS = "pilot hooks"  # source of pilot hook uploads recognised without a token (see pilot_hook_access)
+INTERNAL_SOURCES = (PUBLIC_UPLOADS, PILOT_HOOKS)
+# A player counts as flying on one of this hub's servers if a server agent reported them this recently
+# (a pilot hook sends each approach right after it ends).
+PLAYER_RECENT = timedelta(minutes=30)
+# A server agent's player list is current if it reported it this recently (it reports at least every 2 min).
+PLAYERS_FRESH = timedelta(minutes=10)
+PILOT_HOOK_ACCEPT = ("ours", "any")
 UPLOAD_PILOT_WAIT = timedelta(days=1)  # how long an upload waits for its uploader to pick a pilot
 DEFAULT_PILOT_REFUSED = ("passes flown under DCS's default pilot name aren't recorded, since they can't be "
                          "credited to a pilot")
@@ -95,7 +104,13 @@ class IngestResult:
 
 
 class Hub:
-    def __init__(self, database_url: str, data_dir: str | Path, require_upload_token: bool = False) -> None:
+    def __init__(self, database_url: str, data_dir: str | Path, require_upload_token: bool = False,
+                 pilot_hook_accept: str = "ours") -> None:
+        if pilot_hook_accept not in PILOT_HOOK_ACCEPT:
+            raise ValueError(f"pilot_hook_accept must be one of {PILOT_HOOK_ACCEPT}")
+        # Pilot hook uploads: only traps flown on this hub's own servers ("ours"), or from anywhere with a
+        # pilot token ("any"; traps from other communities' servers have no carrier here yet).
+        self.pilot_hook_accept = pilot_hook_accept
         # Refuse recordings uploaded without a source's token (by default anyone may upload their passes).
         self.require_upload_token = require_upload_token
         self._upload_passwords: dict[int, str] = {}  # given with an upload, until its pilot is known (memory only)
@@ -387,7 +402,7 @@ class Hub:
         with self.sessions.begin() as s:
             source = s.get(Source, source_id)
             token_pilot = s.get(Pilot, source.pilot_id) if source is not None and source.pilot_id else None
-            if token_pilot is None and source is not None and source.kind == "pilot" and source.name != PUBLIC_UPLOADS:
+            if token_pilot is None and source is not None and source.kind == "pilot" and source.name not in INTERNAL_SOURCES:
                 raise IngestError("this pilot token isn't tied to a pilot; create a new one on your settings page")
             if token_pilot is None and is_default_pilot(info.get("pilot")):
                 raise IngestError(DEFAULT_PILOT_REFUSED)
@@ -496,17 +511,91 @@ class Hub:
 
     # -- the pilot hook ---------------------------------------------------------------------------
 
-    def ingest_pilot_hook(self, source_id: int, body: dict) -> list[IngestResult]:
-        """An upload from the pilot hook (one approach of the pilot's own jet, see `hub.pilothook`), sent with
-        the pilot's token: stored as own-jet track reports, merged with the server agent's reports."""
-        with self.sessions() as s:
+    # -- players on this hub's servers (from the server agents) ----------------------------------------
+
+    def report_players(self, source_id: int, players: list[dict]) -> None:
+        """A server agent's list of who is connected to its DCS server now (UCID, IP, name)."""
+        now = datetime.now(UTC)
+        with self.sessions.begin() as s:
             source = s.get(Source, source_id)
-            if source is None or source.pilot_id is None:
-                raise IngestError("the pilot hook needs a pilot token")
+            if source is None or source.kind != "server":
+                raise PermissionError("only a server agent reports players")
+            source.players_at = now
+            current = {}
+            for x in players:
+                ucid = str((x or {}).get("ucid") or "").strip()[:64]
+                if ucid:
+                    current[ucid] = x
+            for row in s.scalars(select(PlayerSeen).where(PlayerSeen.source_id == source_id)):
+                if row.ucid in current:
+                    x = current.pop(row.ucid)
+                    row.ip, row.name = _ip(x.get("ip")), (x.get("name") or row.name or "")[:100] or None
+                    row.connected, row.last_seen = True, now
+                else:
+                    row.connected = False
+            for ucid, x in current.items():
+                s.add(PlayerSeen(source_id=source_id, ucid=ucid, ip=_ip(x.get("ip")), name=(x.get("name") or "")[:100] or None,
+                                 connected=True, last_seen=now))
+
+    def _players(self, s: Session, ucid: str, connected_now: bool) -> list[PlayerSeen]:
+        """Where this UCID was seen on this hub's servers: connected now (by a current player list), or
+        recently (PLAYER_RECENT)."""
+        now = datetime.now(UTC)
+        q = select(PlayerSeen).join(Source, PlayerSeen.source_id == Source.id).where(
+            PlayerSeen.ucid == ucid, Source.kind == "server", Source.revoked_at.is_(None))
+        if connected_now:
+            q = q.where(PlayerSeen.connected.is_(True), Source.players_at >= now - PLAYERS_FRESH)
+        else:
+            q = q.where(or_(PlayerSeen.connected.is_(True), PlayerSeen.last_seen >= now - PLAYER_RECENT))
+        return list(s.scalars(q))
+
+    def pilot_hook_access(self, token: str | None, ucid: str | None, client_ip: str | None) -> tuple[int, str | None]:
+        """Who may send this pilot hook upload, as (source id, the pilot's name per the server or None).
+        - With a pilot token: the token's pilot. With "ours", only for a pilot seen on this hub's servers.
+        - Without one: a player on this hub's servers (by UCID), sending from the IP address the DCS server
+          sees them at, or from a LAN address (the DCS server sees LAN players at their LAN address while the
+          hub may see another). Credited under the name the server knows them by.
+        Raises PermissionError otherwise."""
+        ucid = (ucid or "").strip()
+        with self.sessions.begin() as s:
+            seen = self._players(s, ucid, connected_now=False) if ucid else []
+            if token:
+                source = s.scalar(select(Source).where(Source.token_hash == _hash_token(token), Source.revoked_at.is_(None)))
+                if source is None or source.pilot_id is None:
+                    raise PermissionError("not a pilot token")
+                if self.pilot_hook_accept == "ours" and not seen:
+                    raise LookupError("this hub only accepts traps flown on its own servers")
+                return source.id, None
+            lan = _is_lan(client_ip)
+            match = next((p for p in seen if p.ip and p.ip == _ip(client_ip)), None) or (seen[0] if seen and lan else None)
+            if match is None:
+                raise PermissionError("a pilot token is needed (not recognised as a player on this hub's servers)")
+            source = s.scalar(select(Source).where(Source.name == PILOT_HOOKS))
+            if source is None:
+                source = Source(name=PILOT_HOOKS, kind="pilot", token_hash=_hash_token(secrets.token_urlsafe(32)))
+                s.add(source)
+                s.flush()
+            return source.id, match.name
+
+    def pilot_hook_here(self, ucid: str | None, client_ip: str | None) -> bool:
+        """Is this UCID connected to one of this hub's servers now, asked from that player's address (or the
+        LAN)? Lets the pilot hook find the hub of the server it's on."""
+        if not ucid:
+            return False
+        with self.sessions() as s:
+            seen = self._players(s, ucid.strip(), connected_now=True)
+        return any(p.ip and p.ip == _ip(client_ip) for p in seen) or (bool(seen) and _is_lan(client_ip))
+
+    def ingest_pilot_hook(self, source_id: int, body: dict, pilot: str | None = None) -> list[IngestResult]:
+        """An upload from the pilot hook (one approach of the pilot's own jet, see `hub.pilothook`), from a
+        source `pilot_hook_access` allowed: stored as own-jet track reports, merged with the server agent's
+        reports. `pilot`: the name to credit it under (the server's name for the player), if not a token's."""
         try:
             upload = parse_upload(body)
         except HookUploadError as exc:
             raise IngestError(str(exc)) from exc
+        if pilot:
+            upload = replace(upload, pilot=pilot[:100])
         with tempfile.TemporaryDirectory() as tmp:
             reports = track_reports(upload, Path(tmp))
         return [self.ingest(source_id, data, meta) for data, meta in reports]
@@ -866,3 +955,25 @@ def _median_distance(a: list[Sample], b: list[Sample], b_offset: float) -> float
 def _grade_row(result: GradeResult) -> Grade:
     return Grade(version=result.version, grade=result.grade.value, points=result.points,
                  text=result.text, detail=result.to_dict())
+
+
+def _ip(value: object) -> str | None:
+    """An IP address without a port ("a.b.c.d:port" -> "a.b.c.d"), or None."""
+    text = str(value or "").strip()
+    if text.count(":") == 1:
+        text = text.split(":")[0]
+    return text or None
+
+
+_LAN = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16",  # RFC 1918, loopback, link-local
+    "::1/128", "fc00::/7", "fe80::/10"))
+
+
+def _is_lan(address: str | None) -> bool:
+    """A LAN (private), loopback or link-local address."""
+    try:
+        ip = ipaddress.ip_address(_ip(address) or "")
+    except ValueError:
+        return False
+    return any(ip in net for net in _LAN if net.version == ip.version)

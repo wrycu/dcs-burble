@@ -24,6 +24,8 @@ WIRES = Path(__file__).parent / "fixtures" / "wires"
 SERVER = WIRES / "server-dcs-wire-2.zip.acmi"  # the server's recording: starts at mission start
 PILOT = WIRES / "pilot-dcs-wire-2.zip.acmi"  # the pilot's own recording of the same trap
 JOINED_S = 174.0  # the pilot's recording starts at 05:02:54Z, the mission at 05:00:00Z
+UCID = "fa2691780c6ae51b644a3a84aea04ceb"
+HOME = "69.222.184.25"  # the pilot's address, as the DCS server sees it
 
 
 def hook_upload(pilot: str = "Wrycu", **extra) -> dict:
@@ -36,7 +38,7 @@ def hook_upload(pilot: str = "Wrycu", **extra) -> dict:
                      f"{math.radians(t.pitch):.6f},{math.radians(t.roll):.6f},{s.aoa if s.aoa is not None else 'nil'},"
                      f"{t.lat:.7f},{t.lon:.7f}")
     return {"version": 1, "pilot": pilot, "aircraft": "FA-18C_hornet", "mission": recording.globals["Title"],
-            "ucid": "fa2691780c6ae51b644a3a84aea04ceb", "server": "192.168.1.238:10308",
+            "ucid": UCID, "server": "192.168.1.238:10308",
             "csv": "\n".join(lines), **extra}
 
 
@@ -46,12 +48,23 @@ def server_report() -> tuple[bytes, dict]:
     return SERVER.read_bytes(), sidecar(r, p, "s", slice_objects(r, p))
 
 
-@pytest.fixture
-def hub(tmp_path):
-    h = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+def make_hub(path: Path, **options) -> Hub:
+    path.mkdir(parents=True, exist_ok=True)
+    h = Hub(f"sqlite:///{path / 'lso.db'}", path / "hub", **options)
     h.add_source("server1")
     h.token = h.add_pilot_token("Wrycu", "pilot hook")
+    # The server agent: Wrycu is connected to its DCS server.
+    h.report_players(1, [{"ucid": UCID, "ip": HOME, "name": "Wrycu"}])
     return h
+
+
+@pytest.fixture
+def hub(tmp_path):
+    return make_hub(tmp_path)
+
+
+def client_at(hub, address: str = "testclient") -> TestClient:
+    return TestClient(create_app(hub), client=(address, 50000))
 
 
 def post(client, body: dict, token: str | None):
@@ -68,7 +81,7 @@ def landing_of(hub, pass_id: int):
 
 @pytest.mark.parametrize("hook_first", [False, True])
 def test_pilot_hook_track_merges_with_the_server_agents_report(hub, hook_first):
-    client = TestClient(create_app(hub))
+    client = client_at(hub)
     if not hook_first:
         hub.ingest(1, *server_report())
     r = post(client, hook_upload(), hub.token)
@@ -85,18 +98,51 @@ def test_pilot_hook_track_merges_with_the_server_agents_report(hub, hook_first):
     assert len(rows) == 1 and rows[0]["pilot"] == "Wrycu"
 
 
-def test_pilot_hook_needs_a_pilot_token(hub):
-    client = TestClient(create_app(hub))
-    assert post(client, hook_upload(), None).status_code == 401
-    assert post(client, hook_upload(), "wrong").status_code == 401
-    server_token = hub.add_source("server2")
-    r = post(client, hook_upload(), server_token)
-    assert r.status_code == 400 and "pilot token" in r.text
-    assert post(client, hook_upload(token=hub.token), None).status_code == 200  # the token in the body
+def test_who_may_send(hub, tmp_path):
+    body = hook_upload()
+    # A player on this hub's server, from the address the server sees them at: no token needed. Credited under
+    # the server's name for them.
+    r = post(client_at(hub, HOME), hook_upload(pilot="whatever the hook says"), None)
+    assert r.status_code == 200, r.text
+    assert client_at(hub).get("/api/v1/passes", params={"days": 0}).json() == []  # a track: waits for the server's report
+    hub.ingest(1, *server_report())
+    assert [x["pilot"] for x in client_at(hub).get("/api/v1/passes", params={"days": 0}).json()] == ["Wrycu"]
+    # From the LAN (the hub sees the LAN address, the DCS server another): trusted too.
+    assert post(client_at(hub, "192.168.1.50"), body, None).status_code == 200
+    # Anyone else, or another player's UCID, needs a token; a server agent token isn't one.
+    assert post(client_at(hub, "8.8.4.4"), body, None).status_code == 401
+    assert post(client_at(hub, HOME), {**body, "ucid": "someone else"}, None).status_code == 401
+    assert post(client_at(hub, "8.8.4.4"), body, hub.add_source("server2")).status_code == 401
+    assert post(client_at(hub, "8.8.4.4"), body, hub.token).status_code == 200
+    assert post(client_at(hub, "8.8.4.4"), hook_upload(token=hub.token), None).status_code == 200  # token in the body
+
+
+def test_our_servers_or_any(tmp_path):
+    for accept, expected in (("ours", 403), ("any", 200)):
+        hub = make_hub(tmp_path / accept, pilot_hook_accept=accept)
+        # Flown somewhere else: this hub's servers never saw this UCID.
+        r = post(client_at(hub, "8.8.4.4"), {**hook_upload(), "ucid": "flown elsewhere"}, hub.token)
+        assert r.status_code == expected, r.text
+    with pytest.raises(ValueError):
+        Hub(f"sqlite:///{tmp_path / 'x.db'}", tmp_path / "x", pilot_hook_accept="maybe")
+
+
+def test_is_this_player_here(hub):
+    here = lambda address, ucid=UCID: client_at(hub, address).get("/api/v1/pilot-hook/here", params={"ucid": ucid}).json()["here"]  # noqa: E731
+    assert here(HOME) and here("192.168.1.50")
+    assert not here("8.8.4.4")  # nobody can look players up from elsewhere
+    assert not here(HOME, "someone else")
+    hub.report_players(1, [])  # Wrycu left
+    assert not here(HOME)
+    # A player still counts as having flown here for a while (their last approach can arrive late).
+    assert post(client_at(hub, HOME), hook_upload(), None).status_code == 200
+    # Only server agents report players.
+    r = client_at(hub).post("/api/v1/players", json={"players": []}, headers={"Authorization": f"Bearer {hub.token}"})
+    assert r.status_code == 403
 
 
 def test_invalid_uploads(hub):
-    client = TestClient(create_app(hub))
+    client = client_at(hub)
     assert post(client, hook_upload(aircraft="A-10C"), hub.token).status_code == 400
     body = hook_upload()
     body["csv"] = body["csv"].replace("aoa,", "angle,", 1)
@@ -108,7 +154,7 @@ def test_invalid_uploads(hub):
 
 
 def test_upload_is_credited_to_the_tokens_pilot(hub):
-    client = TestClient(create_app(hub))
+    client = client_at(hub)
     hub.ingest(1, *server_report())
     post(client, hook_upload(pilot="CVW-17 | Wrycu"), hub.token)
     assert [a.name for a in hub.pilot_aliases("Wrycu")] == ["CVW-17 | Wrycu"]
