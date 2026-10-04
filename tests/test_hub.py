@@ -136,3 +136,17 @@ def test_upload_command(hub, client, token, monkeypatch, capsys):
     assert "(already uploaded)" in capsys.readouterr().out
     (row,) = client.get("/api/v1/passes", params={"days": 0}).json()
     assert row["wire"] == 3
+
+
+def test_pass_page_card_zooms(client, token):
+    import xml.etree.ElementTree as ET
+    pass_id = upload(client, token, PASS_FILES[0]).json()["pass_id"]
+    page = client.get(f"/passes/{pass_id}").text
+    assert 'class="panel card zoomable"' in page and f'data-src="/passes/{pass_id}/card.svg?zoom=1"' in page
+    assert "card-zoom-reset" in page and "ZOOM" not in page
+    svg = client.get(f"/passes/{pass_id}/card.svg", params={"zoom": 1, "near": 0, "far": 300}).text
+    root = ET.fromstring(svg)
+    assert (float(root.get("data-near")), float(root.get("data-far"))) == (0.0, 300.0) and "zoomed in" in svg
+    narrow = ET.fromstring(client.get(f"/passes/{pass_id}/card.svg", params={"near": 100, "far": 101}).text)
+    assert float(narrow.get("data-far")) - float(narrow.get("data-near")) >= 15  # at least MIN_ZOOM_M
+    assert "drag across" not in client.get(f"/passes/{pass_id}/card.svg").text  # hover previews: no hint

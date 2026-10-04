@@ -74,8 +74,8 @@ h1 .modex { color: var(--muted); font-weight: 600; margin-left: 6px; }
   border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); }
 #tc-pop svg { display: block; width: 100%; height: auto; }
 #tc-pop .loading { color: var(--muted); padding: 24px; text-align: center; }
-#overlay { position: relative; cursor: crosshair; user-select: none; }
-#overlay.loading svg { opacity: 0.5; }
+.zoomable { position: relative; cursor: crosshair; user-select: none; }
+.zoomable.loading svg { opacity: 0.5; }
 .zoom-sel { position: absolute; top: 0; bottom: 0; background: rgba(9, 105, 218, 0.12);
   border-left: 1px solid #0969da; border-right: 1px solid #0969da; pointer-events: none; }
 .zoom-reset { font: inherit; font-size: 12px; font-weight: 400; margin-left: 8px; padding: 2px 8px; border-radius: 6px;
@@ -207,7 +207,12 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
     used = track_source or p.source.name
     listed = "<br>".join(_report(r, len(reports) > 1 and r.source.name == used) for r in reports)
     dl += f"<dt>{'Reports' if len(reports) > 1 else 'Source'}</dt><dd>{listed}</dd>"
-    card = f'<div class="panel card">{card_svg}</div>' if card_svg else f'<p class="empty-state">{escape(error or "")}</p>'
+    if card_svg:
+        card = (f'<p class="sub"><button id="card-zoom-reset" class="zoom-reset" hidden>Reset zoom</button></p>'
+                f'<div class="panel card zoomable" id="trap-card" data-src="/passes/{p.id}/card.svg?zoom=1" '
+                f'data-reset="card-zoom-reset">{card_svg}</div><script>{ZOOM_SCRIPT}</script>')
+    else:
+        card = f'<p class="empty-state">{escape(error or "")}</p>'
     body = (f'<p class="sub"><a href="/">← Greenie board</a> · <a href="/passes/{p.id}/acmi">Download ACMI</a></p>'
             f"<h1>{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}</h1>"
             f'<dl class="facts">{dl}</dl>{card}')
@@ -375,65 +380,75 @@ CARD_PREVIEW_SCRIPT = """
 
 # Drag across the overlay to zoom into that stretch of the approach (redrawn by the server, so the scales
 # and labels adapt); "Reset zoom" or a double-click goes back to the whole approach.
-OVERLAY_ZOOM_SCRIPT = """
+# Drag across a chart (the trap card, or the pilot's traps overlaid) to zoom into that stretch of the approach;
+# double-click or the reset button to see it all again. Each `.zoomable` box has `data-src` (its SVG's URL,
+# which takes `near`/`far`) and `data-reset` (its reset button's id); its SVG carries its current view.
+ZOOM_SCRIPT = """
 (() => {
-  const box = document.getElementById('overlay');
-  const reset = document.getElementById('zoom-reset');
-  if (!box) return;
-  const sel = document.createElement('div');
-  sel.className = 'zoom-sel';
-  sel.hidden = true;
-  box.appendChild(sel);
-  let drag = null, dragged = false;
-  const along = (svg, clientX) => {
-    const r = svg.getBoundingClientRect();
-    const px = (clientX - r.left) * svg.viewBox.baseVal.width / r.width;
-    const near = +svg.dataset.near, far = +svg.dataset.far;
-    const f = Math.min(1, Math.max(0, (px - +svg.dataset.padL) / +svg.dataset.plotW));
-    return far - f * (far - near);
-  };
-  const load = async (near, far) => {
-    const url = near === null ? box.dataset.src : box.dataset.src + '&near=' + near.toFixed(1) + '&far=' + far.toFixed(1);
-    box.classList.add('loading');
-    try {
-      const r = await fetch(url);
-      if (r.ok) {
-        box.querySelector('svg').outerHTML = await r.text();
-        reset.hidden = near === null;
-      }
-    } finally {
-      box.classList.remove('loading');
-    }
-  };
-  box.addEventListener('mousedown', (e) => {
-    const svg = box.querySelector('svg');
-    if (e.button !== 0 || !svg) return;
-    drag = { x: e.clientX, svg };
-    dragged = false;
-    e.preventDefault();
-  });
-  window.addEventListener('mousemove', (e) => {
-    if (!drag) return;
-    if (Math.abs(e.clientX - drag.x) > 4) dragged = true;
-    if (!dragged) return;
-    const r = box.getBoundingClientRect();
-    sel.hidden = false;
-    sel.style.left = (Math.min(drag.x, e.clientX) - r.left) + 'px';
-    sel.style.width = Math.abs(e.clientX - drag.x) + 'px';
-  });
-  window.addEventListener('mouseup', (e) => {
-    if (!drag) return;
-    const d = drag;
-    drag = null;
+  for (const box of document.querySelectorAll('.zoomable')) {
+    const reset = document.getElementById(box.dataset.reset);
+    const sel = document.createElement('div');
+    sel.className = 'zoom-sel';
     sel.hidden = true;
-    if (!dragged) return;
-    const a = along(d.svg, d.x), b = along(d.svg, e.clientX);
-    load(Math.min(a, b), Math.max(a, b));
-  });
-  // A drag that ends on a line isn't a click on it.
-  box.addEventListener('click', (e) => { if (dragged) { e.preventDefault(); e.stopPropagation(); dragged = false; } }, true);
-  box.addEventListener('dblclick', () => load(null, null));
-  reset.addEventListener('click', () => load(null, null));
+    box.appendChild(sel);
+    let drag = null, dragged = false;
+    const along = (svg, clientX) => {
+      const r = svg.getBoundingClientRect();
+      const px = (clientX - r.left) * svg.viewBox.baseVal.width / r.width;
+      const near = +svg.dataset.near, far = +svg.dataset.far;
+      const f = Math.min(1, Math.max(0, (px - +svg.dataset.padL) / +svg.dataset.plotW));
+      return far - f * (far - near);
+    };
+    const load = async (near, far) => {
+      const url = new URL(box.dataset.src, location.href);
+      if (near === null) {
+        url.searchParams.delete('near');
+        url.searchParams.delete('far');
+      } else {
+        url.searchParams.set('near', near.toFixed(1));
+        url.searchParams.set('far', far.toFixed(1));
+      }
+      box.classList.add('loading');
+      try {
+        const r = await fetch(url);
+        if (r.ok) {
+          box.querySelector('svg').outerHTML = await r.text();
+          if (reset) reset.hidden = near === null;
+        }
+      } finally {
+        box.classList.remove('loading');
+      }
+    };
+    box.addEventListener('mousedown', (e) => {
+      const svg = box.querySelector('svg');
+      if (e.button !== 0 || !svg) return;
+      drag = { x: e.clientX, svg };
+      dragged = false;
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!drag) return;
+      if (Math.abs(e.clientX - drag.x) > 4) dragged = true;
+      if (!dragged) return;
+      const r = box.getBoundingClientRect();
+      sel.hidden = false;
+      sel.style.left = (Math.min(drag.x, e.clientX) - r.left) + 'px';
+      sel.style.width = Math.abs(e.clientX - drag.x) + 'px';
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      sel.hidden = true;
+      if (!dragged) return;
+      const a = along(d.svg, d.x), b = along(d.svg, e.clientX);
+      load(Math.min(a, b), Math.max(a, b));
+    });
+    // A drag that ends on a line isn't a click on it.
+    box.addEventListener('click', (e) => { if (dragged) { e.preventDefault(); e.stopPropagation(); dragged = false; } }, true);
+    box.addEventListener('dblclick', () => load(null, null));
+    if (reset) reset.addEventListener('click', () => load(null, null));
+  }
 })();
 """
 
@@ -483,8 +498,9 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
             f'<h2>Results</h2><ul class="themes">{results}</ul>'
             f'<h2>These passes (oldest → newest)</h2><div class="recent">{cells}</div></div>'
             + (f'<h2>Traps overlaid <button id="zoom-reset" class="zoom-reset" hidden>Reset zoom</button></h2>'
-               f'<div class="panel card" id="overlay" data-src="{escape(overlay_src)}">{overlay_svg}</div>'
-               f"<script>{OVERLAY_ZOOM_SCRIPT}</script>" if overlay_svg else "")
+               f'<div class="panel card zoomable" id="overlay" data-src="{escape(overlay_src)}" data-reset="zoom-reset">'
+               f'{overlay_svg}</div>'
+               f"<script>{ZOOM_SCRIPT}</script>" if overlay_svg else "")
             + f'<div id="tc-pop" hidden></div><script>{CARD_PREVIEW_SCRIPT}</script>')
     return _page(f"{name}: recent passes", body)
 

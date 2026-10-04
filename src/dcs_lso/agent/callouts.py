@@ -30,9 +30,11 @@ MAX_SRS_RADIOS = 10  # radios one SRS client announces
 MAX_CALL_AGE_S = 1.5
 
 # Bolter: the hook touched the landing area, and the jet is then this far past the last wire
-# still holding at least this fraction of its touchdown speed (an arrestment has taken about
-# 30% off by then; a bolter at full power holds or gains speed).
-BOLTER_PAST_LAST_WIRE_M = 60.0
+# still holding at least this fraction of its touchdown speed (a bolter at full power holds or gains
+# speed). Past where any arrestment stops, as the server sees it: a server's copy of a client's jet lags
+# through the arrestment. On a wire-4 trap (2026-10-04) it held full speed until 69 m past wire 4 and
+# stopped 98 m past it, so at 60 m that trap was called a bolter.
+BOLTER_PAST_LAST_WIRE_M = 110.0
 BOLTER_SPEED_RATIO = 0.85
 # Trap: after touchdown, the deck-relative speed falls below this fraction of the touchdown
 # speed (only an arresting wire stops a jet that quickly; a bolter or touch-and-go keeps it).

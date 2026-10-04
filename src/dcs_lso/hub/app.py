@@ -33,6 +33,17 @@ BOARD_COLUMNS = 20
 MIN_ZOOM_M = 15.0  # the narrowest stretch the overlay zooms to
 
 
+def _view(near: float | None, far: float | None) -> tuple[float, float] | None:
+    """A zoomed view of the approach from `near`/`far` (meters short of the aim point), kept within the chart and
+    at least MIN_ZOOM_M wide; None for the whole approach."""
+    if near is None or far is None:
+        return None
+    near, far = max(min(near, far), OVERLAY_MIN_M), min(max(near, far), OVERLAY_MAX_M)
+    if far - near < MIN_ZOOM_M:
+        near, far = (near + far - MIN_ZOOM_M) / 2, (near + far + MIN_ZOOM_M) / 2
+    return near, far
+
+
 def _client_ip(request: Request) -> str | None:
     """The address a request came from. Behind a reverse proxy on the same machine, uvicorn already puts the
     client's address here (from X-Forwarded-For, trusted only from 127.0.0.1 by default)."""
@@ -416,13 +427,7 @@ def create_app(hub: Hub) -> FastAPI:
         found = hub.pilot_trends(name, passes)
         if found is None:
             raise HTTPException(404, "no such pilot")
-        view = None
-        if near is not None and far is not None:
-            near, far = max(min(near, far), OVERLAY_MIN_M), min(max(near, far), OVERLAY_MAX_M)
-            if far - near < MIN_ZOOM_M:
-                near, far = (near + far - MIN_ZOOM_M) / 2, (near + far + MIN_ZOOM_M) / 2
-            view = (near, far)
-        svg = render_overlay(hub.overlay(found.rows), uid="ov", title=f"{name}: passes overlaid", view=view)
+        svg = render_overlay(hub.overlay(found.rows), uid="ov", title=f"{name}: passes overlaid", view=_view(near, far))
         return Response(svg, media_type="image/svg+xml")
 
     @app.get("/", response_class=HTMLResponse)
@@ -452,23 +457,27 @@ def create_app(hub: Hub) -> FastAPI:
         try:
             result = hub.load_pass(p, reports)
             svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls,
-                              night=bool(p.night))
+                              night=bool(p.night), zoom_hint=True)
             return pages.pass_page(p, svg, reports=reports, track_source=result.track_source)
         except (IngestError, OSError) as exc:
             return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports)
 
     @app.get("/passes/{pass_id}/card.svg")
-    def pass_card(pass_id: int) -> Response:
-        """The pass's trap card on its own (e.g. previewed on hover)."""
+    def pass_card(pass_id: int, request: Request, near: float | None = None, far: float | None = None,
+                  zoom: bool = False) -> Response:
+        """The pass's trap card on its own (e.g. previewed on hover); with `near`/`far` (meters short of the aim
+        point), zoomed to that stretch of the approach. `zoom`: for the pass page, which zooms by dragging."""
         p = _get(pass_id)
         if p.merged_into_id is not None:
-            return RedirectResponse(f"/passes/{p.merged_into_id}/card.svg", status_code=307)
+            query = f"?{request.url.query}" if request.url.query else ""  # keep the zoom
+            return RedirectResponse(f"/passes/{p.merged_into_id}/card.svg{query}", status_code=307)
         try:
             result = hub.load_pass(p)
         except (IngestError, OSError) as exc:
             raise HTTPException(404, f"trap card unavailable: {exc}") from exc
-        svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"hover{p.id}", calls=p.calls,
-                          night=bool(p.night))
+        view = _view(near, far)
+        svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}" if zoom else f"hover{p.id}",
+                          calls=p.calls, night=bool(p.night), view=view, zoom_hint=zoom)
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=300"})
 
     @app.get("/passes/{pass_id}/acmi")

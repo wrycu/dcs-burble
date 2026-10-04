@@ -90,3 +90,19 @@ def test_lineup_view_shows_the_deck_and_wires():
     assert sum(e.get("class") == "tc-wire-caught" for e in wires) == 2  # the (estimated) caught wire, in both
     decks = [e for e in root.iter() if e.get("class") == "tc-deck"]
     assert len(decks) == 2
+
+
+def test_card_zooms_into_a_stretch_of_the_approach():
+    (p,) = find_passes(load_recording(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi"))
+    calls = [{"time": 0.0, "along": 250.0, "call": "power"}, {"time": 1.0, "along": 900.0, "call": "you're high"}]
+    full = render_card(p, grade_pass(p), calls=calls, zoom_hint=True)
+    root = ET.fromstring(full)
+    assert (float(root.get("data-near")), float(root.get("data-far"))) == (-40.0, 1481.6)
+    assert "0.5 nm" in full and "drag across a chart to zoom" in full
+    zoomed = render_card(p, grade_pass(p), calls=calls, view=(-40.0, 300.0), zoom_hint=True)
+    root = ET.fromstring(zoomed)
+    assert (float(root.get("data-near")), float(root.get("data-far"))) == (-40.0, 300.0)
+    assert "200 ft" in zoomed and "0.5 nm" not in zoomed and "zoomed in" in zoomed
+    # Only the calls in view get a marker (all are still listed below the card).
+    assert zoomed.count('class="tc-call"') == 1 and "re high (0.49 nm)" in zoomed
+    assert "drag across" not in render_card(p, grade_pass(p))  # offline cards: no hint

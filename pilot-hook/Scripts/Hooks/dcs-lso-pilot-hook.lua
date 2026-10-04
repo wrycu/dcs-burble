@@ -25,7 +25,7 @@ local GIVE_UP_S = 24 * 3600
 local dir = lfs.writedir() .. 'Logs/dcs-lso/'
 local hubs = {}                 -- { url, host, port, path, token, ip, here, here_at, retry_at }
 local context = {}              -- ucid, name, server, mission, started (this session)
-local previous = nil            -- the last session's context (files written as it ended)
+local previous = nil            -- the last session's context (files written as it ended), kept in session.txt
 local files = {}                -- name -> { done = { [hub index] = true }, first_seen }
 local request                   -- the one HTTP request in flight
 local last_scan, send_to_all = -SCAN_EVERY_S, false
@@ -131,6 +131,34 @@ local function read_file(path)
     if key then meta[key] = value elseif not line:match('^#') then csv[#csv + 1] = line end
   end
   return meta, table.concat(csv, '\n')
+end
+
+-- The session (mission, account, server) saved to a file, so approaches written as a mission ends (the
+-- recorder's last flush comes after the uploader stops) are stamped correctly in the next session, even after
+-- DCS restarts.
+local KEYS = { 'mission', 'ucid', 'name', 'server', 'started' }
+
+local function save_session(ctx)
+  pcall(lfs.mkdir, dir)
+  local f = io.open(dir .. 'session.txt', 'w')
+  if not f then return end
+  for _, key in ipairs(KEYS) do
+    if ctx[key] then f:write(key, '=', (tostring(ctx[key]):gsub('[\r\n]', ' ')), '\n') end
+  end
+  f:close()
+end
+
+local function load_session()
+  local f = io.open(dir .. 'session.txt', 'r')
+  if not f then return nil end
+  local ctx = {}
+  for line in f:lines() do
+    local key, value = line:match('^([%w_]+)=(.*)$')
+    if key then ctx[key] = value end
+  end
+  f:close()
+  ctx.started = tonumber(ctx.started)
+  return ctx.mission and ctx or nil
 end
 
 -- The session an approach file was flown in, written into the file when the uploader first sees it (so
@@ -241,11 +269,13 @@ local callbacks = {}
 
 function callbacks.onSimulationStart()
   load_settings()
+  previous = load_session() or previous
   context = { mission = DCS.getMissionName and DCS.getMissionName() or '', started = os.time() }
   if DCS.isMultiplayer and DCS.isMultiplayer() then
     local me = net.get_player_info(net.get_my_player_id()) or {}
     context.ucid, context.name, context.server = me.ucid, me.name, net.get_server_host and net.get_server_host() or nil
   end
+  save_session(context)
 end
 
 -- Approaches written as the mission ends belong to it: stamp them now, keep this session for any written

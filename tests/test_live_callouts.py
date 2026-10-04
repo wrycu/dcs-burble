@@ -242,14 +242,17 @@ def srs_server_port(tmp_path_factory):
 
 
 @pytest.mark.parametrize(("name", "outcome"), [
-    ("20260927-204347_Wrycu_3209s", Call.BOLTER),
-    ("20260927-204347_Wrycu_3348s", Call.BOLTER),
-    ("20260927-204347_Wrycu_4013s", Call.TRAPPED),
-    ("20260927-204347_Wrycu_4769s", Call.TRAPPED_WAVED_OFF),  # trapped through our wave-off
-    ("20260928-025423_New_callsign_86s", Call.TRAPPED),
+    ("passes/20260927-204347_Wrycu_3209s", Call.BOLTER),
+    ("passes/20260927-204347_Wrycu_3348s", Call.BOLTER),
+    ("passes/20260927-204347_Wrycu_4013s", Call.TRAPPED),
+    ("passes/20260927-204347_Wrycu_4769s", Call.TRAPPED_WAVED_OFF),  # trapped through our wave-off
+    ("passes/20260928-025423_New_callsign_86s", Call.TRAPPED),
+    # A real wire-4 trap after our wave-off (2026-10-04), as the server agent saw it: the server's copy of the
+    # jet held full speed until 69 m past wire 4. It was called a bolter when the bolter line was 60 m past it.
+    ("live/wire4-trap-server", Call.TRAPPED_WAVED_OFF),
 ])
 def test_bolter_or_welcome_is_called_once(tmp_path, clips, name, outcome):
-    _, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / f"{name}.zip.acmi", tmp_path / "edge", clips))
+    _, _, sink = asyncio.run(run_collector(FIXTURES / f"{name}.zip.acmi", tmp_path / "edge", clips))
     said = [call for call, _ in sink.said]
     called = [c for c in said if c in (Call.BOLTER, Call.TRAPPED, Call.TRAPPED_WAVED_OFF)]
     assert called == [outcome] and said[-1] is outcome

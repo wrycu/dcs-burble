@@ -21,7 +21,9 @@ from ..acmi import Recording, Sample
 ARMED_ABOVE_M = 170.0  # back above this (the 600 ft pattern is 183 m): ready for the next approach
 APPROACH_BELOW_M = 120.0  # an approach starts below this (~3/4 nm on glideslope)
 DECK_BELOW_M = 60.0  # ...and only counts if the jet gets this low (deck height is ~20 m)
-STOPPED_SPEED_MS = 3.0
+# Stopped: after a trap the jet still moves with the carrier (up to ~16 m/s over the map), so any ground speed
+# below what an aircraft flies at counts (it was 3 m/s, which never ended an approach on a moving carrier).
+STOPPED_SPEED_MS = 25.0
 STOPPED_DURATION_S = 5.0
 
 

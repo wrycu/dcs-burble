@@ -39,10 +39,12 @@ def lua_samples() -> str:
         t = s.transform
         rows.append(f"{{{s.time + JOINED_S:.4f},{t.v:.3f},{t.alt:.3f},{t.u:.3f},{math.radians(t.heading):.6f},"
                     f"{math.radians(t.pitch):.6f},{math.radians(t.roll):.6f},{s.aoa or 0:.3f},{t.lat:.7f},{t.lon:.7f}}}")
-    # Keep the frames coming for a while after the track ends (the jet sits on deck).
+    # Keep the frames coming after the track ends: the jet sits on deck, moving with the carrier at 14 m/s
+    # (north), so over the map it never stands still.
     last = rows[-1].strip("{}").split(",")
-    for i in range(1, 200):
-        rows.append("{" + ",".join([f"{float(last[0]) + i * 0.1:.4f}", *last[1:]]) + "}")
+    for i in range(1, 400):
+        moved = [f"{float(last[0]) + i * 0.1:.4f}", f"{float(last[1]) + i * 1.4:.3f}", *last[2:]]
+        rows.append("{" + ",".join(moved) + "}")
     return "{" + ",\n".join(rows) + "}"
 
 
@@ -64,6 +66,7 @@ LoGetAngleOfAttack = function() return samples[i][8] end
 LoGetPilotName = function() return 'Wrycu' end
 dofile(RECORDER_PATH)
 for n = 1, #samples do i = n; LuaExportAfterNextFrame() end
+print('LOG mission ends')
 LuaExportStop()
 print('CHAINED ' .. chained)
 """
@@ -78,6 +81,9 @@ def recorded(tmp_path_factory) -> Path:
     chained = int(next(line for line in out.stdout.splitlines() if line.startswith("CHAINED")).split()[1])
     files = sorted((root / "Logs" / "dcs-lso").glob("approach-*.csv"))
     assert len(files) == 1, out.stdout
+    logs = [line for line in out.stdout.splitlines() if line.startswith("LOG ")]
+    # Written a few seconds after the trap (on deck), not only when the mission ends.
+    assert logs.index("LOG mission ends") > next(i for i, line in enumerate(logs) if "written" in line)
     return files[0], chained
 
 
@@ -144,17 +150,37 @@ for n = 1, 400 do clock = clock + 0.1; callbacks.onSimulationFrame() end
 """
 
 
-def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool) -> tuple[list[str], Path]:
+def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool,
+                 previous_session: str | None = None) -> tuple[list[str], Path]:
     out_dir = tmp_path / "Logs" / "dcs-lso"
     out_dir.mkdir(parents=True)
-    # Written during this session (the uploader stamps it with the session's mission, account and server).
+    # Written during this session (the uploader stamps it with the session's mission, account and server)...
     shutil.copy(approach, out_dir / approach.name)
+    if previous_session is not None:
+        # ...or as the previous session ended (a file from before this session started).
+        (out_dir / "session.txt").write_text(previous_session)
+        text = (out_dir / approach.name).read_text()
+        (out_dir / approach.name).write_text(re_written.sub("# written_at=1000", text))
     stubs = UPLOADER_STUBS.replace("'MISSION'", repr(MISSION)).replace("'UCID'", repr(UCID)).replace("'HOME'", repr(HOME))
     script = f"UPLOADER_PATH = {str(UPLOADER)!r}\n" + stubs
     out = subprocess.run([luajit(), "-", f"{tmp_path}/", "true" if send_to_all else "false"], input=script.encode(),
                          capture_output=True, check=True).stdout.decode()  # bytes: keep HTTP's \r\n
     requests = [part.split("\nREQUEST>>>")[0] for part in out.split("<<<REQUEST\n")[1:]]
     return requests, out_dir
+
+
+import re  # noqa: E402
+
+re_written = re.compile(r"# written_at=\d+")
+
+
+def test_a_file_from_the_last_session_is_stamped_with_it(tmp_path, recorded):
+    previous = f"mission=the previous mission\nucid={UCID}\nname=Wrycu\nserver=10.0.0.1:10308\nstarted=900\n"
+    requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False, previous_session=previous)
+    (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
+    assert (json.loads(body)["mission"], json.loads(body)["server"]) == ("the previous mission", "10.0.0.1:10308")
+    # This session is saved for next time.
+    assert f"mission={MISSION}" in (tmp_path / "Logs" / "dcs-lso" / "session.txt").read_text()
 
 
 def split(request: str) -> tuple[str, dict, str]:

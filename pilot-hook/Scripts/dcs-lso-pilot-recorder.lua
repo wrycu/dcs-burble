@@ -16,7 +16,9 @@ do
   -- Approaches, as the hub finds them (dcs_lso.detect.approaches): from above pattern altitude to below
   -- APPROACH_BELOW_M, counting only if it gets down near deck height; it ends climbing away or stopped.
   local ARMED_ABOVE_M, APPROACH_BELOW_M, DECK_BELOW_M = 170, 120, 60
-  local STOPPED_SPEED_MS, STOPPED_DURATION_S = 3, 5
+  -- Stopped: on deck after a trap the jet still moves with the carrier (up to ~16 m/s), so 'stopped' is any
+  -- ground speed below what an aircraft flies at.
+  local STOPPED_SPEED_MS, STOPPED_DURATION_S = 25, 5
   local MAX_APPROACH_S = 600
   local AIRCRAFT = { ['FA-18C_hornet'] = true }  -- aircraft the hubs grade
   local HEADER = 't,x,y,z,heading,pitch,bank,aoa,lat,lon'

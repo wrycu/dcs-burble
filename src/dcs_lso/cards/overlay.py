@@ -14,7 +14,8 @@ from ..detect import PassResult
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
 from ..grading import grade_name
 from ..grading.grade import GLIDESLOPE_DEG, LINEUP_DEG, POSITIONS
-from .svg import (FT, NM, PAD_L, PLOT_W, STYLE, WIDTH, X_MAX_M, X_MIN_M, Axis, _clip, _f, _poly,
+from .svg import (FT, NM, PAD_L, PLOT_W, STYLE, WIDTH, X_MAX_M, X_MIN_M, Axis, _clip, _distance_axis_view, _f,
+                  _poly, _step,
                   deck_top)
 
 # Grade colours (light, dark), shared with the greenie board.
@@ -57,37 +58,6 @@ def _track(item: OverlayPass, points: list[tuple[float, float]], latest: bool) -
     line = f'<polyline class="{cls}" points="{_poly(points)}"><title>{escape(item.label)}</title></polyline>'
     data = f' data-pass="{item.pass_id}"' if item.pass_id is not None else ""
     return f'<a href="{escape(item.href)}"{data}>{line}</a>' if item.href else line
-
-
-def _step(span: float, steps: tuple[float, ...], max_ticks: int) -> float:
-    """The smallest step that keeps the number of ticks across `span` within `max_ticks`."""
-    return next((st for st in steps if span / st <= max_ticks), steps[-1])
-
-
-def _distance_axis_view(top: float, height: float, x: Axis, near: float, far: float, out: list[str]) -> None:
-    """Distance grid and labels for any stretch of the approach, plus the groove positions in view."""
-    # Round nautical miles for long stretches; round feet when zoomed in close.
-    if (far - near) / NM > 0.3:
-        unit, scale, steps = "nm", NM, (0.05, 0.1, 0.25, 0.5)
-    else:
-        unit, scale, steps = "ft", FT, (10, 25, 50, 100, 200, 250, 500)
-    step = _step((far - near) / scale, steps, 8)
-    tick = math.ceil(near / scale / step) * step
-    while tick <= far / scale + 1e-9:
-        px = x(tick * scale)
-        label = f"{tick:g} nm" if unit == "nm" else f"{tick:,.0f} ft"
-        out.append(f'<line class="tc-grid" x1="{_f(px)}" y1="{_f(top)}" x2="{_f(px)}" y2="{_f(top + height)}"/>')
-        out.append(f'<text class="tc-muted" x="{_f(px)}" y="{_f(top + height + 14)}" font-size="11" '
-                   f'text-anchor="middle">{label}</text>')
-        tick = round(tick + step, 6)
-    for pos, (outer, inner) in POSITIONS.items():
-        if near <= outer <= far:
-            px = x(outer)
-            out.append(f'<line class="tc-pos" x1="{_f(px)}" y1="{_f(top)}" x2="{_f(px)}" y2="{_f(top + height)}"/>')
-        lo, hi = max(inner, near), min(outer, far)
-        if hi - lo > (far - near) * 0.06:  # label the position where enough of it is in view
-            out.append(f'<text class="tc-muted" x="{_f(x((lo + hi) / 2))}" y="{_f(top + 13)}" font-size="12" '
-                       f'font-weight="600" text-anchor="middle">{pos.value}</text>')
 
 
 def render_overlay(items: list[OverlayPass], uid: str = "ov", title: str = "",

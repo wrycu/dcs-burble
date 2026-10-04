@@ -171,6 +171,37 @@ def _distance_axis(top: float, height: float, x: Axis, out: list[str]) -> None:
                    f'text-anchor="middle">{pos.value}</text>')
 
 
+def _step(span: float, steps: tuple[float, ...], max_ticks: int) -> float:
+    """The smallest step that keeps the number of ticks across `span` within `max_ticks`."""
+    return next((st for st in steps if span / st <= max_ticks), steps[-1])
+
+
+def _distance_axis_view(top: float, height: float, x: Axis, near: float, far: float, out: list[str]) -> None:
+    """Distance grid and labels for any stretch of the approach, plus the groove positions in view."""
+    # Round nautical miles for long stretches; round feet when zoomed in close.
+    if (far - near) / NM > 0.3:
+        unit, scale, steps = "nm", NM, (0.05, 0.1, 0.25, 0.5)
+    else:
+        unit, scale, steps = "ft", FT, (10, 25, 50, 100, 200, 250, 500)
+    step = _step((far - near) / scale, steps, 8)
+    tick = math.ceil(near / scale / step) * step
+    while tick <= far / scale + 1e-9:
+        px = x(tick * scale)
+        label = f"{tick:g} nm" if unit == "nm" else f"{tick:,.0f} ft"
+        out.append(f'<line class="tc-grid" x1="{_f(px)}" y1="{_f(top)}" x2="{_f(px)}" y2="{_f(top + height)}"/>')
+        out.append(f'<text class="tc-muted" x="{_f(px)}" y="{_f(top + height + 14)}" font-size="11" '
+                   f'text-anchor="middle">{label}</text>')
+        tick = round(tick + step, 6)
+    for pos, (outer, inner) in POSITIONS.items():
+        if near <= outer <= far:
+            px = x(outer)
+            out.append(f'<line class="tc-pos" x1="{_f(px)}" y1="{_f(top)}" x2="{_f(px)}" y2="{_f(top + height)}"/>')
+        lo, hi = max(inner, near), min(outer, far)
+        if hi - lo > (far - near) * 0.06:  # label the position where enough of it is in view
+            out.append(f'<text class="tc-muted" x="{_f(x((lo + hi) / 2))}" y="{_f(top + 13)}" font-size="12" '
+                       f'font-weight="600" text-anchor="middle">{pos.value}</text>')
+
+
 def _clip(clip_id: str, top: float, height: float, out: list[str]) -> None:
     out.append(f'<defs><clipPath id="{clip_id}"><rect x="{PAD_L}" y="{_f(top)}" width="{PLOT_W}" '
                f'height="{_f(height)}"/></clipPath></defs>')
@@ -224,13 +255,21 @@ def _wrap(prefix: str, items: list[str], size: float, width: float) -> list[list
 
 
 def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Axis, wire: int | None,
-               on_speed: tuple[float, float], uid: str, out: list[str], calls: list[dict]) -> None:
+               on_speed: tuple[float, float], uid: str, out: list[str], calls: list[dict],
+               view: tuple[float, float] | None = None) -> None:
     top, h = SIDE_TOP, SIDE_H
     glide = frame.aircraft.glideslope
     ideal_far = X_MAX_M * math.tan(math.radians(glide))
-    peak = max([s.hook_height for s in samples if s.along > 0] + [0.0])
-    y_hi = min(max(ideal_far * 1.45, peak * 1.05, 40.0), 260.0)
-    y = Axis(-6.0, y_hi, top + h, top)
+    if view is None:
+        peak = max([s.hook_height for s in samples if s.along > 0] + [0.0])
+        y_lo, y_hi = -6.0, min(max(ideal_far * 1.45, peak * 1.05, 40.0), 260.0)
+    else:  # zoomed in: fit the heights in view (and the ideal glideslope there)
+        near, far = view
+        ideal = lambda along: max(along, 0.0) * math.tan(math.radians(glide))  # noqa: E731
+        heights = [s.hook_height for s in samples if near <= s.along <= far] + [ideal(near), ideal(far)]
+        pad = max(1.5, (max(heights) - min(heights)) * 0.12)
+        y_lo, y_hi = max(min(heights) - pad, -6.0), max(heights) + pad
+    y = Axis(y_lo, y_hi, top + h, top)
     out.append(f'<text class="tc-text" x="{PAD_L}" y="{top - 6}" font-size="13" font-weight="600">'
                f'Glideslope (hook height above deck)</text>')
     _clip(f"{uid}-side", top, h, out)
@@ -249,16 +288,25 @@ def _side_view(p: PassResult, frame: DeckFrame, samples: list[PassSample], x: Ax
         out.append(f'<line class="{cls}" x1="{_f(x(along))}" y1="{_f(y(0) - 5)}" x2="{_f(x(along))}" y2="{_f(y(0) + 3)}"/>')
     for cls, run in _runs(samples, on_speed):
         out.append(f'<polyline class="tc-track tc-{cls}" points="{_poly([(x(s.along), y(s.hook_height)) for s in run])}"/>')
-    _call_markers([c for c in calls if c["call"] not in LINEUP_VALUES], samples, x,
+    _call_markers(_in_view([c for c in calls if c["call"] not in LINEUP_VALUES], view), samples, x,
                   lambda s: y(s.hook_height), top, h, out)
     out.append("</g>")
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top + h}" x2="{PAD_L + PLOT_W}" y2="{top + h}"/>')
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top}" x2="{PAD_L}" y2="{top + h}"/>')
-    _distance_axis(top, h, x, out)
-    step_ft = 100 if y_hi / FT > 300 else 50
-    for ft in range(0, int(y_hi / FT) + 1, step_ft):
-        py = y(ft * FT)
-        out.append(f'<text class="tc-muted" x="{PAD_L - 6}" y="{_f(py + 4)}" font-size="11" text-anchor="end">{ft} ft</text>')
+    if view is None:
+        _distance_axis(top, h, x, out)
+        step_ft = 100 if y_hi / FT > 300 else 50
+        for ft in range(0, int(y_hi / FT) + 1, step_ft):
+            py = y(ft * FT)
+            out.append(f'<text class="tc-muted" x="{PAD_L - 6}" y="{_f(py + 4)}" font-size="11" text-anchor="end">{ft} ft</text>')
+    else:
+        _distance_axis_view(top, h, x, view[0], view[1], out)
+        step_ft = _step((y_hi - y_lo) / FT, (1, 2, 5, 10, 25, 50, 100, 200), 8)
+        ft = math.ceil(y_lo / FT / step_ft) * step_ft
+        while ft <= y_hi / FT:
+            out.append(f'<text class="tc-muted" x="{PAD_L - 6}" y="{_f(y(ft * FT) + 4)}" font-size="11" '
+                       f'text-anchor="end">{ft:g} ft</text>')
+            ft += step_ft
     if wire:
         label = f"#{wire}" if p.wire is not None else f"#{wire} est."
         out.append(f'<text class="tc-muted" x="{_f(x(frame.wire_along[wire - 1]))}" y="{_f(y(0) - 9)}" font-size="11" '
@@ -280,10 +328,17 @@ def deck_top(frame: DeckFrame, x: Axis, y: Axis, out: list[str], caught: int | N
 
 
 def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float], uid: str, out: list[str],
-              calls: list[dict], frame: DeckFrame | None = None, wire: int | None = None) -> None:
+              calls: list[dict], frame: DeckFrame | None = None, wire: int | None = None,
+              view: tuple[float, float] | None = None) -> None:
     top, h = TOP_TOP, TOP_H
-    reach = max([abs(s.lateral) for s in samples if s.along > 0] + [0.0])
-    half = min(max(reach * 1.1, X_MAX_M * math.tan(math.radians(LINEUP_DEG[2])) * 1.2), 200.0)
+    if view is None:
+        reach = max([abs(s.lateral) for s in samples if s.along > 0] + [0.0])
+        half = min(max(reach * 1.1, X_MAX_M * math.tan(math.radians(LINEUP_DEG[2])) * 1.2), 200.0)
+    else:  # zoomed in: fit what's in view, and the whole deck width once the deck is in view
+        near, far = view
+        half = max(max([abs(s.lateral) for s in samples if near <= s.along <= far] + [0.0]) * 1.15, 3.0)
+        if frame is not None and near < frame.carrier.ramp_along_m:
+            half = max(half, max(abs(lat) for ends in frame.wire_ends for _, lat in ends) * 1.15)
     y = Axis(-half, half, top + h, top)  # + lateral (right of centerline) is up: the LSO's view from behind
     out.append(f'<text class="tc-text" x="{PAD_L}" y="{top - 6}" font-size="13" font-weight="600">'
                f'Lineup (right of centerline is up)</text>')
@@ -296,14 +351,22 @@ def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float],
     out.append(f'<line class="tc-ideal" x1="{_f(x(X_MIN_M))}" y1="{_f(y(0))}" x2="{_f(x(X_MAX_M))}" y2="{_f(y(0))}"/>')
     for cls, run in _runs(samples, on_speed):
         out.append(f'<polyline class="tc-track tc-{cls}" points="{_poly([(x(s.along), y(s.lateral)) for s in run])}"/>')
-    _call_markers([c for c in calls if c["call"] in LINEUP_VALUES], samples, x, lambda s: y(s.lateral), top, h, out)
+    _call_markers(_in_view([c for c in calls if c["call"] in LINEUP_VALUES], view), samples, x,
+                  lambda s: y(s.lateral), top, h, out)
     out.append("</g>")
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top + h}" x2="{PAD_L + PLOT_W}" y2="{top + h}"/>')
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top}" x2="{PAD_L}" y2="{top + h}"/>')
-    _distance_axis(top, h, x, out)
+    if view is None:
+        _distance_axis(top, h, x, out)
+    else:
+        _distance_axis_view(top, h, x, view[0], view[1], out)
     for m in (-half * 0.8, 0.0, half * 0.8):
         out.append(f'<text class="tc-muted" x="{PAD_L - 6}" y="{_f(y(m) + 4)}" font-size="11" '
                    f'text-anchor="end">{m / FT:+.0f} ft</text>')
+
+
+def _in_view(calls: list[dict], view: tuple[float, float] | None) -> list[dict]:
+    return calls if view is None else [c for c in calls if view[0] <= c["along"] <= view[1]]
 
 
 def _table(grade: GradeResult, out: list[str]) -> None:
@@ -341,21 +404,27 @@ def _legend(on_speed: tuple[float, float], out: list[str]) -> None:
 
 
 def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc",
-                calls: list[dict] | None = None, night: bool = False) -> str:
+                calls: list[dict] | None = None, night: bool = False, view: tuple[float, float] | None = None,
+                zoom_hint: bool = False) -> str:
     """`uid` prefixes element ids, so several cards can be inlined in one page. `calls` are the
     live LSO calls made during the pass ({"time", "along", "call"}), if any. `night`: flown at night
-    (marked with a black dot, as on the greenie board)."""
+    (marked with a black dot, as on the greenie board). `view`: the stretch of the approach to show, as
+    (near, far) meters short of the aim point (zoomed in); default the whole approach. The root element
+    carries the view (data-near/data-far) so a page can zoom by dragging; `zoom_hint` says so on the card."""
     calls = sorted(calls or [], key=lambda c: c["time"])
     listed = _wrap("LSO calls:", [f"{c['call'].capitalize()} ({c['along'] / NM:.2f} nm)" for c in calls],
                    12, PLOT_W) if calls else []
     height = HEIGHT + (len(listed) * CALLS_LINE_H + 8 if listed else 0)
     aircraft = AIRCRAFT[p.aircraft_type]
     frame = DeckFrame(CARRIERS[p.carrier_type], aircraft)
-    samples = [s for s in p.samples if X_MIN_M <= s.along <= X_MAX_M * 1.05]
-    x = Axis(X_MAX_M, X_MIN_M, PAD_L, PAD_L + PLOT_W)
+    near, far = view if view else (X_MIN_M, X_MAX_M)
+    margin = (far - near) * 0.05  # keep the lines running to the plot edges
+    samples = [s for s in p.samples if near - margin <= s.along <= far + margin]
+    x = Axis(far, near, PAD_L, PAD_L + PLOT_W)
     out: list[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" class="tc" viewBox="0 0 {WIDTH} {height}" '
-        f'width="{WIDTH}" height="{height}" role="img" aria-label="Trap card: {escape(p.pilot)} {escape(grade.text)}">',
+        f'width="{WIDTH}" height="{height}" role="img" aria-label="Trap card: {escape(p.pilot)} {escape(grade.text)}" '
+        f'data-near="{near:.1f}" data-far="{far:.1f}" data-pad-l="{PAD_L}" data-plot-w="{PLOT_W}">',
         f"<style>{STYLE}</style>",
         f'<rect class="tc-bg" width="{WIDTH}" height="{height}" rx="10"/>',
     ]
@@ -382,10 +451,14 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
         out.append(f'<text class="tc-muted" x="{gx}" y="72" font-size="11" text-anchor="end">'
                    f'DCS LSO: {escape(dcs)}</text>')
     _legend(aircraft.on_speed_aoa, out)
+    if zoom_hint:
+        hint = "drag across a chart to zoom" if view is None else "zoomed in · double-click to reset"
+        out.append(f'<text class="tc-muted" x="{PAD_L + PLOT_W}" y="{TOP_TOP - 6}" font-size="11" '
+                   f'text-anchor="end">{hint}</text>')
     _side_view(p, frame, samples, x, p.wire if p.wire is not None else p.wire_estimate, aircraft.on_speed_aoa,
-               uid, out, calls)
+               uid, out, calls, view)
     _top_view(samples, x, aircraft.on_speed_aoa, uid, out, calls, frame,
-              p.wire if p.wire is not None else p.wire_estimate)
+              p.wire if p.wire is not None else p.wire_estimate, view)
     _table(grade, out)
     for i, line in enumerate(listed):
         text = escape(", ".join(line)) + ("," if i < len(listed) - 1 else "")
