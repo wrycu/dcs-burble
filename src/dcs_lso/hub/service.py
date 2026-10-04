@@ -603,6 +603,27 @@ class Hub:
 
     # -- pilot settings ---------------------------------------------------------------------------
 
+    def register_pilot(self, name: str, password: str) -> str:
+        """A pilot joins this board before flying here: claims a name with a password (then they can create
+        pilot tokens and claim other names). Returns the name as stored."""
+        name = (name or "").strip()
+        if not name or len(name) > 100 or any(ord(c) < 32 for c in name):
+            raise ValueError("enter a name of up to 100 characters")
+        if is_default_pilot(name):
+            raise ValueError("DCS's default name can't be used; set your own pilot name in DCS")
+        if len(password or "") < MIN_PASSWORD_LENGTH:
+            raise ValueError(f"use a password of at least {MIN_PASSWORD_LENGTH} characters")
+        with self.sessions.begin() as s:
+            if s.scalar(select(PilotAlias).where(PilotAlias.name == name)) is not None:
+                raise PermissionError(f"{name!r} is already another pilot's name")
+            existing = s.scalar(select(Pilot).where(Pilot.name == name))
+            if existing is not None:
+                if existing.password_hash is not None:
+                    raise PermissionError(f"{name!r} is already taken")
+                raise FileExistsError(name)  # on the board, unclaimed: set the password on their settings page
+            s.add(Pilot(name=name, password_hash=hash_password(password)))
+        return name
+
     def set_pilot_password(self, name: str, new: str, current: str | None = None) -> None:
         """Set (first time: claims the name) or change a pilot's password."""
         if len(new or "") < MIN_PASSWORD_LENGTH:

@@ -165,6 +165,36 @@ def create_app(hub: Hub) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.get("/join", response_class=HTMLResponse)
+    def join() -> str:
+        return pages.join_page()
+
+    @app.post("/join", response_class=HTMLResponse)
+    def join_form(name: Annotated[str, Form()], password: Annotated[str, Form()], confirm: Annotated[str, Form()]):
+        if password != confirm:
+            return HTMLResponse(pages.join_page("the two passwords differ", name), status_code=400)
+        try:
+            stored = hub.register_pilot(name, password)
+        except FileExistsError as exc:
+            return HTMLResponse(pages.join_page(name=name, existing=str(exc)), status_code=409)
+        except (PermissionError, ValueError) as exc:
+            return HTMLResponse(pages.join_page(str(exc), name), status_code=400)
+        done = quote("Welcome aboard! You can now create pilot tokens and claim other names.")
+        return RedirectResponse(f"/pilots/{quote(stored, safe='')}/settings?done={done}", status_code=303)
+
+    @app.post("/api/v1/pilots", status_code=201)
+    def register_api(name: Annotated[str, Form()], password: Annotated[str, Form()]) -> dict:
+        """Join the board: claim a pilot name with a password."""
+        try:
+            stored = hub.register_pilot(name, password)
+        except FileExistsError as exc:
+            raise HTTPException(409, f"{exc} is already on this board: set the password on their settings page") from exc
+        except PermissionError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"pilot": stored}
+
     @app.post("/api/v1/pilots/{name}/password")
     def pilot_password(name: str, new: Annotated[str, Form()], current: Annotated[str | None, Form()] = None) -> dict:
         """Set a pilot's password (the first time, this claims the name) or change it (needs `current`)."""

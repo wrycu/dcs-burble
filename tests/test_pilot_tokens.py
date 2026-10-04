@@ -156,3 +156,27 @@ def test_pilot_uploader_sends_only_its_own_jet(tmp_path):
 
     agent = asyncio.run(run())
     assert {item.meta()["pass"]["pilot"] for item in agent.outbox.pending()} == {"Wrycu"}
+
+
+def test_joining_the_board_before_flying_here(hub):
+    client = TestClient(create_app(hub))
+    assert "Join this board" in client.get("/").text and "<form" in client.get("/join").text
+    r = client.post("/join", data={"name": " Goose ", "password": "goose password", "confirm": "goose password"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/pilots/Goose/settings?done=")
+    assert client.get("/pilots/Goose").status_code == 200  # a pilot page, with no passes yet
+    token = hub.create_pilot_token("Goose", "goose password", "my PC")  # tokens straight away
+    hub.ingest(hub.authenticate(token).id, *report(OWN, "Goose"))
+    assert board_pilots(hub)["Goose"] == 1
+    # Taken, unclaimed and invalid names.
+    r = client.post("/join", data={"name": "Goose", "password": "another one", "confirm": "another one"})
+    assert r.status_code == 400 and "already taken" in r.text
+    r = client.post("/join", data={"name": "Wrycu", "password": "first password", "confirm": "first password"})
+    assert r.status_code == 409 and "/pilots/Wrycu/settings" in r.text  # on the board: set the password there
+    for name, password, confirm in (("New callsign", "long enough", "long enough"), ("Iceman", "short", "short"),
+                                    ("Iceman", "long enough", "different!!")):
+        assert client.post("/join", data={"name": name, "password": password, "confirm": confirm}).status_code == 400
+    hub.add_pilot_token("Wrycu")
+    hub.ingest(hub.authenticate(hub.add_pilot_token("Wrycu")).id, *report(OTHER, "Wrycu (2)"))  # an alias of Wrycu's
+    assert client.post("/api/v1/pilots", data={"name": "Wrycu (2)", "password": "long enough"}).status_code == 409
+    assert client.post("/api/v1/pilots", data={"name": "Iceman", "password": "long enough"}).json() == {"pilot": "Iceman"}

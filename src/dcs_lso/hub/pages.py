@@ -157,7 +157,7 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
     else:
         table = '<p class="empty-state">No passes yet for this filter.</p>'
     body = (f"<h1>Greenie Board</h1><p class=\"sub\">{len(passes)} passes · {period} · "
-            '<a href="/upload">Upload a Tacview recording</a></p>'
+            '<a href="/upload">Upload a Tacview recording</a> · <a href="/join">Join this board</a></p>'
             f'{filters}<div class="panel">{table}{legend}</div>')
     return _page("Greenie Board", body)
 
@@ -487,6 +487,27 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
                f"<script>{OVERLAY_ZOOM_SCRIPT}</script>" if overlay_svg else "")
             + f'<div id="tc-pop" hidden></div><script>{CARD_PREVIEW_SCRIPT}</script>')
     return _page(f"{name}: recent passes", body)
+
+
+def join_page(error: str | None = None, name: str = "", existing: str | None = None) -> str:
+    """Join the board before flying here: choose a name and a password."""
+    note = f'<p class="error">{escape(error)}</p>' if error else ""
+    if existing:
+        note = (f'<p class="error">{escape(existing)} is already on this board. If that\'s you, '
+                f'<a href="/pilots/{quote(existing, safe="")}/settings">set your password on your settings page</a>.</p>')
+    form = (
+        '<form class="upload" method="post" action="/join">'
+        '<p class="sub">Choose the name you fly under in DCS and a password. With it you can create pilot tokens '
+        "(to send your passes here from your own PC) and claim other names you fly under. Passes reported under "
+        "this name count as yours.</p>"
+        f'<label>Pilot name <input name="name" required maxlength="100" value="{escape(name)}" autocomplete="username"></label>'
+        '<label>Password <input name="password" type="password" required minlength="8" autocomplete="new-password">'
+        '<span class="hint">At least 8 characters.</span></label>'
+        '<label>Password again <input name="confirm" type="password" required minlength="8" autocomplete="new-password">'
+        "</label><button type=\"submit\">Join</button></form>")
+    body = ('<p class="sub"><a href="/">← Greenie board</a></p><h1>Join this board</h1>'
+            f'{note}<div class="panel">{form}</div>')
+    return _page("Join this board", body)
 
 
 def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list | None = None,
