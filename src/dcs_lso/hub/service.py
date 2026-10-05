@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import secrets
 import statistics
@@ -30,6 +31,8 @@ from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_p
 from .storage import SliceStore
 
 START_TIME_TOLERANCE_S = 0.5
+log = logging.getLogger(__name__)
+
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
 PILOT_HOOKS = "pilot hooks"  # source of pilot hook uploads recognised without a token (see pilot_hook_access)
 INTERNAL_SOURCES = (PUBLIC_UPLOADS, PILOT_HOOKS)
@@ -122,6 +125,8 @@ class Hub:
         self.uploads_dir = Path(data_dir) / "uploads"
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self._fail_interrupted_uploads()
+        # Called with a landing's id after it's added or changed (None: many may have changed); see `ingest`.
+        self.listeners: list = []
         self._backfill_night()
         self._backfill_reported_names()
 
@@ -393,6 +398,21 @@ class Hub:
         return result
 
     def ingest(self, source_id: int, data: bytes, sidecar: dict) -> IngestResult:
+        """Store a report (a pass or an own-jet track) and merge it with others of the same landing; then tell the
+        listeners (e.g. Discord) which landing changed."""
+        result = self._ingest(source_id, data, sidecar)
+        self._notify(result.pass_id)
+        return result
+
+    def _notify(self, landing_id: int | None) -> None:
+        """`landing_id`: a landing that was added or changed; None: many may have (e.g. regrading)."""
+        for listener in self.listeners:
+            try:
+                listener(landing_id)
+            except Exception:  # a listener must never break storing passes
+                log.exception("hub listener failed")
+
+    def _ingest(self, source_id: int, data: bytes, sidecar: dict) -> IngestResult:
         try:
             info = sidecar["pass"]
             key = pass_key(sidecar)

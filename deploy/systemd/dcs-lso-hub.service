@@ -11,6 +11,11 @@ WantedBy=default.target
 
 [Service]
 WorkingDirectory=%h/dcs-lso
+# Optional settings, e.g. Discord (see `dcs-lso hub serve --help`):
+#   DCS_LSO_PUBLIC_URL=https://lso.example.com
+#   DCS_LSO_DISCORD_BOARD_WEBHOOK=https://discord.com/api/webhooks/...
+#   DCS_LSO_DISCORD_TRAPS_WEBHOOK=https://discord.com/api/webhooks/...
+EnvironmentFile=-%h/.config/dcs-lso/hub.env
 ExecStart=%h/.local/bin/uv run --frozen dcs-lso hub --data-dir %h/dcs-lso-data/central serve --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5

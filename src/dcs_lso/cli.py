@@ -258,7 +258,11 @@ def _hub_serve(args: argparse.Namespace) -> int:
 
     from .hub.app import create_app
 
-    uvicorn.run(create_app(_hub(args)), host=args.host, port=args.port)
+    hub = _hub(args)
+    if args.discord_board_webhook or args.discord_traps_webhook:
+        from .hub.discord import Discord
+        Discord(hub, args.discord_board_webhook, args.discord_traps_webhook, args.public_url or "")
+    uvicorn.run(create_app(hub), host=args.host, port=args.port)
     return 0
 
 
@@ -490,6 +494,14 @@ def main(argv: list[str] | None = None) -> int:
     serve = hub_sub.add_parser("serve", help="serve the API, greenie board and pass pages")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--public-url", default=os.environ.get("DCS_LSO_PUBLIC_URL"),
+                       help="the hub's address as people reach it (e.g. https://lso.example.com), for links in "
+                            "Discord messages [$DCS_LSO_PUBLIC_URL]")
+    serve.add_argument("--discord-board-webhook", default=os.environ.get("DCS_LSO_DISCORD_BOARD_WEBHOOK"),
+                       help="Discord webhook for the greenie board: one message, kept up to date by editing it "
+                            "[$DCS_LSO_DISCORD_BOARD_WEBHOOK]")
+    serve.add_argument("--discord-traps-webhook", default=os.environ.get("DCS_LSO_DISCORD_TRAPS_WEBHOOK"),
+                       help="Discord webhook for a post per landing, with its trap card [$DCS_LSO_DISCORD_TRAPS_WEBHOOK]")
     serve.set_defaults(func=_hub_serve)
     add_agent = hub_sub.add_parser("add-agent", help="add a server agent and print its server agent token")
     add_agent.add_argument("name")

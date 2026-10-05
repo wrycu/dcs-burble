@@ -40,7 +40,7 @@ AOA_CLASSES = ("fast", "sfast", "onspeed", "sslow", "slow")
 AOA_LABELS = {"fast": "Fast", "sfast": "Slightly fast", "onspeed": "On speed", "sslow": "Slightly slow",
               "slow": "Slow", "noaoa": "No AOA"}
 
-STYLE = """
+_LIGHT = """
 .tc { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
 .tc-bg { fill: #ffffff; }
 .tc-text { fill: #1f2328; }
@@ -68,7 +68,8 @@ STYLE = """
 .tc-rule { stroke: #d0d7de; stroke-width: 1; }
 .tc-call { fill: #ffffff; stroke: #1f2328; stroke-width: 2; }
 .tc-call-label { fill: #1f2328; font-weight: 600; }
-@media (prefers-color-scheme: dark) {
+"""
+_DARK = """
   .tc-bg { fill: #0d1117; }
   .tc-text { fill: #e6edf3; }
   .tc-muted { fill: #8d96a0; }
@@ -94,8 +95,12 @@ STYLE = """
   .tc-rule { stroke: #30363d; }
   .tc-call { fill: #0d1117; stroke: #e6edf3; }
   .tc-call-label { fill: #e6edf3; }
-}
 """
+# The card follows the viewer's light or dark mode; DARK_STYLE is always dark (e.g. images for Discord, where
+# there is no viewer to ask).
+STYLE = _LIGHT + "@media (prefers-color-scheme: dark) {\n" + _DARK + "}\n"
+DARK_STYLE = _LIGHT + _DARK
+
 
 
 # Live calls about lineup go on the lineup plot; the rest on the glideslope plot.
@@ -405,12 +410,13 @@ def _legend(on_speed: tuple[float, float], out: list[str]) -> None:
 
 def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc",
                 calls: list[dict] | None = None, night: bool = False, view: tuple[float, float] | None = None,
-                zoom_hint: bool = False) -> str:
+                zoom_hint: bool = False, dark: bool = False) -> str:
     """`uid` prefixes element ids, so several cards can be inlined in one page. `calls` are the
     live LSO calls made during the pass ({"time", "along", "call"}), if any. `night`: flown at night
     (marked with a black dot, as on the greenie board). `view`: the stretch of the approach to show, as
     (near, far) meters short of the aim point (zoomed in); default the whole approach. The root element
-    carries the view (data-near/data-far) so a page can zoom by dragging; `zoom_hint` says so on the card."""
+    carries the view (data-near/data-far) so a page can zoom by dragging; `zoom_hint` says so on the card.
+    `dark`: always the dark colours (otherwise they follow the viewer's light or dark mode)."""
     calls = sorted(calls or [], key=lambda c: c["time"])
     listed = _wrap("LSO calls:", [f"{c['call'].capitalize()} ({c['along'] / NM:.2f} nm)" for c in calls],
                    12, PLOT_W) if calls else []
@@ -425,7 +431,7 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
         f'<svg xmlns="http://www.w3.org/2000/svg" class="tc" viewBox="0 0 {WIDTH} {height}" '
         f'width="{WIDTH}" height="{height}" role="img" aria-label="Trap card: {escape(p.pilot)} {escape(grade.text)}" '
         f'data-near="{near:.1f}" data-far="{far:.1f}" data-pad-l="{PAD_L}" data-plot-w="{PLOT_W}">',
-        f"<style>{STYLE}</style>",
+        f"<style>{DARK_STYLE if dark else STYLE}</style>",
         f'<rect class="tc-bg" width="{WIDTH}" height="{height}" rx="10"/>',
     ]
     pilot = escape(p.pilot or f"id {p.aircraft_id:x}")
@@ -436,7 +442,7 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     if night:
         out.append(f'<circle cx="{PAD_L + 5}" cy="52" r="5" fill="#111" stroke="#fff" stroke-opacity="0.6"/>')
         out.append(f'<text class="tc-text" x="{PAD_L + 15}" y="56" font-size="12" font-weight="600">Night'
-                   f'<tspan class="tc-muted" font-weight="400"> · {escape(sub)}</tspan></text>')
+                   f'<tspan class="tc-muted" font-weight="400">\u00a0· {escape(sub)}</tspan></text>')
     else:
         out.append(f'<text class="tc-muted" x="{PAD_L}" y="56" font-size="12">{escape(sub)}</text>')
     gx = PAD_L + PLOT_W
