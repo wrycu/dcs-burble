@@ -345,3 +345,19 @@ def test_server_agent_reports_connected_players(tmp_path, hub):
     asyncio.run(run())
     assert hub.pilot_hook_here("fa26", "69.222.184.25") and hub.pilot_hook_here("b0b0", "10.0.0.9")
     assert not hub.pilot_hook_here("fa26", "8.8.4.4")
+
+
+def test_hook_feed_knows_who_is_a_player(tmp_path):
+    from dcs_lso.agent.service import HookFeed
+    from dcs_lso.dcslog import parse_hook_line
+
+    log_file = tmp_path / "dcs.log"
+    log_file.write_text("")
+    feed = HookFeed(log_file)
+    assert feed.player_names() is None  # nothing from the hook yet: can't tell AI from players
+    prefix = "2026-10-05 10:00:00.000 INFO    DCSLSO (Main): DCSLSO "
+    feed.add(parse_hook_line(prefix + '{"event":"slot","t":10,"player":"Host Pilot","unit":"Hornet 1"}'))  # a listen server's host
+    feed.add(parse_hook_line(prefix + '{"event":"players","t":11,"players":[{"ucid":"a","ip":"1.2.3.4","name":"Wrycu"}]}'))
+    assert feed.player_names() == {"Host Pilot", "Wrycu"}
+    feed.add(parse_hook_line(prefix + '{"event":"handler_installed","t":0}'))  # a new mission
+    assert feed.player_names() is None

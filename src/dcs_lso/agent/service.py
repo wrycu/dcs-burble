@@ -181,6 +181,20 @@ class HookFeed:
         modulation = Modulation.FM if raw.get("modulation") == 1 else Modulation.AM
         return Radio(round(frequency_hz / 1e6, 4), modulation)
 
+    def player_names(self) -> set[str] | None:
+        """Everyone known to be a player in this mission: the connected players now, and anyone the hook saw
+        take a slot (players who left since, and a listen server's host). None if the hook hasn't said (an
+        older hook, or nothing logged yet): then AI can't be told from players."""
+        with self._lock:
+            events = [e for e in self._events if e.event in ("players", "slot")]
+        if not events:
+            return None
+        names = {str(e.raw.get("player")) for e in events if e.event == "slot" and e.raw.get("player")}
+        for e in events:
+            if e.event == "players":
+                names |= {str(x.get("name")) for x in e.raw.get("players") or [] if isinstance(x, dict) and x.get("name")}
+        return names
+
     def slot_for(self, pilot: str | None, before: float) -> dict | None:
         """The aircraft a player was in (livery, side number, unit) at mission time `before`: their latest
         slot change logged by the hook in this mission."""
@@ -570,6 +584,12 @@ class Agent:
                      approach.start_time, approach.end_time, TAIL_S)
 
     def _queue(self, session: Session, result: PassResult) -> None:
+        players = getattr(self.hooks, "player_names", lambda: None)() if self.hooks is not None else None
+        if self.config.mode == "server" and players is not None and result.pilot not in players:
+            # AI: the LSO still talks it down (live calls don't come through here), but it isn't graded or
+            # put on the board.
+            log.info("pass by %s not uploaded (AI: not a player in this mission)", result.pilot or hex(result.aircraft_id))
+            return
         if self.config.mode == "pilot" and not _own_jet(result):
             # The pilot uploader sends only this PC's own jet (other players' jets are seen here at the
             # same rate the server sees them, and they aren't the pilot's to send).

@@ -522,3 +522,26 @@ def test_calls_go_out_on_the_frequency_set_in_the_mission(tmp_path, clips):
 
     sink = asyncio.run(run())
     assert sink.said and all(radio == Radio(127.75) for _, radio in sink.said)
+
+
+class PlayerHooks(WireHooks):
+    """The server hook's view: who is a player in this mission."""
+
+    def __init__(self, players: set[str] | None):
+        super().__init__(None)
+        self.players = players
+
+    def player_names(self):
+        return self.players
+
+
+@pytest.mark.parametrize(("players", "uploaded"), [
+    ({"Maverick"}, False),  # Wrycu isn't a player here: an AI jet as far as the server knows
+    ({"Wrycu"}, True),
+    (None, True),  # no player list from the hook (older hook): can't tell, so upload as before
+])
+def test_ai_passes_get_calls_but_are_not_uploaded(tmp_path, clips, players, uploaded):
+    collector, session, sink = asyncio.run(run_collector(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi",
+                                                         tmp_path / "edge", clips, hooks=PlayerHooks(players)))
+    assert any(call is Call.TRAPPED or call in WELCOMES for call, _ in sink.said)  # the LSO still talked to it
+    assert bool(collector.outbox.pending()) is uploaded
