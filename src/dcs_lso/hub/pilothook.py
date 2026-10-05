@@ -77,6 +77,9 @@ class HookUpload:
     # that hub's address: {"time", "along", "call"}, mission time.
     calls: list[dict] | None = None
     calls_from: str | None = None
+    # DCS's own LSO grade for the pass, from the pilot's debrief.log (e.g. "LSO: GRADE:OK : (LOAR)  WIRE# 1"):
+    # sent again once DCS has written it (at the end of the mission); a re-upload may add it.
+    dcs_grade: str | None = None
 
 
 def parse_upload(body: dict) -> HookUpload:
@@ -125,7 +128,12 @@ def parse_upload(body: dict) -> HookUpload:
                       sent_model_time=sent_model_time, livery=optional("livery"),
                       onboard_num=optional("onboard_num"), rows=rows, carrier=carrier,
                       sun_elevation=_number(body.get("sun_elevation")), calls=_calls(body.get("calls")),
-                      calls_from=optional("calls_from"))
+                      calls_from=optional("calls_from"), dcs_grade=_dcs_grade(body.get("dcs_grade")))
+
+
+def _dcs_grade(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text[:300] if text.startswith("LSO:") else None
 
 
 def _calls(value: object) -> list[dict] | None:
@@ -228,6 +236,10 @@ def hook_reports(upload: HookUpload, work_dir: Path) -> list[tuple[bytes, dict]]
         meta["clock"] = "mission"
         if upload.sun_elevation is not None:
             meta["sun_elevation"] = upload.sun_elevation
+        if upload.dcs_grade:
+            from ..dcslog import LsoGrade
+            grade = LsoGrade.parse(upload.dcs_grade)
+            meta["dcs"] = {"wire": grade.wire, "grade": {"raw": grade.raw}}
         if upload.calls:
             meta["calls"] = [c for c in upload.calls if start - 60 <= c["time"] <= end + 30]  # this pass's
             meta["calls_from"] = upload.calls_from

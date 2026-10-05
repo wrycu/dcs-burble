@@ -37,7 +37,11 @@ In DCS: **Options > Special > DCS-LSO**.
 - After each approach to deck height, the recorder writes it to `Saved Games/DCS/Logs/dcs-lso/`.
 - Where the server lets clients see other objects, the nearest carrier is recorded too. Then any hub can grade
   the pass on its own, even one whose community doesn't run that server.
-- The uploader sends it in the background while you fly. Sent files move to `Logs/dcs-lso/sent/`.
+- The uploader sends it in the background, while you fly and in the menus after the mission. Sent files move
+  to `Logs/dcs-lso/sent/`. The settings page shows how many are waiting, with a **Send now** button (also after
+  fixing a pilot token).
+- After the mission, DCS's own LSO grade for each trap (from `Logs/debrief.log`, when you used carrier comms) is
+  added and sent too.
 - With "send to all", the other hubs also get the live calls the LSO made on that server: the uploader asks the
   server's hub for them first, so those hubs get your pass up to a minute later.
 - Your trap shows up on the hub's greenie board, merged with the server's report of the same landing.

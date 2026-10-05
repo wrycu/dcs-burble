@@ -130,6 +130,11 @@ local options = { sendToAll = SEND_TO_ALL, hub1Url = 'http://hub1:8000', hub1Tok
 package.preload['optionsEditor'] = function() return { getOption = function(k) return options[k:gsub('^plugins%.DCS%-LSO%.', '')] end } end
 package.preload['lfs'] = function()
   return { writedir = function() return WRITEDIR end, mkdir = function(p) os.execute('mkdir -p "' .. p .. '"') end,
+           attributes = function(p)
+             local f = io.open(p); if not f then return nil end; f:close()
+             local h = io.popen('stat -c %Y "' .. p .. '"'); local m = tonumber(h:read('*l')); h:close()
+             return { modification = m }
+           end,
            dir = function(p)
              local names = {}
              local h = io.popen('ls -1 "' .. p .. '"')
@@ -177,14 +182,24 @@ DCS = { setUserCallbacks = function(c) callbacks = c end, getMissionName = funct
 net = { get_my_player_id = function() return 2 end,
         get_player_info = function() return { ucid = 'UCID', name = 'Wrycu', ipaddr = 'HOME' } end,
         get_server_host = function() return '192.168.1.238:10308' end }
+local menu_tick
+if WITH_UPDATE_MANAGER then
+  package.preload['UpdateManager'] = function() return { add = function(f) menu_tick = f end, delete = function() end } end
+end
 dofile(UPLOADER_PATH)
+DRIVER
+"""
+
+
+IN_MISSION = """
 callbacks.onSimulationStart()
 for n = 1, 400 do clock = clock + 0.1; callbacks.onSimulationFrame() end
 """
 
 
 def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool,
-                 previous_session: str | None = None, refuse: str = "") -> tuple[list[str], Path]:
+                 previous_session: str | None = None, refuse: str = "", driver: str = IN_MISSION,
+                 update_manager: bool = False) -> tuple[list[str], Path]:
     out_dir = tmp_path / "Logs" / "dcs-lso"
     out_dir.mkdir(parents=True)
     # Written during this session (the uploader stamps it with the session's mission, account and server)...
@@ -195,7 +210,8 @@ def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool,
         text = (out_dir / approach.name).read_text()
         (out_dir / approach.name).write_text(re_written.sub("# written_at=1000", text))
     stubs = UPLOADER_STUBS.replace("'MISSION'", repr(MISSION)).replace("'UCID'", repr(UCID)).replace("'HOME'", repr(HOME))
-    script = f"UPLOADER_PATH = {str(UPLOADER)!r}\n" + stubs
+    stubs = stubs.replace("DRIVER", driver)
+    script = f"UPLOADER_PATH = {str(UPLOADER)!r}\nWITH_UPDATE_MANAGER = {'true' if update_manager else 'false'}\n" + stubs
     out = subprocess.run([luajit(), "-", f"{tmp_path}/", "true" if send_to_all else "false", refuse], input=script.encode(),
                          capture_output=True, check=True).stdout.decode()  # bytes: keep HTTP's \r\n
     requests = [part.split("\nREQUEST>>>")[0] for part in out.split("<<<REQUEST\n")[1:]]
@@ -302,3 +318,99 @@ def test_another_communitys_hub_grades_it_on_its_own(tmp_path, recorded):
     with hub.sessions() as s:
         landing = hub.load_pass(s.get(Pass, report["pass_id"]))
     assert landing.outcome.value == "trap" and landing.wire_estimate == 2
+
+
+def test_sent_from_the_menus_after_the_mission(tmp_path, recorded):
+    """DCS's UpdateManager keeps the uploader going in the menus: an approach left when the mission ended (e.g.
+    written as the pilot quit) is sent straight away, not next session."""
+    driver = """
+local d = WRITEDIR .. 'Logs/dcs-lso/'
+local name = io.popen('ls -1 "' .. d .. '" | grep approach'):read('*l')
+os.rename(d .. name, WRITEDIR .. name)  -- not written yet
+callbacks.onSimulationStart()
+for n = 1, 100 do clock = clock + 0.1; callbacks.onSimulationFrame() end  -- in the mission: the hubs are asked
+callbacks.onSimulationStop()
+os.rename(WRITEDIR .. name, d .. name)  -- the recorder's last flush, as the mission ends
+assert(menu_tick, 'registered with UpdateManager')
+for n = 1, 300 do clock = clock + 0.1; menu_tick() end
+"""
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=False, driver=driver, update_manager=True)
+    (post,) = [split(r) for r in requests if r.startswith("POST")]
+    assert json.loads(post[2])["mission"] == MISSION  # stamped with the mission just left
+    assert list((out_dir / "sent").glob("approach-*.csv"))
+
+
+def test_dcs_grade_from_debrief_is_added_and_sent_again(tmp_path, recorded):
+    lines = recorded[0].read_text().splitlines()
+    header, carrier = lines.index("t,x,y,z,heading,pitch,bank,aoa,lat,lon"), lines.index("## carrier")
+    times = [float(line.split(",")[0]) for line in lines[header + 1:carrier]]
+    mark_t = (times[0] + times[-1]) / 2  # sometime during the approach
+    debrief = (f'events = {{ [1] = {{ type = "landing quality mark", t = {mark_t}, initiatorPilotName = "Wrycu", '
+               f'comment = "LSO: GRADE:OK : (LOAR)  WIRE# 2" }}, [2] = {{ type = "landing quality mark", t = {mark_t}, '
+               f'initiatorPilotName = "Someone else", comment = "LSO: GRADE:C : WIRE# 4" }} }}')
+    driver = f"""
+callbacks.onSimulationStart()
+for n = 1, 200 do clock = clock + 0.1; callbacks.onSimulationFrame() end  -- sent during the mission
+callbacks.onSimulationStop()
+local f = io.open(WRITEDIR .. 'Logs/debrief.log', 'w'); f:write({debrief!r}); f:close()  -- DCS writes it now
+for n = 1, 300 do clock = clock + 0.1; menu_tick() end
+"""
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=False, driver=driver, update_manager=True)
+    posts = [json.loads(split(r)[2]) for r in requests if r.startswith("POST")]
+    assert [p.get("dcs_grade") for p in posts] == [None, "LSO: GRADE:OK : (LOAR)  WIRE# 2"]  # the pilot's own
+    assert list((out_dir / "sent").glob("approach-*.csv"))
+
+
+def test_send_now_tries_again(tmp_path, recorded):
+    driver = """
+callbacks.onSimulationStart()
+for n = 1, 200 do clock = clock + 0.1; callbacks.onSimulationFrame() end
+local queued = DCSLSO_PILOT.status()
+print('QUEUED ' .. queued)
+local f = io.open(WRITEDIR .. 'Logs/dcs-lso/retry.flag', 'w'); f:write('retry'); f:close()  -- "Send now"
+for n = 1, 200 do clock = clock + 0.1; callbacks.onSimulationFrame() end
+"""
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=True, refuse="hub2.example.com", driver=driver)
+    to_hub2 = [r for r in requests if r.startswith("POST") and "Host: hub2.example.com" in r]
+    assert len(to_hub2) == 2  # refused once, tried again after "Send now"
+    assert (out_dir / "status.txt").read_text().startswith("queued=1")
+    assert not (out_dir / "retry.flag").exists()
+
+
+OPTIONS = ROOT / "Mods" / "Services" / "DCS-LSO" / "Options" / "optionsDb.lua"
+OPTIONS_STUBS = r"""
+WRITEDIR, SHARED = ...
+local chain = setmetatable({}, { __index = function(t, k) return function(self) return self end end })
+package.preload['Options.DbOption'] = function() return { new = function() return chain end } end
+package.preload['lfs'] = function()
+  return { writedir = function() return WRITEDIR end,
+           dir = function(p) local h = io.popen('ls -1 "' .. p .. '"'); local names = {}
+                             for n in h:lines() do names[#names + 1] = n end; h:close()
+                             local k = 0; return function() k = k + 1; return names[k] end end }
+end
+package.preload['UpdateManager'] = function() return { add = function() end, delete = function() end } end
+if SHARED == 'yes' then
+  DCSLSO_PILOT = { status = function() return 3, os.time() - 600 end, retry = function() print('RETRIED') end }
+end
+local db = dofile(OPTIONS_PATH)
+local label = { setText = function(self, text) print('LABEL ' .. text) end }
+local button = {}
+db.callbackOnShowDialog({ queueLabel = label, sendNowButton = button })
+button:onChange()
+db.callbackOnClose()
+"""
+
+
+@pytest.mark.parametrize("shared", [True, False])
+def test_settings_page_shows_the_queue_and_sends_now(tmp_path, recorded, shared):
+    out_dir = tmp_path / "Logs" / "dcs-lso"
+    out_dir.mkdir(parents=True)
+    shutil.copy(recorded[0], out_dir / recorded[0].name)
+    script = f"OPTIONS_PATH = {str(OPTIONS)!r}\n" + OPTIONS_STUBS
+    out = subprocess.run([luajit(), "-", f"{tmp_path}/", "yes" if shared else "no"], input=script, capture_output=True,
+                         text=True, check=True).stdout
+    labels = [line for line in out.splitlines() if line.startswith("LABEL")]
+    if shared:  # from the uploader itself
+        assert labels[0] == "LABEL 3 approaches waiting to send (oldest: 10 min ago)." and "RETRIED" in out
+    else:  # counted from the folder; "Send now" leaves a flag for the uploader
+        assert labels[0].startswith("LABEL 1 approach waiting to send") and (out_dir / "retry.flag").exists()

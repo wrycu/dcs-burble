@@ -241,3 +241,17 @@ def test_relaying_calls_to_another_hub(tmp_path):
         assert [c["call"] for c in s.get(Pass, relayed["pass_id"]).calls] == ["you're high", "power"]
     page = client_at(b).get(f"/passes/{relayed['pass_id']}").text
     assert "relayed by the pilot hook" in page and "lso.wrycu.com" in page and "Power (" in page
+
+
+def test_dcs_grade_added_by_a_later_upload(tmp_path):
+    """The pilot hook sends an approach again once DCS's debrief.log has its grade: the hub adds it."""
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    token = hub.add_pilot_token("Wrycu", "pilot hook")
+    client = client_at(hub, "8.8.4.4")
+    (first,) = post(client, carrier_upload(), token).json()["reports"]
+    (again,) = post(client, carrier_upload(dcs_grade="LSO: GRADE:OK : (LOAR)  WIRE# 2"), token).json()["reports"]
+    assert again["pass_id"] == first["pass_id"] and not again["created"]
+    with hub.sessions() as s:
+        landing = s.get(Pass, first["pass_id"])
+        assert landing.dcs_grade == "LSO: GRADE:OK : (LOAR)  WIRE# 2" and landing.wire == 2
+    assert "#2 (DCS)" in client.get(f"/passes/{first['pass_id']}").text

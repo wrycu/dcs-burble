@@ -107,6 +107,19 @@ dialog = {
 				["skin"] = EditBoxSkin,
 				["type"] = "EditBox",
 			},
+			["queueLabel"] = {
+				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 448, ["w"] = 600, ["h"] = 24 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "" },
+				["skin"] = LabelSkin,
+				["type"] = "Static",
+			},
+			["sendNowButton"] = {
+				["params"] = { ["bounds"] = { ["x"] = 676, ["y"] = 446, ["w"] = 160, ["h"] = 26 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "Try every hub again now", ["zindex"] = 0,
+					["tabOrder"] = 0, ["text"] = "$SEND_NOW" },
+				["skin"] = { ["params"] = { ["name"] = "buttonSkinAwacs" } },
+				["type"] = "Button",
+			},
 			["lsoHintLabel"] = {
 				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 392, ["w"] = 850, ["h"] = 40 },
 					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "$HINT" },
