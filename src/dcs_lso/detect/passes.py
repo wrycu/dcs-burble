@@ -43,12 +43,16 @@ MAX_MIN_HOOK_HEIGHT_M = 30.0
 ON_DECK_HOOK_HEIGHT_M = 0.5
 ON_DECK_MAX_LATERAL_M = 25.0
 ON_DECK_ALONG_RANGE_M = (-250.0, 40.0)
+# A track that ends on the deck faster than this was a crash (an arrested jet is nearly stopped by then; a
+# bolter's track goes on past the bow).
+CRASH_MIN_SPEED_MS = 30.0
 
 
 class Outcome(StrEnum):
     TRAP = "trap"
     BOLTER = "bolter"
     WAVEOFF = "waveoff"
+    CRASH = "crash"  # the jet's track ended on the deck, still at speed (destroyed)
     INCOMPLETE = "incomplete"
 
 
@@ -222,8 +226,11 @@ def _on_deck(s: PassSample) -> bool:
             and lo < s.along < hi)
 
 
-def classify(samples: list[PassSample], stopped: bool) -> Outcome:
+def classify(samples: list[PassSample], stopped: bool, track_ended: bool = False) -> Outcome:
+    """`track_ended`: the aircraft's track ends with the pass (nothing of it after its last sample)."""
     touched = any(_on_deck(s) for s in samples)
+    if track_ended and samples and _on_deck(samples[-1]) and samples[-1].ground_speed > CRASH_MIN_SPEED_MS:
+        return Outcome.CRASH
     if stopped and touched:
         return Outcome.TRAP
     if touched:
@@ -258,18 +265,18 @@ def _passes_for_pair(carrier: ObjectTrack, plane: ObjectTrack, timeline: Carrier
             if result:
                 yield result
             tracker = None
-    if tracker is not None:
-        result = _finish(carrier, plane, frame, tracker)
+    if tracker is not None:  # the aircraft's track ended during the pass
+        result = _finish(carrier, plane, frame, tracker, track_ended=True)
         if result:
             yield result
 
 
 def _finish(carrier: ObjectTrack, plane: ObjectTrack, frame: DeckFrame,
-            tracker: PassTracker) -> PassResult | None:
+            tracker: PassTracker, track_ended: bool = False) -> PassResult | None:
     samples = tracker.samples()
     if not samples or min(s.hook_height for s in samples) > MAX_MIN_HOOK_HEIGHT_M:
         return None
-    outcome = classify(samples, tracker.stopped)
+    outcome = classify(samples, tracker.stopped, track_ended)
     return PassResult(
         carrier_id=carrier.id,
         carrier_type=carrier.name,

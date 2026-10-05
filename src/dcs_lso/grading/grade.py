@@ -19,7 +19,7 @@ from enum import IntEnum, StrEnum
 from ..detect import Outcome, PassResult
 from ..geometry import AIRCRAFT
 
-GRADING_VERSION = "4"  # 4: speed on deck measured over 0.5 s (high-rate tracks stop, so traps aren't bolters); 3: wire estimated from the stop point; 2: 3.6 deg glideslope (as DCS); AOA derived from motion in the aircraft frame, with wind, not graded at AR
+GRADING_VERSION = "5"  # 5: crashes on deck are their own outcome, graded Cut (not bolters); 4: speed on deck measured over 0.5 s (high-rate tracks stop, so traps aren't bolters); 3: wire estimated from the stop point; 2: 3.6 deg glideslope (as DCS); AOA derived from motion in the aircraft frame, with wind, not graded at AR
 NM = 1852.0
 
 
@@ -287,6 +287,8 @@ def grade_pass(p: PassResult) -> GradeResult:
         grade = Grade.BOLTER
     elif p.outcome is Outcome.WAVEOFF:
         grade = Grade.WAVE_OFF
+    elif p.outcome is Outcome.CRASH:
+        grade = Grade.CUT  # as a real LSO grades an unsafe pass
     else:
         grade = Grade.NO_GRADE
     return GradeResult(GRADING_VERSION, grade, POINTS[grade], remarks, stats, not_counted, p.wire_estimate)

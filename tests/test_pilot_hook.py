@@ -265,3 +265,17 @@ def test_an_old_pilot_hook_is_told_to_update(hub):
     assert old == {"latest": PILOT_HOOK_VERSION, "update": True} and current["update"] is False
     lua = (Path(__file__).parents[1] / "pilot-hook/Scripts/Hooks/dcs-lso-pilot-hook.lua").read_text()
     assert f"local VERSION = {PILOT_HOOK_VERSION}\n" in lua  # bump both together
+
+
+def test_wire_check_measures_the_server_copy_against_the_pilots_own_track(hub, capsys):
+    hub.ingest(1, *server_report())
+    assert [r.known for r in hub.wire_check()] == [None]  # only the server's copy: the wire isn't known
+    post(client_at(hub), hook_upload(), hub.token)
+    (row,) = hub.wire_check()
+    assert (row.known, row.known_from) == (2, "own track")  # from the pilot hook's track
+    assert 5 < row.overshoot_m < 20 and row.signals.wire in (None, 2)
+    from dcs_lso.cli import main
+    data_dir = hub.store.root.parent
+    assert main(["hub", "--data-dir", str(data_dir), "--database-url", f"sqlite:///{data_dir.parent / 'lso.db'}",
+                 "wire-check"]) == 0
+    assert "the wire known on 1 (0 from DCS)" in capsys.readouterr().out

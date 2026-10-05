@@ -20,7 +20,7 @@ AI_TRAP = FIXTURES / "ai_hornet_trap_cvn75.zip.acmi"
 PASS_FILES = sorted((FIXTURES / "passes").glob("*.zip.acmi"))
 
 
-@pytest.mark.parametrize("path", [AI_TRAP, *PASS_FILES], ids=lambda p: p.stem)
+@pytest.mark.parametrize("path", [AI_TRAP, *PASS_FILES, FIXTURES / "live" / "crash-server.zip.acmi"], ids=lambda p: p.stem)
 def test_live_detection_matches_offline(path):
     parser, live = AcmiParser(), LivePassDetector()
     found = []
@@ -382,3 +382,38 @@ def test_a_jet_sitting_on_the_deck_departed_from_that_carrier():
     assert detector.departed_from(1, 2, before=600.0)  # a trap here later: "welcome home"
     assert not detector.departed_from(1, 2, before=60.0)  # not within 2 minutes of being on deck (the trap itself)
     assert not detector.departed_from(1, 3, before=600.0)  # another jet: never on this deck
+
+
+@pytest.mark.parametrize("name", ["crash-server", "crash-pilot-hook"])
+def test_a_crash_on_deck_is_not_a_bolter(name):
+    from dcs_lso.detect.passes import Outcome
+    from dcs_lso.grading import grade_pass
+    # Wrycu dove into the deck at about 100 m/s; the jet's track ends there (the server's copy: removed).
+    (result,) = find_passes(load_recording(FIXTURES / "live" / f"{name}.zip.acmi"))
+    assert result.outcome is Outcome.CRASH and grade_pass(result).grade.value == "C"
+
+
+def test_a_bolter_cut_off_by_the_end_of_the_stream_is_not_a_crash():
+    from dcs_lso.detect.passes import Outcome
+    parser, live = AcmiParser(), LivePassDetector()
+    found = []
+    for line in iter_lines(FIXTURES / "live" / "crash-server.zip.acmi"):
+        if line.startswith("-"):
+            break  # the stream ends before the jet is removed
+        for record in parser.feed(line):
+            found += live.feed(record)
+    assert [p.outcome for p in found + live.flush()] != [Outcome.CRASH]
+
+
+def test_the_hub_records_a_crash_and_regrading_corrects_old_bolters(tmp_path):
+    from dcs_lso.hub.db import Pass
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    hub.add_source("server1")
+    hub.ingest_recording(1, FIXTURES / "live" / "crash-server.zip.acmi")
+    with hub.sessions.begin() as s:
+        (p,) = s.query(Pass).all()
+        assert (p.outcome, p.grade.grade) == ("crash", "C")
+        p.outcome = "bolter"  # as stored before crashes were told apart
+    hub.regrade(force=True)
+    with hub.sessions() as s:
+        assert s.query(Pass).one().outcome == "crash"

@@ -340,6 +340,39 @@ def _hub_regrade(args: argparse.Namespace) -> int:
     return 0
 
 
+def _hub_wire_check(args: argparse.Namespace) -> int:
+    import statistics
+
+    from .detect.wire import SERVER_MAX_ERROR_M, SERVER_OVERSHOOT_M
+    rows = _hub(args).wire_check(args.days)
+    if not rows:
+        print("no traps with a server agent's copy of the jet")
+        return 0
+    print(f"{'landing':>7} {'report':>6}  {'when':16}  {'pilot':14} {'known':>5}  {'from':9}  {'overshoot':>9}  "
+          f"{'stop':>4} {'error':>6}  {'hook':>4}  {'says':>4}")
+    for r in rows:
+        g = r.signals
+        when = f"{r.occurred_at:%Y-%m-%d %H:%M}" if r.occurred_at else "?"
+        says = g.wire or "-"
+        verdict = "" if not r.known or g.wire is None else ("  right" if g.wire == r.known else "  WRONG")
+        print(f"{r.landing_id:>7} {r.report_id:>6}  {when:16}  {r.pilot[:14]:14} {r.known or '?':>5}  "
+              f"{r.known_from or '':9}  {'' if r.overshoot_m is None else f'{r.overshoot_m:+.1f} m':>9}  "
+              f"{g.stop_wire:>4} {g.stop_error_m:+5.1f}m  {g.hook_wire or '-':>4}  {says:>4}{verdict}")
+    known = [r for r in rows if r.known]
+    print(f"\n{len(rows)} traps, the wire known on {len(known)} ({sum(r.known_from == 'DCS' for r in known)} from DCS).")
+    if known:
+        over = [r.overshoot_m for r in known]
+        spread = f", sd {statistics.stdev(over):.1f}" if len(over) > 1 else ""
+        print(f"Overshoot: mean {statistics.mean(over):.1f} m{spread}, {min(over):.1f} to {max(over):.1f} "
+              f"(the correction used: {SERVER_OVERSHOOT_M} m).")
+        named = [r for r in known if r.signals.wire is not None]
+        print(f"Named (both signals agree, within {SERVER_MAX_ERROR_M} m): {len(named)} of {len(known)}, "
+              f"{sum(r.signals.wire == r.known for r in named)} right. Stop signal alone right: "
+              f"{sum(r.signals.stop_wire == r.known for r in known)}; hook signal alone right: "
+              f"{sum(r.signals.hook_wire == r.known for r in known)}.")
+    return 0
+
+
 def _upload(args: argparse.Namespace) -> int:
     import httpx
 
@@ -536,6 +569,10 @@ def main(argv: list[str] | None = None) -> int:
     regrade = hub_sub.add_parser("regrade", help="grade every stored pass with the current grading version")
     regrade.add_argument("--force", action="store_true", help="also redo passes already at the current version")
     regrade.set_defaults(func=_hub_regrade)
+    wire_check = hub_sub.add_parser("wire-check", help="measure the server-track wire signals on traps with a known "
+                                                       "wire (for naming the wire in the live welcome)")
+    wire_check.add_argument("--days", type=int, default=0, help="only the last N days (default: all)")
+    wire_check.set_defaults(func=_hub_wire_check)
     reset = hub_sub.add_parser("reset-password", help="clear a pilot's upload password (e.g. they forgot it)")
     reset.add_argument("pilot", help="the pilot's name, as on the board")
     reset.set_defaults(func=_hub_reset_password)

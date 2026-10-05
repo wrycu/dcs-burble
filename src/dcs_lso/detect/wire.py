@@ -17,6 +17,7 @@ wherever it's known. No estimate is given when the stop point isn't clearly at o
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..geometry import DeckFrame
@@ -43,3 +44,46 @@ def estimate_wire(samples: Sequence[PassSample], frame: DeckFrame) -> int | None
     errors = [abs(caught - along) for along in frame.wire_along]
     best = min(range(len(errors)), key=errors.__getitem__)
     return best + 1 if errors[best] <= MAX_ERROR_M else None
+
+
+# -- the wire from a server's copy of the jet (proposed, under test: PLAN #25) ----------------------------
+# A server's copy overshoots the stop (see above), by 8-17 m on the first five traps measured (mean 12.7).
+# Two signals, used together: the stop point corrected by the mean overshoot, and the next wire forward of
+# where the hook first reached the deck (wrong after a hook skip). `dcs-lso hub wire-check` measures both on a
+# hub's traps where the wire is known, to confirm the correction before the live welcome uses it.
+SERVER_OVERSHOOT_M = 12.7
+SERVER_MAX_ERROR_M = 4.0
+
+
+@dataclass(frozen=True, slots=True)
+class WireSignals:
+    stop_along: float  # the farthest forward point (the server's copy: past the real stop)
+    stop_wire: int  # nearest wire to the stop point plus the runout, corrected by SERVER_OVERSHOOT_M
+    stop_error_m: float  # how far that corrected point is from that wire
+    hook_down_along: float  # where the hook first reached deck height (interpolated)
+    hook_wire: int | None  # the next wire forward of that (None: past the last wire)
+
+    @property
+    def wire(self) -> int | None:
+        """The wire, when both signals agree and the corrected stop is close to it; else None."""
+        if self.stop_wire == self.hook_wire and abs(self.stop_error_m) <= SERVER_MAX_ERROR_M:
+            return self.stop_wire
+        return None
+
+
+def wire_signals(samples: Sequence[PassSample], frame: DeckFrame,
+                 overshoot_m: float = SERVER_OVERSHOOT_M) -> WireSignals | None:
+    """Both signals for a trap, or None if the aircraft's runout isn't known or there's no touchdown."""
+    runout = frame.aircraft.arrest_runout_m
+    touchdown = next((i for i, s in enumerate(samples) if s.hook_height <= 0.0 and s.along < 60.0), None)
+    if runout is None or not touchdown:
+        return None
+    a, b = samples[touchdown - 1], samples[touchdown]
+    down = a.along + a.hook_height / (a.hook_height - b.hook_height) * (b.along - a.along) \
+        if a.hook_height > 0.0 else a.along
+    stop = min(s.along for s in samples[touchdown:])
+    caught = stop + runout + overshoot_m
+    wires = frame.wire_along
+    nearest = min(range(len(wires)), key=lambda k: abs(caught - wires[k]))
+    hook = next((k + 1 for k, along in enumerate(wires) if along < down), None)
+    return WireSignals(stop, nearest + 1, caught - wires[nearest], down, hook)

@@ -91,7 +91,7 @@ class LivePassDetector:
                     finished.extend(self._aircraft_sample(track, sample))
         elif isinstance(record, ObjectRemoved):
             for key in [k for k in self._trackers if record.id in k]:
-                finished.extend(self._finish(key))
+                finished.extend(self._finish(key, track_ended=record.id == key[1]))  # e.g. destroyed
             self._carrier_pose.pop(record.id, None)
         return finished
 
@@ -167,12 +167,12 @@ class LivePassDetector:
         tracker, frame = entry
         return _finish(carrier, plane, frame, tracker)
 
-    def _finish(self, key: tuple[int, int]) -> list[PassResult]:
+    def _finish(self, key: tuple[int, int], track_ended: bool = False) -> list[PassResult]:
         tracker, frame = self._trackers.pop(key)
         if self.listener is not None:
             self.listener.pass_ended(*key)
         carrier, plane = self.tracks.get(key[0]), self.tracks.get(key[1])
         if carrier is None or plane is None:
             return []
-        result = _finish(carrier, plane, frame, tracker)
+        result = _finish(carrier, plane, frame, tracker, track_ended)
         return [result] if result else []

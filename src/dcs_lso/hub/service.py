@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 from ..acmi import ObjectTrack, Recording, Sample, load_recording
 from ..dcslog import Debrief, LsoGrade, load_debrief
 from ..detect import PassResult, find_passes
-from ..geometry import AIRCRAFT, WindProfile
+from ..detect.wire import WireSignals, wire_signals
+from ..geometry import AIRCRAFT, CARRIERS, DeckFrame, WindProfile
 from ..slices import is_default_pilot, own_pilots, slice_recording
 from ..sun import NIGHT_BELOW_DEG, is_night
 from ..cards.overlay import OverlayPass
@@ -104,6 +105,19 @@ class IngestResult:
     created: bool
     grade: str
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class WireCheck:
+    landing_id: int
+    report_id: int
+    pilot: str
+    occurred_at: datetime | None
+    carrier_type: str
+    known: int | None  # the wire caught, when known
+    known_from: str | None  # "DCS" or "own track"
+    signals: WireSignals
+    overshoot_m: float | None  # how far the server's stop point overshot the real one (known wire only)
 
 
 class Hub:
@@ -404,7 +418,9 @@ class Hub:
         s.flush()
 
     def _regrade(self, s: Session, row: Pass) -> GradeResult:
-        result = grade_pass(self.load_pass(row, self.reports(row, s), s))
+        loaded = self.load_pass(row, self.reports(row, s), s)
+        row.outcome = loaded.outcome.value  # from the best track (and the current detection)
+        result = grade_pass(loaded)
         current = next((g for g in row.grades if g.version == result.version), None)
         if current is not None:
             row.grades.remove(current)
@@ -957,6 +973,44 @@ class Hub:
             items.append(OverlayPass(result, g.grade if g else "", f"/passes/{p.id}",
                                      f"{grade_name(g.grade) if g else '?'}: {g.text if g else ''} · {when}"))
         return items
+
+    def wire_check(self, days: int = 0) -> list[WireCheck]:
+        """For PLAN #25: each trap's server copy (a server agent's report, derived AOA) with the wire it caught,
+        when known, and the two server-track wire signals (`detect.wire.wire_signals`). The known wire is DCS's,
+        else the estimate from a pilot's own track merged into the landing. `days`: 0 for all."""
+        q = (select(Pass).where(Pass.merged_into_id.is_(None), Pass.outcome == "trap",
+                                or_(Pass.kind.is_(None), Pass.kind != "track"))
+             .order_by(Pass.id).options(selectinload(Pass.slice), selectinload(Pass.source), selectinload(Pass.pilot)))
+        if days:
+            q = q.where(func.coalesce(Pass.occurred_at, Pass.created_at) >= datetime.now(UTC) - timedelta(days=days))
+        out = []
+        with self.sessions() as s:
+            for landing in s.scalars(q):
+                reports = self.reports(landing, s)
+                try:
+                    merged = self.load_pass(landing, reports, s)
+                except IngestError:
+                    continue
+                known, how = (landing.wire, "DCS") if landing.wire else (merged.wire_estimate, "own track")
+                for report in reports:
+                    if report.is_track:
+                        continue
+                    try:
+                        result = self.load_pass(report, [report], s)
+                    except IngestError:
+                        continue
+                    if not any(x.aoa_derived for x in result.samples):
+                        continue  # a recording PC's own jet, not a server's copy
+                    frame = DeckFrame(CARRIERS[result.carrier_type], AIRCRAFT[result.aircraft_type])
+                    signals = wire_signals(result.samples, frame)
+                    if signals is None:
+                        continue
+                    overshoot = None
+                    if known:
+                        overshoot = frame.wire_along[known - 1] - (signals.stop_along + frame.aircraft.arrest_runout_m)
+                    out.append(WireCheck(landing.id, report.id, landing.pilot.name, landing.occurred_at,
+                                         landing.carrier_type, known, how if known else None, signals, overshoot))
+        return out
 
     def regrade(self, force: bool = False) -> tuple[int, int]:
         """Grade every landing with the current grading version. Returns (regraded, unchanged)."""
