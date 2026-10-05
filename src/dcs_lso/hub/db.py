@@ -152,7 +152,14 @@ class Pass(Base):
 
     @property
     def is_track(self) -> bool:
-        return self.kind == "track"
+        """No carrier in this report: an own-jet track, or one shown as a DCS-only landing (see `is_dcs_only`)."""
+        return self.kind in ("track", "dcs")
+
+    @property
+    def is_dcs_only(self) -> bool:
+        """An own-jet track that no report with the carrier ever joined, but DCS's LSO graded: a landing graded
+        by DCS alone (no trap card). A report with the carrier still takes over if one arrives."""
+        return self.kind == "dcs"
 
     @property
     def grade(self) -> Grade | None:

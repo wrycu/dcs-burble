@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 from dcs_lso.acmi import load_recording
 from dcs_lso.detect import find_passes
 from dcs_lso.hub.app import create_app
-from dcs_lso.hub.db import Pass
+from dcs_lso.hub.db import Pass, Source
+from sqlalchemy import select
 from dcs_lso.hub.pilothook import HookUploadError, parse_upload
 from dcs_lso.hub.service import Hub
 from dcs_lso.slices import sidecar, slice_objects
@@ -279,3 +280,49 @@ def test_wire_check_measures_the_server_copy_against_the_pilots_own_track(hub, c
     assert main(["hub", "--data-dir", str(data_dir), "--database-url", f"sqlite:///{data_dir.parent / 'lso.db'}",
                  "wire-check"]) == 0
     assert "the wire known on 1 (0 from DCS)" in capsys.readouterr().out
+
+
+DCS_GRADE = "LSO: GRADE:(OK) : _LULX_ 3PTSIW  WIRE# 3"
+
+
+def other_communitys_hub(tmp_path) -> tuple[Hub, TestClient, str]:
+    """A hub with no server agent of its own: the pilot hook sends it everything, with a pilot token."""
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    return hub, client_at(hub, "8.8.4.4"), hub.add_pilot_token("Wrycu", "pilot hook")
+
+
+def test_a_track_with_dcss_grade_is_a_landing_graded_by_dcs(tmp_path):
+    hub, client, token = other_communitys_hub(tmp_path)
+    (track,) = post(client, hook_upload(), token).json()["reports"]  # no carrier visible: waits as a track
+    assert "waiting" in track["text"] and client.get("/api/v1/passes?days=0").json() == []
+    # After the mission: DCS's grade from debrief.log, sent again.
+    (again,) = post(client, hook_upload(dcs_grade=DCS_GRADE), token).json()["reports"]
+    assert again["pass_id"] == track["pass_id"] and again["grade"] == "(OK)"
+    (landing,) = client.get("/api/v1/passes?days=0").json()
+    assert (landing["outcome"], landing["wire"], landing["grade"], landing["text"]) == ("trap", 3, "(OK)", "(OK) : _LULX_ 3PTSIW")
+    page = client.get(f"/passes/{landing['id']}").text
+    assert "graded by DCS&#x27;s LSO only" in page or "graded by DCS's LSO only" in page
+    assert client.get(f"/passes/{landing['id']}/card.svg").status_code == 404
+    hub.regrade(force=True)  # stays as it is
+    assert client.get("/api/v1/passes?days=0").json()[0]["text"] == "(OK) : _LULX_ 3PTSIW"
+
+
+def test_a_track_sent_with_dcss_grade_the_first_time(tmp_path):
+    hub, client, token = other_communitys_hub(tmp_path)
+    (report,) = post(client, hook_upload(dcs_grade=DCS_GRADE), token).json()["reports"]  # e.g. sent after the mission
+    assert report["grade"] == "(OK)"
+    assert [p["id"] for p in client.get("/api/v1/passes?days=0").json()] == [report["pass_id"]]
+
+
+def test_a_report_with_the_carrier_takes_over_from_dcss_grade(tmp_path):
+    hub, client, token = other_communitys_hub(tmp_path)
+    (dcs_only,) = post(client, hook_upload(dcs_grade=DCS_GRADE), token).json()["reports"]
+    hub.add_source("server1")
+    with hub.sessions() as s:
+        server1 = s.scalar(select(Source.id).where(Source.name == "server1"))
+    hub.ingest(server1, *server_report())  # e.g. this community's server agent was late
+    (landing,) = client.get("/api/v1/passes?days=0").json()
+    assert landing["id"] != dcs_only["pass_id"] and dcs_only["pass_id"] in {r["id"] for r in landing["reports"]}
+    # Graded by us now (DCS's grade and wire are kept with it), with a trap card.
+    assert landing["wire"] == 3 and landing["dcs_grade"] == DCS_GRADE and landing["text"] != "(OK) : _LULX_ 3PTSIW"
+    assert client.get(f"/passes/{landing['id']}/card.svg").status_code == 200

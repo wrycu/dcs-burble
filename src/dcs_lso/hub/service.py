@@ -25,6 +25,7 @@ from ..slices import is_default_pilot, own_pilots, slice_recording
 from ..sun import NIGHT_BELOW_DEG, is_night
 from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
+from ..grading.grade import POINTS, dcs_only_grade, dcs_only_outcome
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
 from .db import Grade, Pass, Pilot, PilotAlias, PlayerSeen, Slice, Source, Upload, make_engine, make_sessionmaker
 from .pilothook import HookUploadError, hook_reports, parse_upload
@@ -329,6 +330,9 @@ class Hub:
     def load_pass(self, p: Pass, reports: list[Pass] | None = None, s: Session | None = None) -> PassResult:
         """Rebuild the landing from its stored slices: the most detailed aircraft track among its
         reports, graded against the carrier in this (gradable) report, plus DCS's grade and wire."""
+        if p.is_dcs_only:
+            raise IngestError("graded by DCS's LSO only (no report of this landing has the carrier: the server "
+                              "doesn't share other objects with pilots)")
         if p.is_track:
             raise IngestError("a track report has no carrier; it is graded as part of its landing")
         reports = self.reports(p) if reports is None else reports
@@ -418,6 +422,8 @@ class Hub:
         s.flush()
 
     def _regrade(self, s: Session, row: Pass) -> GradeResult:
+        if row.is_dcs_only:
+            return self._grade_dcs_only(s, row)
         loaded = self.load_pass(row, self.reports(row, s), s)
         row.outcome = loaded.outcome.value  # from the best track (and the current detection)
         result = grade_pass(loaded)
@@ -427,6 +433,23 @@ class Hub:
             s.flush()
         row.grades.append(_grade_row(result))
         return result
+
+    def _grade_dcs_only(self, s: Session, row: Pass) -> GradeResult:
+        grade, text = dcs_only_grade(row.dcs_grade or "")
+        row.outcome = dcs_only_outcome(row.dcs_grade or "", row.wire)
+        for old in [g for g in row.grades if g.version == GRADING_VERSION]:
+            row.grades.remove(old)
+        s.flush()
+        row.grades.append(Grade(version=GRADING_VERSION, grade=grade.value, points=POINTS[grade], text=text,
+                                detail={"source": "dcs", "grade": grade.value, "points": POINTS[grade], "text": text}))
+        return GradeResult(GRADING_VERSION, grade, POINTS[grade])
+
+    def _show_dcs_only(self, s: Session, row: Pass) -> None:
+        """An own-jet track with DCS's grade and no landing to join: show it as a landing graded by DCS alone."""
+        row.kind = "dcs"
+        elevation = (row.slice.sidecar or {}).get("sun_elevation")
+        row.night = None if elevation is None else float(elevation) < NIGHT_BELOW_DEG
+        self._grade_dcs_only(s, row)
 
     def ingest(self, source_id: int, data: bytes, sidecar: dict) -> IngestResult:
         """Store a report (a pass or an own-jet track) and merge it with others of the same landing; then tell the
@@ -469,6 +492,8 @@ class Hub:
                     existing.wire = dcs.get("wire")
                     if existing.merged_into_id is not None:
                         self._attach(s, s.get(Pass, existing.merged_into_id), existing)
+                    elif existing.kind == "track":
+                        self._show_dcs_only(s, existing)
                 shown = s.get(Pass, existing.merged_into_id) if existing.merged_into_id else existing
                 g = shown.grade
                 return IngestResult(shown.id, False, g.grade if g else "", g.text if g else "")
@@ -519,13 +544,18 @@ class Hub:
             landing = next((m for m in matches if not m.is_track), None)
             if landing is None and not row.is_track:
                 landing = row
+            # Else a landing graded by DCS alone, if there is one (a report with the carrier takes over from it).
+            landing = landing or next((m for m in matches if m.is_dcs_only), None)
+            if landing is None and row.dcs_grade:
+                self._show_dcs_only(s, row)
+                landing = row
             if landing is None:
                 return IngestResult(row.id, True, "", "waiting for a report of this landing that has the carrier")
             for report in [row, *matches]:
                 if report is not landing and report.merged_into_id is None:
                     self._attach(s, landing, report)
             result = self._regrade(s, landing)
-            return IngestResult(landing.id, True, result.grade.value, result.text)
+            return IngestResult(landing.id, True, result.grade.value, landing.grade.text)
 
     def _night(self, p: Pass) -> bool | None:
         """Was the pass flown at night (at the carrier, when it ended)? None if it can't be told."""
@@ -1024,7 +1054,7 @@ class Hub:
                     continue
                 before = (row.outcome, row.grade.grade if row.grade else None, row.grade.text if row.grade else None)
                 result = self._regrade(s, row)
-                if before != (row.outcome, result.grade.value, result.text):
+                if before != (row.outcome, result.grade.value, row.grade.text):
                     row.discord_stale = True  # the running hub's Discord worker edits its post and the board
                 done += 1
         return done, skipped

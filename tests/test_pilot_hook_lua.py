@@ -122,8 +122,9 @@ def test_recorder_writes_the_approach(recorded):
 
 
 UPLOADER_STUBS = r"""
-WRITEDIR, SEND_TO_ALL, REFUSE_HOST = ...
-SEND_TO_ALL = SEND_TO_ALL == 'true'
+WRITEDIR, SEND_TO_ALL, REFUSE_HOST, FLAGS = ...
+if SEND_TO_ALL == 'unset' then SEND_TO_ALL = nil else SEND_TO_ALL = SEND_TO_ALL == 'true' end
+FLAGS = FLAGS or ''
 local clock = 1000
 local options = { sendToAll = SEND_TO_ALL, hub1Url = 'http://hub1:8000', hub1Token = '',
                   hub2Url = 'https://hub2.example.com/lso/', hub2Token = ' tok2 ' }
@@ -156,8 +157,11 @@ local function conn_for()
       return nil, 'closed', 'HTTP/1.1 200 OK\r\n\r\n{"ready": true, "calls": [{"time": 1105.0, "along": 120.0, "call": "power"}]}'
     end
     if self.sent:match('^GET') then
-      local here = host == 'hub1'
+      local here = host == 'hub1' and not FLAGS:find('elsewhere')
       return nil, 'closed', 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"here": ' .. tostring(here) .. '}'
+    end
+    if host == REFUSE_HOST and FLAGS:find('ours') then
+      return nil, 'closed', 'HTTP/1.1 403 Forbidden\r\n\r\n{"detail": "this hub only accepts traps flown on its own servers"}'
     end
     if host == REFUSE_HOST then return nil, 'closed', 'HTTP/1.1 401 Unauthorized\r\n\r\n{"detail": "not a pilot token"}' end
     return nil, 'closed', 'HTTP/1.1 200 OK\r\n\r\n{"reports": [{"pass_id": 7, "text": "waiting"}], '
@@ -198,9 +202,11 @@ for n = 1, 400 do clock = clock + 0.1; callbacks.onSimulationFrame() end
 """
 
 
-def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool,
+def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool | None,
                  previous_session: str | None = None, refuse: str = "", driver: str = IN_MISSION,
-                 update_manager: bool = False) -> tuple[list[str], Path]:
+                 update_manager: bool = False, flags: str = "") -> tuple[list[str], Path]:
+    """`send_to_all`: None as if never set. `flags`: "elsewhere" (on no hub's server), "ours" (`refuse` answers
+    403: it only takes traps from its own servers)."""
     out_dir = tmp_path / "Logs" / "dcs-lso"
     out_dir.mkdir(parents=True)
     # Written during this session (the uploader stamps it with the session's mission, account and server)...
@@ -213,7 +219,8 @@ def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool,
     stubs = UPLOADER_STUBS.replace("'MISSION'", repr(MISSION)).replace("'UCID'", repr(UCID)).replace("'HOME'", repr(HOME))
     stubs = stubs.replace("DRIVER", driver)
     script = f"UPLOADER_PATH = {str(UPLOADER)!r}\nWITH_UPDATE_MANAGER = {'true' if update_manager else 'false'}\n" + stubs
-    out = subprocess.run([luajit(), "-", f"{tmp_path}/", "true" if send_to_all else "false", refuse], input=script.encode(),
+    setting = "unset" if send_to_all is None else "true" if send_to_all else "false"
+    out = subprocess.run([luajit(), "-", f"{tmp_path}/", setting, refuse, flags], input=script.encode(),
                          capture_output=True, check=True).stdout.decode()  # bytes: keep HTTP's \r\n
     requests = [part.split("\nREQUEST>>>")[0] for part in out.split("<<<REQUEST\n")[1:]]
     run_uploader.log = [line[4:] for line in out.splitlines() if line.startswith("LOG ")]
@@ -266,6 +273,24 @@ def test_uploader_sends_dcss_own_sun(tmp_path, recorded):
     requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False)
     (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
     assert json.loads(body)["sun_elevation"] == -12.5
+
+
+def test_send_to_all_is_on_unless_switched_off(tmp_path, recorded):
+    requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=None)
+    assert {split(r)[1]["Host"] for r in requests if r.startswith("POST")} == {"hub1", "hub2.example.com"}
+
+
+def test_on_another_server_only_hubs_with_a_token_are_sent_to(tmp_path, recorded):
+    # Flying on a server no hub knows: hub1 (no token) would refuse, so only hub2 (token) gets it.
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=True, flags="elsewhere")
+    assert [split(r)[1]["Host"] for r in requests if r.startswith("POST")] == ["hub2.example.com"]
+    assert list((out_dir / "sent").glob("approach-*.csv"))  # done: nothing left waiting for hub1
+
+
+def test_a_hub_taking_only_its_own_servers_traps_is_not_asked_again(tmp_path, recorded):
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=True, refuse="hub2.example.com", flags="elsewhere ours")
+    assert len([r for r in requests if r.startswith("POST")]) == 1
+    assert any("not taken" in line for line in run_uploader.log) and not list(out_dir.glob("approach-*.csv"))
 
 
 def test_a_refused_token_is_tried_again_next_mission(tmp_path, recorded):

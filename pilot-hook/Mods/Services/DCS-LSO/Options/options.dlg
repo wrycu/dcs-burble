@@ -24,7 +24,7 @@ dialog = {
 			},
 			["sendToAllCheckbox"] = {
 				["params"] = { ["bounds"] = { ["x"] = 56, ["y"] = 94, ["w"] = 850, ["h"] = 20 },
-					["enabled"] = true, ["state"] = false, ["text"] = "$SEND_TO_ALL", ["tooltip"] = "",
+					["enabled"] = true, ["state"] = true, ["text"] = "$SEND_TO_ALL", ["tooltip"] = "",
 					["visible"] = true, ["zindex"] = 0, ["tabOrder"] = 0 },
 				["skin"] = CheckBoxSkin,
 				["type"] = "CheckBox",

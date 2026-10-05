@@ -71,7 +71,7 @@ local function onClose()
 end
 
 return {
-  sendToAll = DbOption.new():setValue(false):checkbox(),
+  sendToAll = DbOption.new():setValue(true):checkbox(),
   hub1Url = DbOption.new():setValue(""):editbox(),
   hub1Token = DbOption.new():setValue(""):editbox(),
   hub2Url = DbOption.new():setValue(""):editbox(),

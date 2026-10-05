@@ -151,3 +151,12 @@ def test_a_regrade_from_the_command_line_reaches_discord(setup):
     discord.step(discord._queue.get_nowait(), now=100.0)
     methods = [(m, u) for m, u, _, _ in fake.requests]
     assert ("PATCH", f"{TRAPS}/messages/{message_id}") in methods and any(u.startswith(BOARD) for _, u in methods)
+
+
+def test_a_landing_graded_by_dcs_alone_is_posted_without_a_card(setup):
+    hub, discord, fake = setup
+    (report,) = post(client_at(hub, HOME), hook_upload(dcs_grade="LSO: GRADE:OK : (LOAR)  WIRE# 2"), hub.token).json()["reports"]
+    discord.step(report["pass_id"], now=0.0)
+    (method, url, payload, image), _board = fake.requests
+    assert url == TRAPS + "?wait=true" and image is None and "image" not in payload["embeds"][0]
+    assert "graded by DCS's LSO" in payload["embeds"][0]["description"]

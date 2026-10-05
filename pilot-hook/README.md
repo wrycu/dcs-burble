@@ -26,11 +26,12 @@ pcall(function() dofile(lfs.writedir() .. [[Scripts\dcs-lso-pilot-recorder.lua]]
 In DCS: **Options > Special > DCS-LSO**.
 
 - **Hub address:** your community's LSO website, e.g. `lso.example.com`. Up to three hubs.
-- **Pilot token:** only needed for "send to all hubs". Create one on your settings page on that hub (your
-  pilot page, then Settings).
-- **Send my traps to all hubs:** off (the default) sends each trap only to the hub of the server you're
-  flying on. That hub recognises you without a token. On, it sends every trap to every hub listed, which
-  needs a token for the hubs whose servers you weren't on.
+- **Pilot token:** lets that hub take your traps from any server, not only its own. Create one on your
+  settings page on that hub (your pilot page, then Settings).
+- **Send my traps to all hubs:** on (the default) sends each trap to the hub of the server you're flying on,
+  which recognises you without a token, and to every other hub listed that has a token. Off sends it only to
+  the hub of the server you're on. A hub may still turn down traps flown on other communities' servers; that's
+  its admin's choice (`--pilot-hook-accept`).
 
 ## What happens
 

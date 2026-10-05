@@ -150,20 +150,23 @@ class Discord:
         with hub.sessions() as s:
             p = s.scalar(select(Pass).where(Pass.id == landing_id).options(
                 selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.slice), selectinload(Pass.source)))
-            if p is None or p.merged_into_id is not None or p.is_track or p.grade is None:
+            if p is None or p.merged_into_id is not None or (p.is_track and not p.is_dcs_only) or p.grade is None:
                 return
             when = p.occurred_at or p.created_at
             if p.discord_message_id is None and when is not None and \
                     datetime.now(UTC) - when.replace(tzinfo=when.tzinfo or UTC) > POST_MAX_AGE:
                 return  # backfilled: the board shows it, no post of its own
-            result = hub.load_pass(p)
-            svg = render_card(result, grade_pass(result), card_title(p), uid="discord", calls=p.calls, night=bool(p.night),
-                              dark=True)
+            svg = None
+            if not p.is_dcs_only:  # graded by DCS alone: no carrier, so no trap card
+                result = hub.load_pass(p)
+                svg = render_card(result, grade_pass(result), card_title(p), uid="discord", calls=p.calls,
+                                  night=bool(p.night), dark=True)
             g = GradeValue(p.grade.grade)
             estimate = (p.grade.detail or {}).get("wire_estimate")
             wire = f"wire #{p.wire}" if p.wire is not None else (f"wire #{estimate} (est.)" if estimate else None)
             facts = [p.outcome, wire if p.outcome == "trap" else None, p.carrier_unit or p.carrier_type,
-                     p.aircraft_type.replace("_hornet", ""), "🌙 night" if p.night else None]
+                     p.aircraft_type.replace("_hornet", ""), "🌙 night" if p.night else None,
+                     "graded by DCS's LSO" if p.is_dcs_only else None]
             payload = {"embeds": [{
                 "title": f"{p.pilot.name} · {grade_name(g.value)} ({grade_short(g.value)})",
                 "url": self._link(f"/passes/{p.id}"),
@@ -171,10 +174,13 @@ class Discord:
                 "color": COLORS.get(g, 0x8C959F),
                 "timestamp": when.replace(tzinfo=when.tzinfo or UTC).isoformat() if when else None,
                 "footer": {"text": p.mission or "dcs-lso"},
-                "image": {"url": "attachment://card.png"},
-            }], "attachments": [{"id": 0, "filename": "card.png"}]}
+            }]}
+            if svg is not None:
+                payload["embeds"][0]["image"] = {"url": "attachment://card.png"}
+                payload["attachments"] = [{"id": 0, "filename": "card.png"}]
             message_id = p.discord_message_id
-        new_id = self._upsert(self.traps_webhook, message_id, payload, files={"files[0]": ("card.png", png(svg), "image/png")})
+        files = {"files[0]": ("card.png", png(svg), "image/png")} if svg is not None else None
+        new_id = self._upsert(self.traps_webhook, message_id, payload, files=files)
         if new_id and new_id != message_id:
             with hub.sessions.begin() as s:
                 s.get(Pass, landing_id).discord_message_id = new_id

@@ -2,9 +2,10 @@
 --
 -- Sends the approaches the recorder (Scripts/dcs-lso-pilot-recorder.lua) writes to Logs/dcs-lso/ to the
 -- hubs set in Options > Special > DCS-LSO:
--- - by default only to the hub of the server you're flying on (each hub is asked whether you're on one of its
---   servers; it recognises you by your DCS account and address, so no token is needed there);
--- - with "send to all hubs", to every hub set (those need your pilot token, from your settings page there).
+-- - the hub of the server you're flying on (each hub is asked whether you're on one of its servers; it
+--   recognises you by your DCS account and address, so no token is needed there);
+-- - with "send to all hubs" (the default), also every other hub set with your pilot token (from your settings
+--   page there). A hub without a token is skipped then: it only takes traps from players on its own servers.
 -- Uploads use plain HTTP (DCS's Lua has no HTTPS) and never block the game: the socket is driven a little
 -- each frame, in missions and in the menus (DCS's UpdateManager), so what's left when a mission ends is sent
 -- straight away. After a mission, DCS's own grades from debrief.log are added to its approaches and sent again.
@@ -63,7 +64,7 @@ end
 
 local function load_settings()
   hubs = {}
-  send_to_all = option('sendToAll') == true
+  send_to_all = option('sendToAll') ~= false  -- on unless switched off
   for i = 1, HUB_SLOTS do
     local url = option('hub' .. i .. 'Url')
     local host, port, path = parse_url(url)
@@ -272,7 +273,7 @@ local function destinations(state)
   for _, first in ipairs({ true, false }) do
     for i, hub in ipairs(hubs) do
       local here = is_here(state, hub)
-      if not state.done[i] and (send_to_all or here) and (here == first) then out[#out + 1] = i end
+      if not state.done[i] and (here or (send_to_all and hub.token)) and (here == first) then out[#out + 1] = i end
     end
   end
   return out
@@ -357,7 +358,11 @@ local function start_next()
                 state.calls_hub, state.calls_pass = i, pass_id
                 state.calls_until, state.calls_next = now() + CALLS_WAIT_S, now()
               end
-            elseif status == 401 or status == 403 then
+            elseif status == 403 then
+              -- The hub only takes traps flown on its own servers: retrying won't change that.
+              note(name .. ' -> ' .. hub.url .. ': not taken (' .. body:sub(1, 200) .. ')')
+              state.done[i] = true
+            elseif status == 401 then
               -- Not accepted (e.g. a wrong pilot token): try again next mission, after the settings are read again.
               note(name .. ' -> ' .. hub.url .. ': refused (' .. status .. ') ' .. body:sub(1, 200)
                    .. '; will try again next mission or on "Send now" (check the pilot token in Options > Special > DCS-LSO)')

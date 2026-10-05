@@ -275,6 +275,27 @@ def _trap_grade(remarks: list[Remark]) -> Grade:
     return Grade.PERFECT
 
 
+def dcs_only_grade(dcs_grade: str) -> tuple[Grade, str]:
+    """A landing graded by DCS's LSO alone (no carrier in the track to grade it ourselves): DCS's grade, and
+    its comment as the grade text (DCS's notation is the same as ours)."""
+    from ..dcslog import LsoGrade
+    parsed = LsoGrade.parse(dcs_grade)
+    try:
+        grade = Grade(parsed.grade or "")
+    except ValueError:
+        grade = Grade.NO_GRADE
+    return grade, f"{grade.value} : {parsed.remarks}" if parsed.remarks else grade.value
+
+
+def dcs_only_outcome(dcs_grade: str, wire: int | None) -> str:
+    """A DCS-only landing's outcome: a trap if DCS named the wire, else from its grade."""
+    from ..dcslog import LsoGrade
+    grade = LsoGrade.parse(dcs_grade).grade
+    if wire is not None:
+        return "trap"
+    return {"B": "bolter", "WO": "waveoff"}.get(grade or "", "unknown")
+
+
 def grade_pass(p: PassResult) -> GradeResult:
     on_speed = AIRCRAFT[p.aircraft_type].on_speed_aoa
     stats = position_stats(p)
