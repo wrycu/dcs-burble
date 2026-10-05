@@ -44,6 +44,7 @@ form.inline input { width: 9em; }
 .legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 0; color: var(--muted); font-size: 12px; }
 .legend span.swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-right: 4px; }
 form.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+form.filters label.check { display: flex; align-items: center; gap: 4px; }
 form.filters select, form.filters button { font: inherit; padding: 4px 8px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--card); color: var(--text); }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 16px; }
@@ -104,7 +105,8 @@ def _when(dt: datetime | None) -> str:
 
 
 def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: int, pilot: str | None,
-               source: str | None, columns: int) -> str:
+               source: str | None, columns: int, empty: bool = False) -> str:
+    """`empty`: also list pilots with no passes in the filter (e.g. joined, not flown here yet)."""
     by_pilot: dict[str, list[Pass]] = defaultdict(list)
     for p in sorted(passes, key=lambda p: (p.occurred_at or p.created_at)):
         by_pilot[p.pilot.name].append(p)
@@ -122,12 +124,22 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
         + "".join(option(n, n, pilot) for n in pilots)
         + '</select></label><label>Source <select name="source">' + option("", "All", source)
         + "".join(option(n, n, source) for n in sources)
-        + '</select></label><button type="submit">Apply</button></form>'
+        + '</select></label><label class="check"><input type="checkbox" name="empty" value="1"'
+        + (" checked" if empty else "") + "> Show pilots with no passes</label>"
+        + '<button type="submit">Apply</button></form>'
     )
 
+    names = set(by_pilot)
+    if empty:
+        names |= {n for n in pilots if pilot is None or n == pilot}
     rows = []
-    for name in sorted(by_pilot, key=str.lower):
-        items = by_pilot[name]
+    for name in sorted(names, key=str.lower):
+        items = by_pilot.get(name, [])
+        if not items:
+            rows.append(f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}">{escape(name)}</a></td>'
+                        '<td class="num">0</td><td class="num">–</td><td class="num">–</td>'
+                        + '<td><span class="cell empty"></span></td>' * columns + "</tr>")
+            continue
         graded = [p for p in items if p.grade]
         traps = sum(p.outcome == "trap" for p in items)
         avg = sum(p.grade.points for p in graded) / len(graded) if graded else 0.0

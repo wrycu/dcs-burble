@@ -180,3 +180,14 @@ def test_joining_the_board_before_flying_here(hub):
     hub.ingest(hub.authenticate(hub.add_pilot_token("Wrycu")).id, *report(OTHER, "Wrycu (2)"))  # an alias of Wrycu's
     assert client.post("/api/v1/pilots", data={"name": "Wrycu (2)", "password": "long enough"}).status_code == 409
     assert client.post("/api/v1/pilots", data={"name": "Iceman", "password": "long enough"}).json() == {"pilot": "Iceman"}
+
+
+def test_board_can_show_pilots_with_no_passes(hub):
+    hub.register_pilot("Goose", "goose password")  # joined, not flown here yet
+    client = TestClient(create_app(hub))
+    board = client.get("/", params={"days": 0}).text
+    assert "Wrycu" in board and ">Goose</a>" not in board and "Show pilots with no passes" in board
+    board = client.get("/", params={"days": 0, "pilot": "", "source": "", "empty": "1"}).text  # as the form sends it
+    assert ">Goose</a>" in board and 'href="/pilots/Goose"' in board and 'name="empty" value="1" checked' in board
+    only = client.get("/", params={"days": 0, "empty": 1, "pilot": "Goose"}).text
+    assert ">Goose</a>" in only and ">Wrycu</a>" not in only

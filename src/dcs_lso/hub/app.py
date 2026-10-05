@@ -431,12 +431,14 @@ def create_app(hub: Hub) -> FastAPI:
         return Response(svg, media_type="image/svg+xml")
 
     @app.get("/", response_class=HTMLResponse)
-    def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None) -> str:
-        passes = _passes(days, pilot or None, source or None)
+    def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None,
+              empty: bool = False) -> str:
+        pilot, source = pilot or None, source or None  # the form sends "" for All
+        passes = _passes(days, pilot, source)
         with hub.sessions() as s:
             pilots = sorted(s.scalars(select(Pilot.name)), key=str.lower)
             sources = sorted(s.scalars(select(Source.name)), key=str.lower)
-        return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS)
+        return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS, empty)
 
     def _get(pass_id: int) -> Pass:
         with hub.sessions() as s:
