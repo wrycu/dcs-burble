@@ -73,3 +73,21 @@ def test_estimate_from_the_pilots_own_track_against_the_servers_carrier(tmp_path
     with hub.sessions() as s:
         landing = hub.load_pass(s.get(Pass, result.pass_id))
     assert landing.track_source == "Wrycu: pilot" and landing.wire_estimate == 2
+
+
+def test_a_pilot_hook_track_over_the_servers_carrier_stops_on_deck():
+    """A real trap (2026-10-05): the pilot hook's 43 Hz track against the server's carrier. Between samples
+    23 ms apart, position jitter alone read as several m/s, so the jet never counted as stopped and the trap
+    was graded a bolter. Speed on deck is now measured over half a second."""
+    from dcs_lso.acmi import ObjectTrack, Recording
+    live = Path(__file__).parent / "fixtures" / "live"
+    server, hook = load_recording(live / "trap-server.zip.acmi"), load_recording(live / "trap-pilot-hook.zip.acmi")
+    (server_jet,) = [o for o in server.objects.values() if o.name == "FA-18C_hornet"]
+    (hook_jet,) = [o for o in hook.objects.values() if o.name == "FA-18C_hornet"]
+    objects = {i: t for i, t in server.objects.items() if i != server_jet.id}
+    objects[999] = ObjectTrack(999, dict(hook_jet.props), list(hook_jet.samples))  # same mission clock
+    (p,) = find_passes(Recording(server.globals, objects, server.first_frame))
+    assert p.outcome.value == "trap" and p.wire_estimate == 2
+    for recording in (server, hook):  # each on its own: a trap too
+        (alone,) = find_passes(recording)
+        assert alone.outcome.value == "trap"

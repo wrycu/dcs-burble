@@ -178,8 +178,10 @@ def _gear(plane: ObjectTrack) -> float | None:
         return None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class MadeCall:
+    """A call made on a pass, recorded when decided (so a pass sliced right after still has it); a welcome's
+    `call` is filled in with the wire once DCS reports it."""
     aircraft_id: int
     time: float  # sim time
     along: float  # meters short of the aim point
@@ -213,6 +215,7 @@ class LiveCallouts:
         self._engines: dict[tuple[int, int], tuple[LiveEstimator, CalloutEngine]] = {}
         self.made: list[MadeCall] = []
         self._tasks: set[asyncio.Task] = set()
+        self._welcomes: dict[int, asyncio.Task] = {}  # aircraft id -> its welcome (which may wait for the wire)
         # Per (carrier, aircraft): recent (time, along, lateral) and the deck-relative speed at touchdown.
         self._track: dict[tuple[int, int], list[tuple[float, float, float]]] = {}
         self._touchdown_speed: dict[tuple[int, int], float] = {}
@@ -248,10 +251,12 @@ class LiveCallouts:
             event = CallEvent(sample.time, pos.along, outcome, state)
         if event is None or event.call not in self.settings.calls or event.call not in self.clips:
             return None
+        made = MadeCall(plane.id, event.time, event.along, event.call)
+        self.made.append(made)
         if event.call in WELCOME_WIRE:
             # Graded now, while the pass is still being tracked (the welcome may wait for the wire).
             grade = self.grade_for(carrier.id, plane.id) if self.grade_for is not None else None
-            welcome = self._welcome(carrier, plane, event, grade)  # may wait briefly for DCS's wire
+            welcome = self._welcome(carrier, plane, event, grade, made)  # may wait briefly for DCS's wire
         else:
             # Decided now (the groove may have changed by the time the call is spoken).
             side_number = self._side_number(carrier.id, plane, event.time) if event.call not in (Call.BOLTER,) else None
@@ -259,9 +264,12 @@ class LiveCallouts:
         task = asyncio.get_running_loop().create_task(welcome)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        if event.call in WELCOME_WIRE:
+            self._welcomes[plane.id] = task
         return event
 
-    async def _welcome(self, carrier: ObjectTrack, plane: ObjectTrack, event: CallEvent, grade: Grade | None) -> None:
+    async def _welcome(self, carrier: ObjectTrack, plane: ObjectTrack, event: CallEvent, grade: Grade | None,
+                       made: MadeCall | None = None) -> None:
         """The trap welcome (plain or salty), naming the wire if DCS reports it within WIRE_WAIT_S, and
         complimenting the landing only if we grade it OK or better."""
         wire = None
@@ -273,6 +281,8 @@ class LiveCallouts:
                 await asyncio.sleep(WIRE_POLL_S)
                 wire = self.wire_for(plane.id, since)
         call = WELCOME_WIRE[event.call].get(wire, event.call) if wire is not None else event.call
+        if made is not None and call in self.clips:
+            made.call = call  # e.g. "welcome aboard, two wire"
         await self._say(carrier, plane, call if call in self.clips else event.call, event,
                         praise=grade in PRAISE_GRADES)
 
@@ -284,7 +294,6 @@ class LiveCallouts:
 
     async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent,
                    praise: bool = False, side_number: str | None = None) -> None:
-        self.made.append(MadeCall(plane.id, event.time, event.along, call))
         radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
         clip = self.clips.with_side_number(self.clips.pick(call, praise), side_number)  # whose call, if busy
         log.info("CALL %s -> %s (%.2f nm, %s): %r", call.value, plane.pilot or hex(plane.id),
@@ -333,6 +342,13 @@ class LiveCallouts:
             newest = self.made[-1].time
             self.made = [c for c in self.made if newest - c.time <= KEEP_CALLS_S]
         return [c.to_dict() for c in self.made if c.aircraft_id == aircraft_id and start <= c.time <= end]
+
+    async def settled(self, aircraft_id: int, timeout: float = 2.0) -> None:
+        """Wait (briefly) for this aircraft's welcome to be decided, so its wire is in the calls (normally long
+        done when the pass is sliced; not when a recording is replayed at full speed)."""
+        task = self._welcomes.pop(aircraft_id, None)
+        if task is not None and not task.done():
+            await asyncio.wait({task}, timeout=timeout)
 
     async def drain(self) -> None:
         if self._tasks:

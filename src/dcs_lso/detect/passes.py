@@ -33,6 +33,9 @@ END_RECEDING_M = 150.0
 # ...or once it has been stopped on deck for this long.
 STOPPED_SPEED_MS = 2.0
 STOPPED_DURATION_S = 2.0
+# Speed on deck is measured against the position at least this long before: between consecutive samples of a
+# pilot's own 40-200 Hz track, position jitter alone reads as several m/s (a trap read as a bolter, 2026-10-05).
+STOPPED_BASELINE_S = 0.5
 # Passes that never got this low are not worth keeping.
 MAX_MIN_HOOK_HEIGHT_M = 30.0
 
@@ -157,8 +160,9 @@ class PassTracker:
         self._min_distance = min(self._min_distance, distance)
         if distance - self._min_distance > END_RECEDING_M:
             return False
-        if len(self._raw) >= 2:
-            t0, c0, p0, _ = self._raw[-2]
+        earlier = next((r for r in reversed(self._raw[:-1]) if time - r[0] >= STOPPED_BASELINE_S), None)
+        if earlier is not None:
+            t0, c0, p0, _ = earlier
             a = self.frame.position(c0, p0)
             dt = time - t0
             if dt > 0 and math.hypot(pos.along - a.along, pos.lateral - a.lateral) / dt < STOPPED_SPEED_MS:

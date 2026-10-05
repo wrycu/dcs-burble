@@ -604,6 +604,8 @@ class Agent:
     async def _slice(self, session: Session, item: _Pending) -> None:
         session.archive.flush()
         live = item.result
+        if session.callouts:
+            await session.callouts.settled(live.aircraft_id)
         calls = (session.callouts.calls_for(live.aircraft_id, live.start_time - LEAD_S, live.end_time + TAIL_S)
                  if session.callouts else None)
         loop = asyncio.get_running_loop()
