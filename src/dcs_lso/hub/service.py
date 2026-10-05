@@ -247,6 +247,21 @@ class Hub:
                     p.pilot_id = target.id
             return len(passes)
 
+    def remove_pilot(self, name: str) -> None:
+        """Admin: remove a pilot with no passes (e.g. a junk sign-up on an open board): their aliases go, their
+        pilot tokens are revoked. A pilot with passes is refused (their landings would go with them)."""
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            passes = s.scalar(select(func.count()).select_from(Pass).where(Pass.pilot_id == pilot.id))
+            if passes:
+                raise ValueError(f"{name!r} has {passes} passes; only pilots with no passes can be removed")
+            for alias in s.scalars(select(PilotAlias).where(PilotAlias.pilot_id == pilot.id)):
+                s.delete(alias)
+            for source in s.scalars(select(Source).where(Source.pilot_id == pilot.id)):
+                source.pilot_id, source.revoked_at = None, source.revoked_at or datetime.now(UTC)
+            s.flush()
+            s.delete(pilot)
+
     def _resolve_pilot(self, s: Session, name: str) -> Pilot:
         """The pilot a report under this in-game name belongs to: an alias's pilot, else the pilot of that
         name (created on first sight)."""

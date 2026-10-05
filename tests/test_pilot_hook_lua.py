@@ -160,7 +160,8 @@ local function conn_for()
       return nil, 'closed', 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"here": ' .. tostring(here) .. '}'
     end
     if host == REFUSE_HOST then return nil, 'closed', 'HTTP/1.1 401 Unauthorized\r\n\r\n{"detail": "not a pilot token"}' end
-    return nil, 'closed', 'HTTP/1.1 200 OK\r\n\r\n{"reports": [{"pass_id": 7, "text": "waiting"}]}'
+    return nil, 'closed', 'HTTP/1.1 200 OK\r\n\r\n{"reports": [{"pass_id": 7, "text": "waiting"}], '
+      .. '"pilot_hook": {"latest": 99, "update": true}}'
   end
   function c:close() end
   return c
@@ -215,6 +216,7 @@ def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool,
     out = subprocess.run([luajit(), "-", f"{tmp_path}/", "true" if send_to_all else "false", refuse], input=script.encode(),
                          capture_output=True, check=True).stdout.decode()  # bytes: keep HTTP's \r\n
     requests = [part.split("\nREQUEST>>>")[0] for part in out.split("<<<REQUEST\n")[1:]]
+    run_uploader.log = [line[4:] for line in out.splitlines() if line.startswith("LOG ")]
     return requests, out_dir
 
 
@@ -251,6 +253,13 @@ def test_uploader_sends_to_the_current_servers_hub(tmp_path, recorded):
     sent = json.loads(body)
     assert (sent["mission"], sent["ucid"], sent["pilot"], sent["server"]) == (MISSION, UCID, "Wrycu", "192.168.1.238:10308")
     assert list((out_dir / "sent").glob("approach-*.csv")) and not list(out_dir.glob("approach-*.csv"))
+
+
+def test_uploader_logs_once_that_a_newer_version_is_out(tmp_path, recorded):
+    run_uploader(tmp_path, recorded[0], send_to_all=True)
+    sent = [line for line in run_uploader.log if "->" in line]
+    updates = [line for line in run_uploader.log if "newer pilot hook" in line]
+    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 2): see http://hub1:8000"]
 
 
 def test_uploader_sends_dcss_own_sun(tmp_path, recorded):

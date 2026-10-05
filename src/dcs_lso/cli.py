@@ -248,6 +248,10 @@ def _hub(args: argparse.Namespace):
     from .hub.service import Hub
 
     data_dir = Path(args.data_dir)
+    if not args.database_url and not (data_dir / "lso.db").exists() and not args.create:
+        # A typo'd or missing --data-dir would otherwise quietly start a new, empty hub.
+        raise SystemExit(f"error: no hub in {data_dir.resolve()} (no lso.db there). Point --data-dir at your hub's "
+                         "data, or add --create to start a new hub in that folder.")
     url = args.database_url or f"sqlite:///{(data_dir / 'lso.db').resolve()}"
     data_dir.mkdir(parents=True, exist_ok=True)
     return Hub(url, data_dir, require_upload_token=args.require_upload_token, pilot_hook_accept=args.pilot_hook_accept)
@@ -278,6 +282,16 @@ def _hub_add_pilot_token(args: argparse.Namespace) -> int:
     print(f"pilot token for {args.pilot!r} created. Everything uploaded with it is credited to them "
           "(shown once, keep it secret):")
     print(token)
+    return 0
+
+
+def _hub_remove_pilot(args: argparse.Namespace) -> int:
+    try:
+        _hub(args).remove_pilot(args.pilot)
+    except (LookupError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"pilot {args.pilot!r} removed (their pilot tokens are revoked)")
     return 0
 
 
@@ -480,6 +494,8 @@ def main(argv: list[str] | None = None) -> int:
     hub = sub.add_parser("hub", help="run or manage the hub (website, database, grading)")
     hub.add_argument("--data-dir", default=os.environ.get("DCS_LSO_DATA_DIR", "data"),
                      help="where slices (and the default SQLite database) live [$DCS_LSO_DATA_DIR]")
+    hub.add_argument("--create", action="store_true",
+                     help="start a new hub if the data folder has none yet (otherwise an empty folder is an error)")
     hub.add_argument("--database-url", default=os.environ.get("DCS_LSO_DATABASE_URL"),
                      help="SQLAlchemy URL; default sqlite in the data dir [$DCS_LSO_DATABASE_URL]")
     hub.add_argument("--require-upload-token", action="store_true",
@@ -511,6 +527,9 @@ def main(argv: list[str] | None = None) -> int:
     add_pilot.add_argument("pilot", help="the pilot's name, as on the board (added if new)")
     add_pilot.add_argument("--label", default="", help='what it\'s for, e.g. "Wrycu\'s PC"')
     add_pilot.set_defaults(func=_hub_add_pilot_token)
+    remove_pilot = hub_sub.add_parser("remove-pilot", help="remove a pilot who has no passes (e.g. a junk sign-up)")
+    remove_pilot.add_argument("pilot", help="the pilot's name, as on the board")
+    remove_pilot.set_defaults(func=_hub_remove_pilot)
     remove_alias = hub_sub.add_parser("remove-alias", help="undo a pilot's alias (e.g. a name claimed by mistake)")
     remove_alias.add_argument("alias")
     remove_alias.set_defaults(func=_hub_remove_alias)
@@ -554,7 +573,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--url", default=os.environ.get("DCS_LSO_URL"), help="hub URL [$DCS_LSO_URL]")
         p.add_argument("--token", help="server agent or pilot token [$DCS_LSO_TOKEN]")
         p.set_defaults(mode=mode)
-        p.add_argument("--voice-dir", metavar="DIR", help="LSO voice clips (from `dcs-lso voice build`)")
+        p.add_argument("--voice-dir", metavar="DIR", help="LSO voice clips (from `dcs-lso voice build`), or a folder of "
+                       "clip sets: the hub's config (callouts.voice) picks one by folder name")
         for name, default, what in (("archives", 90, "session archives (raw recordings, for re-slicing)"),
                                     ("sent", 14, "local copies of uploaded slices (the hub keeps its own)"),
                                     ("rejected", 30, "slices the hub rejected")):

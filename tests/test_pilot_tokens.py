@@ -191,3 +191,24 @@ def test_board_can_show_pilots_with_no_passes(hub):
     assert ">Goose</a>" in board and 'href="/pilots/Goose"' in board and 'name="empty" value="1" checked' in board
     only = client.get("/", params={"days": 0, "empty": 1, "pilot": "Goose"}).text
     assert ">Goose</a>" in only and ">Wrycu</a>" not in only
+
+
+def test_removing_a_pilot(hub):
+    hub.register_pilot("Junk", "junk password")
+    token = hub.create_pilot_token("Junk", "junk password")
+    hub.remove_pilot("Junk")
+    assert hub.authenticate(token) is None  # its tokens stop working
+    with pytest.raises(LookupError):
+        hub.pilot_tokens("Junk")
+    with pytest.raises(ValueError, match="has 1 passes"):
+        hub.remove_pilot("Wrycu")  # has a landing: refused
+    hub.register_pilot("Junk", "junk password 2")  # the name is free again
+
+
+def test_the_hub_command_refuses_an_empty_data_folder(tmp_path, capsys):
+    from dcs_lso.cli import main
+    with pytest.raises(SystemExit, match="no hub in"):
+        main(["hub", "--data-dir", str(tmp_path / "typo"), "regrade"])
+    assert not (tmp_path / "typo").exists()
+    assert main(["hub", "--data-dir", str(tmp_path / "new"), "--create", "regrade"]) == 0
+    assert main(["hub", "--data-dir", str(tmp_path / "new"), "remove-pilot", "Nobody"]) == 1

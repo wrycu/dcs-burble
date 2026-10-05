@@ -46,6 +46,10 @@ JET_ID, CARRIER_ID = 1, 2
 # (see `Hub._reference_time`), so the slice's own ReferenceTime is never used to place it.
 PLACEHOLDER_REFERENCE = "2000-01-01T00:00:00Z"
 
+# The pilot hook's latest version (`VERSION` in pilot-hook/Scripts/Hooks/dcs-lso-pilot-hook.lua). The hub tells an
+# older hook in its reply, and the hook logs that an update is available.
+PILOT_HOOK_VERSION = 2
+
 
 class HookUploadError(ValueError):
     pass
@@ -60,7 +64,7 @@ class HookCarrier:
 
 @dataclass(frozen=True, slots=True)
 class HookUpload:
-    version: int
+    version: int  # the pilot hook's version (see PILOT_HOOK_VERSION)
     pilot: str
     aircraft: str
     mission: str

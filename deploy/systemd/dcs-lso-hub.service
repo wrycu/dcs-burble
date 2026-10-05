@@ -2,6 +2,8 @@
 # Listens on 127.0.0.1:8000 only; publish it through a reverse proxy (e.g. Caddy).
 # Install: cp deploy/systemd/*.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 #          systemctl --user enable --now dcs-lso-hub
+# A new hub: create its data folder first, e.g. `uv run dcs-lso hub --data-dir ~/dcs-lso-data/central --create add-agent server1`
+# (the hub refuses a data folder without lso.db otherwise, so a mistyped path never starts an empty hub).
 # Replaces dcs-lso-central.service (same data directory): systemctl --user disable --now dcs-lso-central
 [Unit]
 Description=dcs-lso hub (greenie board, grading, ACMI archive)

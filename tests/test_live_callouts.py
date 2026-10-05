@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import shutil
 import wave
 from pathlib import Path
 
@@ -78,6 +79,25 @@ def test_settings_from_config():
     assert s.radio_for("CVN-75 Harry S. Truman") == Radio(127.6, Modulation.AM)
     assert s.radio_for("some other carrier") == Radio(127.5, Modulation.AM)
     assert not CalloutSettings.from_config({}).enabled
+    assert s.voice is None and CalloutSettings.from_config({"callouts": {"voice": "clips-amy"}}).voice == "clips-amy"
+
+
+def test_the_hubs_config_picks_the_voice(tmp_path, clips):
+    from dcs_lso.agent.service import Agent, AgentConfig
+    from dcs_lso.callouts.voice import choose_clip_set
+    voices = tmp_path / "voices"
+    for name in ("clips-amy", "clips-ryan"):
+        shutil.copytree(clips, voices / name)
+    (voices / "en_US-ryan-high.onnx").write_bytes(b"")  # other things in the folder are ignored
+    assert choose_clip_set(voices, "clips-ryan")[0] == voices / "clips-ryan"
+    assert choose_clip_set(voices, "nope") == (voices / "clips-amy",
+                                               "voice: clips-amy (no clip set 'nope'; have clips-amy, clips-ryan)")
+    assert choose_clip_set(voices, None)[0] == voices / "clips-amy"
+    assert choose_clip_set(clips, "clips-ryan")[0] == clips  # a single clip set: used whatever the config says
+    assert choose_clip_set(tmp_path / "empty", None)[0] is None
+    agent = Agent(AgentConfig(work_dir=tmp_path / "edge", voice_dir=voices))
+    assert agent._clips("clips-ryan") is agent._clips("clips-ryan")  # loaded once
+    assert agent._clips("clips-amy") is not agent._clips("clips-ryan")
 
 
 def test_clip_library(clips):

@@ -17,7 +17,7 @@ package.cpath = package.cpath .. ';.\\LuaSocket\\?.dll;'
 local socket = require('socket')
 local lfs = require('lfs')
 
-local VERSION = 1
+local VERSION = 2
 local HUB_SLOTS = 3
 local SCAN_EVERY_S = 2          -- look for new approach files
 local HERE_EVERY_S = 60         -- ask the hubs again whether we're on one of their servers
@@ -38,6 +38,7 @@ local request                   -- the one HTTP request in flight
 local last_scan, send_to_all = -SCAN_EVERY_S, false
 local last_debrief_check, debrief_seen = -DEBRIEF_EVERY_S, nil
 local last_status
+local update_noted              -- a hub said a newer pilot hook is out (logged once)
 
 local function note(msg) log.write('DCSLSO-PILOT', log.INFO, msg) end
 
@@ -345,6 +346,12 @@ local function start_next()
               note(name .. ' -> ' .. hub.url .. ': ' .. (body:match('"text"%s*:%s*"([^"]*)"') or 'sent')
                    .. (calls and ' (with the LSO calls)' or ''))
               state.done[i] = true
+              local latest = tonumber(body:match('"latest"%s*:%s*(%d+)'))
+              if body:match('"update"%s*:%s*true') and latest and not update_noted then
+                update_noted = true
+                note(string.format('a newer pilot hook is available (version %d, this is %d): see %s', latest, VERSION,
+                                   hub.url))
+              end
               local pass_id = tonumber(body:match('"pass_id"%s*:%s*(%d+)'))
               if is_here(state, hub) and pass_id and not state.calls_until then
                 state.calls_hub, state.calls_pass = i, pass_id

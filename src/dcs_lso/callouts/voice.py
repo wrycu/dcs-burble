@@ -160,6 +160,34 @@ def _trim(pcm: array) -> array:
     return array("h", pcm[max(0, loud[0] - TRIM_MARGIN):loud[-1] + 1 + TRIM_MARGIN])
 
 
+def clip_sets(directory: str | Path) -> dict[str, Path]:
+    """The clip sets in `directory`, by name: the folder itself when it is one (has a manifest.json), named
+    "", else each folder in it that is one, by folder name."""
+    directory = Path(directory)
+    if (directory / "manifest.json").is_file():
+        return {"": directory}
+    if not directory.is_dir():
+        return {}
+    return {d.name: d for d in sorted(directory.iterdir()) if (d / "manifest.json").is_file()}
+
+
+def choose_clip_set(directory: str | Path, voice: str | None) -> tuple[Path | None, str]:
+    """The clip set to use for `voice` (a folder name from the hub's config), and a note on the choice for the
+    log. A folder that is a single clip set is used whatever `voice` says; an unknown or missing `voice` gets
+    the first set by name."""
+    sets = clip_sets(directory)
+    if not sets:
+        return None, f"no voice clips in {directory} (build them with `dcs-lso voice build`)"
+    if "" in sets:
+        note = f" (the config's voice {voice!r} needs a folder of clip sets)" if voice else ""
+        return sets[""], f"voice: {sets['']}{note}"
+    if voice in sets:
+        return sets[voice], f"voice: {voice}"
+    first = next(iter(sets))
+    why = f"no clip set {voice!r}" if voice else "no voice set in the config"
+    return sets[first], f"voice: {first} ({why}; have {', '.join(sets)})"
+
+
 class ClipLibrary:
     def __init__(self, clips: dict[Call, list[Clip]], voice: str, numbers: dict[str, Clip] | None = None) -> None:
         self.clips = clips  # every variant of each call

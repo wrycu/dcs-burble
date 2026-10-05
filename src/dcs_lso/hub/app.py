@@ -24,6 +24,7 @@ from ..grading import grade_pass
 from ..grading.trends import DEFAULT_PASSES
 from . import pages
 from .db import Pass, Pilot, Source, Upload
+from .pilothook import PILOT_HOOK_VERSION
 from .service import Hub, IngestError
 
 MAX_SLICE_BYTES = 20 * 1024 * 1024
@@ -121,8 +122,11 @@ def create_app(hub: Hub) -> FastAPI:
             results = await run_in_threadpool(hub.ingest_pilot_hook, source_id, body, pilot)
         except IngestError as exc:
             raise HTTPException(400, str(exc)) from exc
+        version = body.get("version")
         return {"reports": [{"pass_id": r.pass_id, "created": r.created, "grade": r.grade, "text": r.text,
-                             "url": f"/passes/{r.pass_id}"} for r in results]}
+                             "url": f"/passes/{r.pass_id}"} for r in results],
+                "pilot_hook": {"latest": PILOT_HOOK_VERSION,
+                               "update": isinstance(version, int) and version < PILOT_HOOK_VERSION}}
 
     @app.get("/api/v1/pilot-hook/calls")
     def pilot_hook_calls(request: Request, pass_id: int, ucid: str = "",

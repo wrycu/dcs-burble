@@ -37,7 +37,7 @@ from ..geometry import AIRCRAFT, WindProfile
 from ..grading import Grade, grade_pass
 from ..slices import (LEAD_S, TAIL_S, approach_window, sidecar, slice_name, slice_objects, track_sidecar,
                       track_slice_name)
-from ..callouts.voice import ClipLibrary
+from ..callouts.voice import ClipLibrary, choose_clip_set
 from ..srs import Modulation, Radio
 from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink
 from .live import LivePassDetector
@@ -77,7 +77,7 @@ class AgentConfig:
     # "server": live callouts over SRS (if enabled in the hub's config); "pilot": record and upload
     # only, never transmit (a pilot uploader would be talking on someone else's server).
     mode: str = "server"
-    voice_dir: Path | None = None  # clip set from `dcs-lso voice build`
+    voice_dir: Path | None = None  # a clip set from `dcs-lso voice build`, or a folder of them (see `_clips`)
     # Retention, in days (0: keep forever). Session archives allow re-slicing; uploaded slices are kept
     # on the hub, so the local copies only matter for a while (e.g. adding debrief.log grades). None:
     # not set here, so the hub's configuration for this source ("retention") applies, else the default.
@@ -308,7 +308,7 @@ class Agent:
         self._players_reported_at = -PLAYERS_REPORT_S
         self.config_path = config.work_dir / "config.json"
         self.remote_config: dict = self._load_cached_config()
-        self.clips = ClipLibrary.load(config.voice_dir) if config.voice_dir else None
+        self._clip_sets: dict[Path, ClipLibrary] = {}  # loaded once each
         # Overridable for tests; by default calls go to the SRS server named in the config.
         self.sink_factory = lambda settings: SrsSink(settings.srs, _radios(settings))
 
@@ -348,15 +348,30 @@ class Agent:
             log.info("live callouts OFF (not enabled in this source's config on the hub; "
                      "see `dcs-lso hub set-config`)")
             return None
-        if self.clips is None:
-            log.warning("live callouts OFF: enabled in the hub's config, but no --voice-dir was given")
+        clips = self._clips(settings.voice)
+        if clips is None:
             return None
-        callouts = LiveCallouts(settings, self.clips, self.sink_factory(settings),
+        callouts = LiveCallouts(settings, clips, self.sink_factory(settings),
                                 wind_for=self.hooks.wind_for if self.hooks is not None else None,
                                 wire_for=self.hooks.live_wire if self.hooks is not None else None)
         if self.hooks is not None:
             callouts.carrier_radio = self.hooks.carrier_radio  # the mission's frequency for each carrier
         return callouts
+
+    def _clips(self, voice: str | None) -> ClipLibrary | None:
+        """The voice for this session: `--voice-dir` is one clip set, or a folder of them where the hub's
+        config (`callouts.voice`) picks one by folder name."""
+        if self.config.voice_dir is None:
+            log.warning("live callouts OFF: enabled in the hub's config, but no --voice-dir was given")
+            return None
+        path, note = choose_clip_set(self.config.voice_dir, voice)
+        if path is None:
+            log.warning("live callouts OFF: %s", note)
+            return None
+        log.info(note)
+        if path not in self._clip_sets:
+            self._clip_sets[path] = ClipLibrary.load(path)
+        return self._clip_sets[path]
 
     # -- top level ----------------------------------------------------------------------------
 

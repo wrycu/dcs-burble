@@ -255,3 +255,13 @@ def test_dcs_grade_added_by_a_later_upload(tmp_path):
         landing = s.get(Pass, first["pass_id"])
         assert landing.dcs_grade == "LSO: GRADE:OK : (LOAR)  WIRE# 2" and landing.wire == 2
     assert "#2 (DCS)" in client.get(f"/passes/{first['pass_id']}").text
+
+
+def test_an_old_pilot_hook_is_told_to_update(hub):
+    from dcs_lso.hub.pilothook import PILOT_HOOK_VERSION
+    client = client_at(hub)
+    old = post(client, {**hook_upload(), "version": PILOT_HOOK_VERSION - 1}, hub.token).json()["pilot_hook"]
+    current = post(client, {**hook_upload(), "version": PILOT_HOOK_VERSION}, hub.token).json()["pilot_hook"]
+    assert old == {"latest": PILOT_HOOK_VERSION, "update": True} and current["update"] is False
+    lua = (Path(__file__).parents[1] / "pilot-hook/Scripts/Hooks/dcs-lso-pilot-hook.lua").read_text()
+    assert f"local VERSION = {PILOT_HOOK_VERSION}\n" in lua  # bump both together

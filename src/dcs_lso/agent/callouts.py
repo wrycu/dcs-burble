@@ -74,6 +74,8 @@ class CalloutSettings:
     carriers: dict[str, tuple[float, Modulation]] = field(default_factory=dict)
     calls: frozenset[Call] = frozenset(Call)
     thresholds: Thresholds = Thresholds()
+    # Which clip set to speak with, when the server agent's --voice-dir holds several: its folder name.
+    voice: str | None = None
 
     @classmethod
     def from_config(cls, config: dict) -> CalloutSettings:
@@ -91,6 +93,7 @@ class CalloutSettings:
                       for name, v in (c.get("carriers") or {}).items()},
             calls=frozenset(Call(x) for x in c["calls"]) if "calls" in c else frozenset(Call),
             thresholds=replace(Thresholds(), **overrides),
+            voice=str(c["voice"]) if c.get("voice") else None,
         )
 
     def radio_for(self, carrier_unit: str, detected: Radio | None = None) -> Radio:
