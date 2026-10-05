@@ -135,6 +135,8 @@ class Pass(Base):
     reported_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # This landing's post in Discord (the per-trap messages), so it can be edited when the landing changes.
     discord_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Changed outside the running hub (e.g. `hub regrade`): its Discord post and the board are brought up to date.
+    discord_stale: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Flown at night (the sun below the horizon at the carrier when the pass ended); None if unknown.
     night: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Another report of the same landing (e.g. the pilot's own and the server's) is merged into the

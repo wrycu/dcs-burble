@@ -1022,7 +1022,10 @@ class Hub:
                 if current is not None and not force:
                     skipped += 1
                     continue
-                self._regrade(s, row)
+                before = (row.outcome, row.grade.grade if row.grade else None, row.grade.text if row.grade else None)
+                result = self._regrade(s, row)
+                if before != (row.outcome, result.grade.value, result.text):
+                    row.discord_stale = True  # the running hub's Discord worker edits its post and the board
                 done += 1
         return done, skipped
 

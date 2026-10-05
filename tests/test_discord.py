@@ -132,3 +132,22 @@ def test_board_image():
     assert "No passes yet" in render_board([], 15)
     from dcs_lso.hub.discord import png
     assert png(svg).startswith(b"\x89PNG")
+
+
+def test_a_regrade_from_the_command_line_reaches_discord(setup):
+    hub, discord, fake = setup
+    result = hub.ingest(1, *fresh_report())
+    discord.step(result.pass_id, now=0.0)
+    with hub.sessions() as s:
+        message_id = s.get(Pass, result.pass_id).discord_message_id
+    assert discord.pick_up_changes() == []
+    hub.regrade(force=True)  # nothing changed: nothing to do
+    assert discord.pick_up_changes() == []
+    with hub.sessions.begin() as s:
+        s.get(Pass, result.pass_id).outcome = "bolter"  # e.g. stored before a detection fix
+    hub.regrade(force=True)  # another process: puts the outcome right and marks the landing
+    fake.requests.clear()
+    assert discord.pick_up_changes() == [result.pass_id] and discord.pick_up_changes() == []
+    discord.step(discord._queue.get_nowait(), now=100.0)
+    methods = [(m, u) for m, u, _, _ in fake.requests]
+    assert ("PATCH", f"{TRAPS}/messages/{message_id}") in methods and any(u.startswith(BOARD) for _, u in methods)

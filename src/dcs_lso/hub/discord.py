@@ -37,6 +37,7 @@ BOARD_PASSES = 15  # squares per pilot
 # they still count on the board.
 POST_MAX_AGE = timedelta(hours=6)
 BOARD_SETTING = "discord_board_message"
+CHANGES_EVERY_S = 5.0  # look for landings changed outside this process (`hub regrade`) this often
 
 COLORS = {GradeValue.PERFECT: 0x2DA44E, GradeValue.OK: 0x3FB950, GradeValue.FAIR: 0xD4A72C, GradeValue.NO_GRADE: 0x9A6700,
           GradeValue.CUT: 0xCF222E, GradeValue.BOLTER: 0x0969DA, GradeValue.WAVE_OFF: 0x8C959F}
@@ -59,6 +60,7 @@ class Discord:
         self._queue: queue.Queue[int | None] = queue.Queue()
         self._board_due = True  # bring the board up to date at start-up
         self._board_at = -BOARD_EVERY_S
+        self._changes_at = -CHANGES_EVERY_S
         hub.listeners.append(self._queue.put)
         if start:
             threading.Thread(target=self._run, name="discord", daemon=True).start()
@@ -76,6 +78,9 @@ class Discord:
             except queue.Empty:
                 landing_id = False
             try:
+                if time.monotonic() - self._changes_at >= CHANGES_EVERY_S:
+                    self._changes_at = time.monotonic()
+                    self.pick_up_changes()
                 self.step(landing_id)
             except Exception:  # keep going whatever Discord does
                 log.exception("Discord update failed")
@@ -90,6 +95,18 @@ class Discord:
         if self._board_due and self.board_webhook and now - self._board_at >= BOARD_EVERY_S:
             self._board_due, self._board_at = False, now
             self.update_board()
+
+    def pick_up_changes(self) -> list[int]:
+        """Landings changed by another process (e.g. `hub regrade` from the command line, which can't tell this
+        one): queue each, so its post is edited and the board updated, and clear the mark."""
+        with self.hub.sessions.begin() as s:
+            changed = list(s.scalars(select(Pass).where(Pass.discord_stale.is_(True))))
+            for p in changed:
+                p.discord_stale = None
+            ids = [p.id for p in changed]
+        for landing_id in ids:
+            self._queue.put(landing_id)
+        return ids
 
     # -- HTTP --------------------------------------------------------------------------------------
 
