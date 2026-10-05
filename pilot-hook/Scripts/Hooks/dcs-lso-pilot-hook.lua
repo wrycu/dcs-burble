@@ -274,6 +274,11 @@ local function start_next()
             if status == 200 then
               note(name .. ' -> ' .. hub.url .. ': ' .. (body:match('"text"%s*:%s*"([^"]*)"') or 'sent'))
               state.done[i] = true
+            elseif status == 401 or status == 403 then
+              -- Not accepted (e.g. a wrong pilot token): try again next mission, after the settings are read again.
+              note(name .. ' -> ' .. hub.url .. ': refused (' .. status .. ') ' .. body:sub(1, 200)
+                   .. '; will try again next mission (check the pilot token in Options > Special > DCS-LSO)')
+              hub.retry_at = math.huge
             elseif status and status < 500 then
               note(name .. ' -> ' .. hub.url .. ': refused (' .. status .. ') ' .. body:sub(1, 200))
               state.done[i] = true  -- won't change by retrying

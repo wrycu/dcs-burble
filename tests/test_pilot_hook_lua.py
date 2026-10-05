@@ -122,7 +122,7 @@ def test_recorder_writes_the_approach(recorded):
 
 
 UPLOADER_STUBS = r"""
-WRITEDIR, SEND_TO_ALL = ...
+WRITEDIR, SEND_TO_ALL, REFUSE_HOST = ...
 SEND_TO_ALL = SEND_TO_ALL == 'true'
 local clock = 1000
 local options = { sendToAll = SEND_TO_ALL, hub1Url = 'http://hub1:8000', hub1Token = '',
@@ -151,6 +151,7 @@ local function conn_for()
       local here = host == 'hub1'
       return nil, 'closed', 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"here": ' .. tostring(here) .. '}'
     end
+    if host == REFUSE_HOST then return nil, 'closed', 'HTTP/1.1 401 Unauthorized\r\n\r\n{"detail": "not a pilot token"}' end
     return nil, 'closed', 'HTTP/1.1 200 OK\r\n\r\n{"reports": [{"text": "waiting"}]}'
   end
   function c:close() end
@@ -180,7 +181,7 @@ for n = 1, 400 do clock = clock + 0.1; callbacks.onSimulationFrame() end
 
 
 def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool,
-                 previous_session: str | None = None) -> tuple[list[str], Path]:
+                 previous_session: str | None = None, refuse: str = "") -> tuple[list[str], Path]:
     out_dir = tmp_path / "Logs" / "dcs-lso"
     out_dir.mkdir(parents=True)
     # Written during this session (the uploader stamps it with the session's mission, account and server)...
@@ -192,7 +193,7 @@ def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool,
         (out_dir / approach.name).write_text(re_written.sub("# written_at=1000", text))
     stubs = UPLOADER_STUBS.replace("'MISSION'", repr(MISSION)).replace("'UCID'", repr(UCID)).replace("'HOME'", repr(HOME))
     script = f"UPLOADER_PATH = {str(UPLOADER)!r}\n" + stubs
-    out = subprocess.run([luajit(), "-", f"{tmp_path}/", "true" if send_to_all else "false"], input=script.encode(),
+    out = subprocess.run([luajit(), "-", f"{tmp_path}/", "true" if send_to_all else "false", refuse], input=script.encode(),
                          capture_output=True, check=True).stdout.decode()  # bytes: keep HTTP's \r\n
     requests = [part.split("\nREQUEST>>>")[0] for part in out.split("<<<REQUEST\n")[1:]]
     return requests, out_dir
@@ -237,6 +238,14 @@ def test_uploader_sends_dcss_own_sun(tmp_path, recorded):
     requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False)
     (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
     assert json.loads(body)["sun_elevation"] == -12.5
+
+
+def test_a_refused_token_is_tried_again_next_mission(tmp_path, recorded):
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=True, refuse="hub2.example.com")
+    to_hub2 = [r for r in requests if r.startswith("POST") and "Host: hub2.example.com" in r]
+    assert len(to_hub2) == 1  # not hammered for the rest of the mission
+    # Kept (not moved to sent/), so it goes again once the token is fixed and a new mission starts.
+    assert list(out_dir.glob("approach-*.csv")) and not list((out_dir / "sent").glob("*.csv"))
 
 
 def test_uploader_sends_to_all_hubs_with_their_tokens(tmp_path, recorded):
