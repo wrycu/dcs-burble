@@ -35,12 +35,14 @@ In DCS: **Options > Special > DCS-LSO**.
 ## What happens
 
 - After each approach to deck height, the recorder writes it to `Saved Games/DCS/Logs/dcs-lso/`.
+- Where the server lets clients see other objects, the nearest carrier is recorded too. Then any hub can grade
+  the pass on its own, even one whose community doesn't run that server.
 - The uploader sends it in the background while you fly. Sent files move to `Logs/dcs-lso/sent/`.
 - Your trap shows up on the hub's greenie board, merged with the server's report of the same landing.
 - What it's doing is logged in `Saved Games/DCS/Logs/dcs.log`, on lines starting with `DCSLSO-PILOT`.
 
-Uploads use plain HTTP, because DCS's Lua can't do HTTPS. They contain your jet's track, your DCS name and
-account id (UCID), and the server's address.
+Uploads use plain HTTP, because DCS's Lua can't do HTTPS. They contain your jet's track (and the carrier's, when visible), your DCS name and
+account id (UCID), the server's address, and the sun's elevation at the time (for night passes).
 
 ## For hub admins
 

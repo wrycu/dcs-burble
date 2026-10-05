@@ -20,12 +20,12 @@ from ..dcslog import Debrief, LsoGrade, load_debrief
 from ..detect import PassResult, find_passes
 from ..geometry import AIRCRAFT, WindProfile
 from ..slices import is_default_pilot, own_pilots, slice_recording
-from ..sun import is_night
+from ..sun import NIGHT_BELOW_DEG, is_night
 from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
 from .db import Grade, Pass, Pilot, PilotAlias, PlayerSeen, Slice, Source, Upload, make_engine, make_sessionmaker
-from .pilothook import HookUploadError, parse_upload, track_reports
+from .pilothook import HookUploadError, hook_reports, parse_upload
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
 from .storage import SliceStore
 
@@ -480,6 +480,12 @@ class Hub:
         """Was the pass flown at night (at the carrier, when it ended)? None if it can't be told."""
         try:
             carrier_id = int(((p.slice.sidecar or {}).get("pass") or {})["carrier_id"])
+            if (p.slice.sidecar or {}).get("clock") == "mission":  # a pilot hook's: mission start is known only
+                ref = self._reference_time(p)                       # from a server agent's report of the mission
+                if ref is None:  # else DCS's own sun, as the pilot hook read it
+                    elevation = (p.slice.sidecar or {}).get("sun_elevation")
+                    return None if elevation is None else float(elevation) < NIGHT_BELOW_DEG
+                return is_night(load_recording(self.store.path(p.slice.sha256)), carrier_id, p.end_time, ref)
             return is_night(load_recording(self.store.path(p.slice.sha256)), carrier_id, p.end_time)
         except (KeyError, TypeError, ValueError, OSError):
             return None
@@ -597,7 +603,7 @@ class Hub:
         if pilot:
             upload = replace(upload, pilot=pilot[:100])
         with tempfile.TemporaryDirectory() as tmp:
-            reports = track_reports(upload, Path(tmp))
+            reports = hook_reports(upload, Path(tmp))
         return [self.ingest(source_id, data, meta) for data, meta in reports]
 
     # -- backfill: whole recordings --------------------------------------------------------------

@@ -125,12 +125,15 @@ local function read_file(path)
   if not f then return nil end
   local text = f:read('*a')
   f:close()
-  local meta, csv = {}, {}
+  local meta, csv, carrier = {}, {}, {}
+  local into = csv
   for line in text:gmatch('[^\n]+') do
     local key, value = line:match('^# ([%w_]+)=(.*)$')
-    if key then meta[key] = value elseif not line:match('^#') then csv[#csv + 1] = line end
+    if line == '## carrier' then into = carrier
+    elseif key then meta[key] = value
+    elseif not line:match('^#') then into[#into + 1] = line end
   end
-  return meta, table.concat(csv, '\n')
+  return meta, table.concat(csv, '\n'), table.concat(carrier, '\n')
 end
 
 -- The session (mission, account, server) saved to a file, so approaches written as a mission ends (the
@@ -161,6 +164,25 @@ local function load_session()
   return ctx.mission and ctx or nil
 end
 
+-- The sun's elevation (degrees) where and when an approach ended, as DCS itself works it out (the mission
+-- editor's own call): the hub marks night passes with it when it doesn't know the mission's start in UTC (no
+-- server agent of its own). Only for the mission running now.
+local function sun_elevation(lat, lon, model_time)
+  if not (DCS.getCurrentMission and DCS.getSunAzimuthElevation and lat and lon and model_time) then return nil end
+  local current = DCS.getCurrentMission()
+  local mission = current and current.mission
+  if not (mission and mission.date and mission.start_time) then return nil end
+  local summer = 0
+  pcall(function() summer = tonumber(require('terrain').GetTerrainConfig('SummerTimeDelta')) or 0 end)
+  local seconds = mission.start_time + model_time - summer * 3600
+  local days = math.floor(seconds / 86400)  -- past midnight: the next day
+  local date = os.date('*t', os.time({ year = mission.date.Year, month = mission.date.Month,
+                                       day = mission.date.Day + days, hour = 12 }))
+  local ok, _, elevation = pcall(DCS.getSunAzimuthElevation, lat, lon, date.year, date.month, date.day,
+                                 seconds - days * 86400)
+  if ok then return tonumber(elevation) end
+end
+
 -- The session an approach file was flown in, written into the file when the uploader first sees it (so
 -- one uploaded in a later session still names its own mission, server and account).
 local function stamp(name)
@@ -168,17 +190,27 @@ local function stamp(name)
   local meta = read_file(path)
   if not meta or meta.mission then return end
   local written = tonumber(meta.written_at) or os.time()
-  local ctx = (context.started and written >= context.started - 60) and context or previous
+  local current = context.started and written >= context.started - 60
+  local ctx = current and context or previous
   if not ctx or not ctx.mission then return end
+  local elevation
+  if current then
+    local _, csv = read_file(path)
+    local last = csv:match('([^\n]+)$') or ''
+    local fields = {}
+    for v in last:gmatch('[^,]+') do fields[#fields + 1] = tonumber(v) end
+    elevation = sun_elevation(fields[9], fields[10], tonumber(meta.model_time))
+  end
   local f = io.open(path, 'a')
   if not f then return end
   for _, key in ipairs({ 'mission', 'ucid', 'name', 'server' }) do
     if ctx[key] then f:write('# ', key, '=', tostring(ctx[key]):gsub('[\r\n]', ' '), '\n') end
   end
+  if elevation then f:write(string.format('# sun_elevation=%.2f\n', elevation)) end
   f:close()
 end
 
-local function upload_body(meta, csv)
+local function upload_body(meta, csv, carrier)
   return '{"version":' .. VERSION
     .. ',"pilot":' .. json_string(meta.name or meta.pilot)
     .. ',"aircraft":' .. json_string(meta.aircraft)
@@ -187,7 +219,11 @@ local function upload_body(meta, csv)
     .. ',"server":' .. json_string(meta.server)
     .. ',"sent_at":' .. (tonumber(meta.written_at) or os.time())
     .. ',"sent_model_time":' .. (tonumber(meta.model_time) or 0)
-    .. ',"csv":' .. json_string(csv) .. '}'
+    .. (tonumber(meta.sun_elevation) and (',"sun_elevation":' .. tonumber(meta.sun_elevation)) or '')
+    .. ',"csv":' .. json_string(csv)
+    .. (carrier ~= '' and meta.carrier_type and (',"carrier":{"type":' .. json_string(meta.carrier_type)
+        .. ',"unit":' .. json_string(meta.carrier_unit) .. ',"csv":' .. json_string(carrier) .. '}') or '')
+    .. '}'
 end
 
 local function move(name, sub)
@@ -231,10 +267,10 @@ local function start_next()
       for _, i in ipairs(todo) do
         local hub = hubs[i]
         if t >= hub.retry_at then
-          local meta, csv = read_file(dir .. name)
+          local meta, csv, carrier = read_file(dir .. name)
           if not meta then files[name] = nil return nil end
           if not meta.mission then return nil end  -- not stamped yet (see stamp)
-          return new_request(hub, 'POST', '/api/v1/pilot-hook/approaches', upload_body(meta, csv), function(status, body)
+          return new_request(hub, 'POST', '/api/v1/pilot-hook/approaches', upload_body(meta, csv, carrier), function(status, body)
             if status == 200 then
               note(name .. ' -> ' .. hub.url .. ': ' .. (body:match('"text"%s*:%s*"([^"]*)"') or 'sent'))
               state.done[i] = true

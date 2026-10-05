@@ -1,7 +1,9 @@
 -- dcs-lso pilot hook: the recorder (runs in DCS's Export.lua environment).
 --
--- Records your own jet (position, attitude, AOA) about 50 times a second, finds each approach to deck
--- height, and writes it to Saved Games/DCS/Logs/dcs-lso/ as a CSV file. The pilot hook's uploader
+-- Records your own jet (position, attitude, AOA) about 50 times a second, and the nearest carrier 10 times
+-- a second where the server lets clients see other objects, finds each approach to deck height, and writes it
+-- to Saved Games/DCS/Logs/dcs-lso/ as a CSV file. With the carrier, a hub can grade the pass on its own (e.g.
+-- one flown on another community's server). The pilot hook's uploader
 -- (Scripts/Hooks/dcs-lso-pilot-hook.lua) sends those files to the hubs set in Options > Special > DCS-LSO.
 --
 -- Install: add this line at the END of Saved Games/DCS/Scripts/Export.lua (after Tacview's and SRS's):
@@ -22,9 +24,16 @@ do
   local MAX_APPROACH_S = 600
   local AIRCRAFT = { ['FA-18C_hornet'] = true }  -- aircraft the hubs grade
   local HEADER = 't,x,y,z,heading,pitch,bank,aoa,lat,lon'
+  local CARRIER_HEADER = 't,x,y,z,heading,lat,lon'
+  local CARRIER_RATE_S = 0.1
+  local CARRIER_RANGE_M = 20000
+  local NAVY = 3  -- wsType level1 of ships
+  local CARRIER_NAMES = { 'CVN', 'Stennis', 'Forrestal', 'CV_1143', 'ara_vdm' }
 
   local dir = lfs.writedir() .. 'Logs/dcs-lso/'
   local rows = {}          -- { t = model time, line = CSV row }, oldest first
+  local carrier_rows = {}  -- { t, line, id, type, unit }: the nearest carrier, when other objects are visible
+  local last_carrier_t = nil
   local pending = {}       -- approaches waiting for their tail: { from, to, aircraft, pilot }
   local seg = { armed = false }
   local last_t, failed = nil, false
@@ -44,6 +53,20 @@ do
     for _, r in ipairs(rows) do
       if r.t >= a.from and r.t <= a.to then out[#out + 1] = r.line end
     end
+    -- The carrier the jet ended up nearest (its last sample in the approach), all of its samples in the window.
+    local carrier
+    for _, c in ipairs(carrier_rows) do
+      if c.t >= a.from and c.t <= a.to then carrier = c end
+    end
+    if carrier then
+      out[#out + 1] = '## carrier'
+      out[#out + 1] = '# carrier_type=' .. carrier.type
+      out[#out + 1] = '# carrier_unit=' .. carrier.unit
+      out[#out + 1] = CARRIER_HEADER
+      for _, c in ipairs(carrier_rows) do
+        if c.id == carrier.id and c.t >= a.from and c.t <= a.to then out[#out + 1] = c.line end
+      end
+    end
     local name = string.format('%sapproach-%d-%d.csv', dir, os.time(), math.floor(a.from))
     local f = io.open(name .. '.part', 'w')
     if not f then note('cannot write ' .. name) return end
@@ -51,7 +74,8 @@ do
     f:close()
     os.remove(name)
     os.rename(name .. '.part', name)  -- the uploader only picks up complete files
-    note(string.format('approach %.0f-%.0f s written (%d samples)', a.from + LEAD_S, a.to - TAIL_S, #out - 6))
+    note(string.format('approach %.0f-%.0f s written (%d lines%s)', a.from + LEAD_S, a.to - TAIL_S, #out - 6,
+      carrier and (', with ' .. carrier.unit) or ', no carrier: other objects not visible here'))
   end
 
   -- One sample through the approach finder; returns {start, finish} when an approach ends.
@@ -89,13 +113,39 @@ do
     local keep_from = t - LEAD_S - 5
     if seg.start then keep_from = math.min(keep_from, seg.start - LEAD_S) end
     for _, a in ipairs(pending) do keep_from = math.min(keep_from, a.from) end
-    local first = 1
-    while first <= #rows and rows[first].t < keep_from do first = first + 1 end
-    if first > 1 then
+    local function trimmed(list)
+      local first = 1
+      while first <= #list and list[first].t < keep_from do first = first + 1 end
+      if first == 1 then return list end
       local kept = {}
-      for i = first, #rows do kept[#kept + 1] = rows[i] end
-      rows = kept
+      for i = first, #list do kept[#kept + 1] = list[i] end
+      return kept
     end
+    rows, carrier_rows = trimmed(rows), trimmed(carrier_rows)
+  end
+
+  local function is_carrier(o)
+    if not o.Type or o.Type.level1 ~= NAVY or not o.Position then return false end
+    for _, pattern in ipairs(CARRIER_NAMES) do
+      if (o.Name or ''):find(pattern, 1, true) then return true end
+    end
+    return false
+  end
+
+  -- The nearest carrier within range, if the server lets clients see other objects.
+  local function sample_carrier(t, x, z)
+    if not LoGetWorldObjects then return end
+    local best, best_d, best_id
+    for id, o in pairs(LoGetWorldObjects() or {}) do
+      if is_carrier(o) then
+        local d = (o.Position.x - x) ^ 2 + (o.Position.z - z) ^ 2
+        if d < CARRIER_RANGE_M ^ 2 and (not best_d or d < best_d) then best, best_d, best_id = o, d, id end
+      end
+    end
+    if not best then return end
+    local p, g = best.Position, best.LatLongAlt or {}
+    carrier_rows[#carrier_rows + 1] = { t = t, id = best_id, type = best.Name or '', unit = best.UnitName or best.Name or '',
+      line = string.format('%.3f,%.3f,%.3f,%.3f,%.6f,%.7f,%.7f', t, p.x, p.y, p.z, best.Heading or 0, g.Lat or 0, g.Long or 0) }
   end
 
   local function flush(t)
@@ -103,7 +153,7 @@ do
       pending[#pending + 1] = { from = seg.start - LEAD_S, to = t, aircraft = seg.aircraft, pilot = seg.pilot }
     end
     for _, a in ipairs(pending) do write_approach(a, t) end
-    rows, pending, seg = {}, {}, { armed = false }
+    rows, carrier_rows, pending, seg = {}, {}, {}, { armed = false }
   end
 
   local function frame()
@@ -123,6 +173,10 @@ do
     rows[#rows + 1] = { t = t, line = string.format('%.3f,%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.3f,%.7f,%.7f',
       t, p.x, p.y, p.z, s.Heading or 0, s.Pitch or 0, s.Bank or 0, aoa or 0, g.Lat or 0, g.Long or 0) }
     seg.aircraft, seg.pilot = s.Name, LoGetPilotName and LoGetPilotName() or nil
+    if not last_carrier_t or t < last_carrier_t or t - last_carrier_t >= CARRIER_RATE_S then
+      last_carrier_t = t
+      sample_carrier(t, p.x, p.z)
+    end
     local found = segment(t, p.x, p.z, p.y)
     if found then
       pending[#pending + 1] = { from = found.start - LEAD_S, to = found.finish + TAIL_S,

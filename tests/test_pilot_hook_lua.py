@@ -14,7 +14,8 @@ from dcs_lso.acmi import load_recording
 from dcs_lso.hub.app import create_app
 from dcs_lso.hub.db import Pass
 from dcs_lso.hub.pilothook import parse_upload
-from test_pilot_hook import HOME, JOINED_S, PILOT, UCID, make_hub, server_report
+from dcs_lso.hub.service import Hub
+from test_pilot_hook import HOME, JOINED_S, PILOT, SERVER, UCID, make_hub, server_report
 
 ROOT = Path(__file__).parents[1] / "pilot-hook"
 RECORDER = ROOT / "Scripts" / "dcs-lso-pilot-recorder.lua"
@@ -30,22 +31,34 @@ def luajit() -> str:
 
 
 def lua_samples() -> str:
-    """The pilot's own track of a real wire-2 trap as DCS's LoGetSelfData would give it: mission time,
-    DCS coordinates, radians."""
+    """The pilot's own track of a real wire-2 trap as DCS's LoGetSelfData would give it (mission time, DCS
+    coordinates, radians), each with the carrier as LoGetWorldObjects would show it then (from the server's
+    recording of the same trap)."""
+    import bisect
     recording = load_recording(PILOT)
     (jet,) = [o for o in recording.objects.values() if o.name == "FA-18C_hornet"]
+    (carrier,) = [o for o in load_recording(SERVER).objects.values() if o.name == "CVN_75"]
+    times = [c.time for c in carrier.samples]
     rows = []
     for s in jet.samples:
-        t = s.transform
-        rows.append(f"{{{s.time + JOINED_S:.4f},{t.v:.3f},{t.alt:.3f},{t.u:.3f},{math.radians(t.heading):.6f},"
-                    f"{math.radians(t.pitch):.6f},{math.radians(t.roll):.6f},{s.aoa or 0:.3f},{t.lat:.7f},{t.lon:.7f}}}")
+        t, mission_t = s.transform, s.time + JOINED_S
+        # The carrier moves smoothly in the game: interpolate between the server's samples of it.
+        k = min(max(bisect.bisect_left(times, mission_t), 1), len(times) - 1)
+        a, b = carrier.samples[k - 1], carrier.samples[k]
+        f = min(max((mission_t - a.time) / (b.time - a.time), 0.0), 1.0) if b.time > a.time else 0.0
+        lerp = lambda u, v: u + (v - u) * f  # noqa: E731
+        ca, cb = a.transform, b.transform
+        rows.append([mission_t, t.v, t.alt, t.u, math.radians(t.heading), math.radians(t.pitch), math.radians(t.roll),
+                     s.aoa or 0, t.lat, t.lon, lerp(ca.v, cb.v), 0.0, lerp(ca.u, cb.u), math.radians(cb.heading),
+                     lerp(ca.lat, cb.lat), lerp(ca.lon, cb.lon)])
     # Keep the frames coming after the track ends: the jet sits on deck, moving with the carrier at 14 m/s
     # (north), so over the map it never stands still.
-    last = rows[-1].strip("{}").split(",")
+    last = rows[-1]
     for i in range(1, 400):
-        moved = [f"{float(last[0]) + i * 0.1:.4f}", f"{float(last[1]) + i * 1.4:.3f}", *last[2:]]
-        rows.append("{" + ",".join(moved) + "}")
-    return "{" + ",\n".join(rows) + "}"
+        moved = list(last)
+        moved[0], moved[1], moved[10] = last[0] + i * 0.1, last[1] + i * 1.4, last[10] + i * 1.4
+        rows.append(moved)
+    return "{" + ",\n".join("{" + ",".join(f"{v:.7f}" for v in r) + "}" for r in rows) + "}"
 
 
 RECORDER_STUBS = r"""
@@ -63,6 +76,12 @@ LoGetSelfData = function()
            Bank = s[7], LatLongAlt = { Lat = s[9], Long = s[10] } }
 end
 LoGetAngleOfAttack = function() return samples[i][8] end
+LoGetWorldObjects = function()
+  local s = samples[i]
+  return { [7] = { Name = 'FA-18C_hornet', Type = { level1 = 1 }, Position = { x = s[2], y = s[3], z = s[4] } },
+           [42] = { Name = 'CVN_75', UnitName = 'CVN-75 Harry S. Truman', Type = { level1 = 3 },
+                    Position = { x = s[11], y = s[12], z = s[13] }, Heading = s[14], LatLongAlt = { Lat = s[15], Long = s[16] } } }
+end
 LoGetPilotName = function() return 'Wrycu' end
 dofile(RECORDER_PATH)
 for n = 1, #samples do i = n; LuaExportAfterNextFrame() end
@@ -92,10 +111,14 @@ def test_recorder_writes_the_approach(recorded):
     assert chained > 100  # the export function defined before ours still ran every frame
     lines = path.read_text().splitlines()
     assert lines[0] == "# dcs-lso pilot hook 1" and "# aircraft=FA-18C_hornet" in lines and "# pilot=Wrycu" in lines
-    header = lines.index("t,x,y,z,heading,pitch,bank,aoa,lat,lon")
-    body = {"pilot": "Wrycu", "aircraft": "FA-18C_hornet", "mission": MISSION, "csv": "\n".join(lines[header:])}
+    header, carrier = lines.index("t,x,y,z,heading,pitch,bank,aoa,lat,lon"), lines.index("## carrier")
+    assert "# carrier_type=CVN_75" in lines and "# carrier_unit=CVN-75 Harry S. Truman" in lines
+    carrier_csv = [line for line in lines[carrier:] if not line.startswith("#")]
+    body = {"pilot": "Wrycu", "aircraft": "FA-18C_hornet", "mission": MISSION, "csv": "\n".join(lines[header:carrier]),
+            "carrier": {"type": "CVN_75", "unit": "CVN-75 Harry S. Truman", "csv": "\n".join(carrier_csv)}}
     upload = parse_upload(body)
     assert len(upload.rows) > 300 and upload.rows[0]["aoa"] > 0
+    assert upload.carrier is not None and len(upload.carrier.rows) > 100  # about 10 Hz
 
 
 UPLOADER_STUBS = r"""
@@ -139,8 +162,14 @@ package.preload['socket'] = function()
 end
 log = { INFO = 'INFO', write = function(src, lvl, msg) print('LOG ' .. msg) end }
 local callbacks
+package.preload['terrain'] = function() return { GetTerrainConfig = function(k) if k == 'SummerTimeDelta' then return 0 end end } end
 DCS = { setUserCallbacks = function(c) callbacks = c end, getMissionName = function() return 'MISSION' end,
-        isMultiplayer = function() return true end }
+        isMultiplayer = function() return true end,
+        getCurrentMission = function() return { mission = { date = { Year = 2016, Month = 6, Day = 21 }, start_time = 28800 } } end,
+        getSunAzimuthElevation = function(lat, lon, y, m, d, seconds)
+          print(string.format('SUN %.4f %.4f %d-%02d-%02d %.0f', lat, lon, y, m, d, seconds))
+          return 95.0, -12.5
+        end }
 net = { get_my_player_id = function() return 2 end,
         get_player_info = function() return { ucid = 'UCID', name = 'Wrycu', ipaddr = 'HOME' } end,
         get_server_host = function() return '192.168.1.238:10308' end }
@@ -204,6 +233,12 @@ def test_uploader_sends_to_the_current_servers_hub(tmp_path, recorded):
     assert list((out_dir / "sent").glob("approach-*.csv")) and not list(out_dir.glob("approach-*.csv"))
 
 
+def test_uploader_sends_dcss_own_sun(tmp_path, recorded):
+    requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False)
+    (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
+    assert json.loads(body)["sun_elevation"] == -12.5
+
+
 def test_uploader_sends_to_all_hubs_with_their_tokens(tmp_path, recorded):
     requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=True)
     posts = [split(r) for r in requests if r.startswith("POST")]
@@ -223,5 +258,23 @@ def test_the_hub_takes_what_the_pilot_hook_sent(tmp_path, recorded):
     with hub.sessions() as s:
         row = s.get(Pass, report["pass_id"])
         landing = hub.load_pass(s.get(Pass, row.merged_into_id or row.id))
-    # Graded from the pilot hook's own track (recorded AOA, 50 Hz) against the server's carrier.
+    # Graded from the pilot hook's own track (recorded AOA, 50 Hz), merged with the server's report.
     assert landing.track_source == "pilot hooks" and landing.wire_estimate == 2
+
+
+def test_another_communitys_hub_grades_it_on_its_own(tmp_path, recorded):
+    """'Send to all': a hub with no server agent of its own (another community's), with the pilot's token."""
+    requests, _ = run_uploader(tmp_path / "game", recorded[0], send_to_all=True)
+    (_, headers, body), = [split(r) for r in requests if r.startswith("POST") and "hub2" in r]
+    assert json.loads(body)["carrier"]["type"] == "CVN_75"
+    (tmp_path / "hub").mkdir()
+    hub = Hub(f"sqlite:///{tmp_path / 'hub' / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    token = hub.add_pilot_token("Wrycu", "pilot hook")
+    client = TestClient(create_app(hub), client=("8.8.4.4", 50000))
+    r = client.post("/api/v1/pilot-hook/approaches", content=body, headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    (report,) = r.json()["reports"]
+    assert report["grade"]  # graded on its own: the pilot hook sent the carrier
+    with hub.sessions() as s:
+        landing = hub.load_pass(s.get(Pass, report["pass_id"]))
+    assert landing.outcome.value == "trap" and landing.wire_estimate == 2

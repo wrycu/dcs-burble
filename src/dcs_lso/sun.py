@@ -36,10 +36,10 @@ def sun_elevation(lat: float, lon: float, when: datetime) -> float:
     return 90 - math.degrees(math.acos(max(-1.0, min(1.0, cos_zenith))))
 
 
-def is_night(recording: Recording, object_id: int, time_s: float) -> bool | None:
-    """Was it night at `object_id` (e.g. the carrier) at mission time `time_s`? None if the recording
-    has no reference time or the object no position."""
-    reference = recording.globals.get("ReferenceTime")
+def is_night(recording: Recording, object_id: int, time_s: float, start: datetime | None = None) -> bool | None:
+    """Was it night at `object_id` (e.g. the carrier) at mission time `time_s`? `start`: when the recording's
+    clock starts, if not its ReferenceTime. None if that isn't known or the object has no position."""
+    reference = start.isoformat() if start is not None else recording.globals.get("ReferenceTime")
     track = recording.objects.get(object_id)
     if not reference or track is None:
         return None

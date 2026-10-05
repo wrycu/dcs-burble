@@ -158,3 +158,57 @@ def test_upload_is_credited_to_the_tokens_pilot(hub):
     hub.ingest(1, *server_report())
     post(client, hook_upload(pilot="CVW-17 | Wrycu"), hub.token)
     assert [a.name for a in hub.pilot_aliases("Wrycu")] == ["CVW-17 | Wrycu"]
+
+
+def carrier_upload(**extra) -> dict:
+    """The upload with the carrier the pilot approached (the server's recording of it, mission time)."""
+    server = load_recording(SERVER)
+    (carrier,) = [o for o in server.objects.values() if o.name == "CVN_75"]
+    lines = ["t,x,y,z,heading,lat,lon"]
+    for s in carrier.samples:
+        t = s.transform
+        lines.append(f"{s.time:.4f},{t.v:.3f},{t.alt or 0:.3f},{t.u:.3f},{math.radians(t.heading):.6f},{t.lat:.7f},{t.lon:.7f}")
+    return hook_upload(carrier={"type": "CVN_75", "unit": carrier.pilot, "csv": "\n".join(lines)}, **extra)
+
+
+def test_with_the_carrier_a_hook_upload_is_graded_on_its_own(tmp_path):
+    # Another community's hub: no server agent, accepts traps from any server with the pilot's token.
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    token = hub.add_pilot_token("Wrycu", "pilot hook")
+    r = post(client_at(hub, "8.8.4.4"), carrier_upload(), token)
+    assert r.status_code == 200, r.text
+    (report,) = r.json()["reports"]
+    assert report["grade"] and report["created"]  # graded straight away: no server report needed
+    landing = landing_of(hub, report["pass_id"])
+    assert landing.outcome.value == "trap" and landing.wire_estimate == 2 and landing.carrier_type == "CVN_75"
+    rows = client_at(hub).get("/api/v1/passes", params={"days": 0}).json()
+    assert [(x["pilot"], x["outcome"], x["carrier"]) for x in rows] == [("Wrycu", "trap", "CVN-75 Harry S. Truman")]
+    with hub.sessions() as s:
+        assert s.get(Pass, report["pass_id"]).night is None  # mission start (UTC) unknown without a server report
+
+
+def test_with_the_carrier_it_still_merges_with_the_server_agents_report(hub):
+    hub.ingest(1, *server_report())
+    r = post(client_at(hub, HOME), carrier_upload(), None)
+    (report,) = r.json()["reports"]
+    landing = landing_of(hub, report["pass_id"])
+    assert landing.track_source == "pilot hooks" and landing.wire_estimate == 2
+    rows = client_at(hub).get("/api/v1/passes", params={"days": 0}).json()
+    assert len(rows) == 1 and len(rows[0]["reports"]) == 2
+
+
+def test_unknown_ships_are_ignored(hub):
+    body = carrier_upload()
+    body["carrier"]["type"] = "LHA_Tarawa"  # no deck data: as if no carrier was sent
+    (report,) = post(client_at(hub, HOME), body, None).json()["reports"]
+    assert report["grade"] == "" and "waiting" in report["text"]
+
+
+@pytest.mark.parametrize(("elevation", "night"), [(-12.5, True), (30.0, False), (None, None)])
+def test_night_from_dccs_sun_without_a_server_agent(tmp_path, elevation, night):
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    token = hub.add_pilot_token("Wrycu", "pilot hook")
+    body = carrier_upload() if elevation is None else carrier_upload(sun_elevation=elevation)
+    (report,) = post(client_at(hub, "8.8.4.4"), body, token).json()["reports"]
+    with hub.sessions() as s:
+        assert s.get(Pass, report["pass_id"]).night is night
