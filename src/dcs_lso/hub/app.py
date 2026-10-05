@@ -124,6 +124,18 @@ def create_app(hub: Hub) -> FastAPI:
         return {"reports": [{"pass_id": r.pass_id, "created": r.created, "grade": r.grade, "text": r.text,
                              "url": f"/passes/{r.pass_id}"} for r in results]}
 
+    @app.get("/api/v1/pilot-hook/calls")
+    def pilot_hook_calls(request: Request, pass_id: int, ucid: str = "",
+                         authorization: Annotated[str | None, Header()] = None) -> dict:
+        """The live LSO calls on the landing a pilot hook's report became part of (see `Hub.pilot_hook_calls`)."""
+        token = (authorization or "").removeprefix("Bearer ").strip() or None
+        try:
+            return hub.pilot_hook_calls(token, ucid, _client_ip(request), pass_id)
+        except PermissionError as exc:
+            raise HTTPException(401, str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
     @app.get("/api/v1/pilot-hook/here")
     def pilot_hook_here(request: Request, ucid: str = "") -> dict:
         """Is this player (UCID) on one of this hub's servers now? Answered only for the player's own address

@@ -592,6 +592,26 @@ class Hub:
             seen = self._players(s, ucid.strip(), connected_now=True)
         return any(p.ip and p.ip == _ip(client_ip) for p in seen) or (bool(seen) and _is_lan(client_ip))
 
+    def pilot_hook_calls(self, token: str | None, ucid: str | None, client_ip: str | None, pass_id: int) -> dict:
+        """The live LSO calls on the landing a pilot hook upload became part of, so the pilot hook can relay them to
+        its other hubs (they have no server agent here to make them). Only for the pilot hook that sent that report:
+        with the same pilot token, or recognised as the same player (UCID and address). `ready`: a server agent
+        has reported the landing (until then the calls may still come)."""
+        source_id, _ = self.pilot_hook_access(token, ucid, client_ip)
+        with self.sessions() as s:
+            found = s.get(Pass, pass_id)  # the landing the upload's answer named (or the report itself)
+            landing = s.get(Pass, found.merged_into_id) if found is not None and found.merged_into_id else found
+            reports = self.reports(landing, s) if landing is not None else []
+
+            def mine(r: Pass) -> bool:
+                hook = (r.slice.sidecar or {}).get("pilot_hook") or {}
+                return r.source_id == source_id and (bool(token) or hook.get("ucid") == (ucid or "").strip())
+
+            if not any(mine(r) for r in reports):
+                raise LookupError("no such report from this pilot hook")
+            ready = any(r.source.kind == "server" for r in reports)
+            return {"ready": ready, "calls": landing.calls or []}
+
     def ingest_pilot_hook(self, source_id: int, body: dict, pilot: str | None = None) -> list[IngestResult]:
         """An upload from the pilot hook (one approach of the pilot's own jet, see `hub.pilothook`), from a
         source `pilot_hook_access` allowed: stored as own-jet track reports, merged with the server agent's

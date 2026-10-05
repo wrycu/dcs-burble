@@ -38,6 +38,8 @@ In DCS: **Options > Special > DCS-LSO**.
 - Where the server lets clients see other objects, the nearest carrier is recorded too. Then any hub can grade
   the pass on its own, even one whose community doesn't run that server.
 - The uploader sends it in the background while you fly. Sent files move to `Logs/dcs-lso/sent/`.
+- With "send to all", the other hubs also get the live calls the LSO made on that server: the uploader asks the
+  server's hub for them first, so those hubs get your pass up to a minute later.
 - Your trap shows up on the hub's greenie board, merged with the server's report of the same landing.
 - What it's doing is logged in `Saved Games/DCS/Logs/dcs.log`, on lines starting with `DCSLSO-PILOT`.
 

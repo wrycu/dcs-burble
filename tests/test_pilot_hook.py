@@ -212,3 +212,32 @@ def test_night_from_dccs_sun_without_a_server_agent(tmp_path, elevation, night):
     (report,) = post(client_at(hub, "8.8.4.4"), body, token).json()["reports"]
     with hub.sessions() as s:
         assert s.get(Pass, report["pass_id"]).night is night
+
+
+CALLS = [{"time": 1000.0, "along": 900.0, "call": "you're high"}, {"time": 1010.0, "along": 120.0, "call": "power"}]
+
+
+def test_relaying_calls_to_another_hub(tmp_path):
+    # Community A: its server agent made the calls; the pilot hook's report merges into that landing.
+    a = make_hub(tmp_path / "a")
+    data, meta = server_report()
+    meta["calls"] = [{**c, "time": c["time"] - 1000 + meta["pass"]["start_time"]} for c in CALLS]
+    client_a = client_at(a, HOME)
+    (report,) = post(client_a, carrier_upload(), None).json()["reports"]
+    asked = lambda: client_a.get("/api/v1/pilot-hook/calls", params={"pass_id": report["pass_id"], "ucid": UCID})  # noqa: E731
+    assert asked().json() == {"ready": False, "calls": []}  # no server report yet: the calls may still come
+    a.ingest(1, data, meta)
+    answer = asked().json()
+    assert answer["ready"] and [c["call"] for c in answer["calls"]] == ["you're high", "power"]
+    # Only that pilot hook may ask: another address, another UCID.
+    assert client_at(a, "8.8.4.4").get("/api/v1/pilot-hook/calls", params={"pass_id": report["pass_id"], "ucid": UCID}).status_code == 401
+    assert client_a.get("/api/v1/pilot-hook/calls", params={"pass_id": report["pass_id"], "ucid": "other"}).status_code in (401, 404)
+    # Community B: no server agent; the pilot hook relays A's calls with its upload.
+    b = Hub(f"sqlite:///{tmp_path / 'b.db'}", tmp_path / "b", pilot_hook_accept="any")
+    token = b.add_pilot_token("Wrycu", "pilot hook")
+    body = carrier_upload(calls=answer["calls"], calls_from="lso.wrycu.com")
+    (relayed,) = post(client_at(b, "8.8.4.4"), body, token).json()["reports"]
+    with b.sessions() as s:
+        assert [c["call"] for c in s.get(Pass, relayed["pass_id"]).calls] == ["you're high", "power"]
+    page = client_at(b).get(f"/passes/{relayed['pass_id']}").text
+    assert "relayed by the pilot hook" in page and "lso.wrycu.com" in page and "Power (" in page

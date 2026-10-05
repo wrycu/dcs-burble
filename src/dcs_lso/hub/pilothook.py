@@ -73,6 +73,10 @@ class HookUpload:
     rows: list[dict[str, float]]
     carrier: HookCarrier | None = None
     sun_elevation: float | None = None  # DCS's own sun (degrees) where and when the approach ended
+    # Live LSO calls relayed from the hub of the server the pass was flown on (its server agent made them), and
+    # that hub's address: {"time", "along", "call"}, mission time.
+    calls: list[dict] | None = None
+    calls_from: str | None = None
 
 
 def parse_upload(body: dict) -> HookUpload:
@@ -120,7 +124,21 @@ def parse_upload(body: dict) -> HookUpload:
                       ucid=optional("ucid"), server=optional("server"), sent_at=sent_at,
                       sent_model_time=sent_model_time, livery=optional("livery"),
                       onboard_num=optional("onboard_num"), rows=rows, carrier=carrier,
-                      sun_elevation=_number(body.get("sun_elevation")))
+                      sun_elevation=_number(body.get("sun_elevation")), calls=_calls(body.get("calls")),
+                      calls_from=optional("calls_from"))
+
+
+def _calls(value: object) -> list[dict] | None:
+    """Relayed live calls, kept only if well-formed."""
+    if not isinstance(value, list):
+        return None
+    calls = []
+    for c in value[:200]:
+        if isinstance(c, dict) and isinstance(c.get("call"), str):
+            time, along = _number(c.get("time")), _number(c.get("along"))
+            if time is not None and along is not None:
+                calls.append({"time": time, "along": along, "call": c["call"][:60]})
+    return calls or None
 
 
 def _number(value: object) -> float | None:
@@ -210,6 +228,9 @@ def hook_reports(upload: HookUpload, work_dir: Path) -> list[tuple[bytes, dict]]
         meta["clock"] = "mission"
         if upload.sun_elevation is not None:
             meta["sun_elevation"] = upload.sun_elevation
+        if upload.calls:
+            meta["calls"] = [c for c in upload.calls if start - 60 <= c["time"] <= end + 30]  # this pass's
+            meta["calls_from"] = upload.calls_from
         meta["pilot_hook"] = {"version": upload.version, "ucid": upload.ucid, "server": upload.server}
         if upload.sent_at is not None and upload.sent_model_time is not None:
             ended = upload.sent_at - timedelta(seconds=max(0.0, upload.sent_model_time - end))

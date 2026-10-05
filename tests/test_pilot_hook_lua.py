@@ -147,12 +147,15 @@ local function conn_for()
   function c:receive()
     io.write('<<<REQUEST\n', self.sent, '\nREQUEST>>>\n')
     local host = self.sent:match('Host: ([^\r]+)')
+    if self.sent:match('^GET [^ ]*/calls%?') then
+      return nil, 'closed', 'HTTP/1.1 200 OK\r\n\r\n{"ready": true, "calls": [{"time": 1105.0, "along": 120.0, "call": "power"}]}'
+    end
     if self.sent:match('^GET') then
       local here = host == 'hub1'
       return nil, 'closed', 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"here": ' .. tostring(here) .. '}'
     end
     if host == REFUSE_HOST then return nil, 'closed', 'HTTP/1.1 401 Unauthorized\r\n\r\n{"detail": "not a pilot token"}' end
-    return nil, 'closed', 'HTTP/1.1 200 OK\r\n\r\n{"reports": [{"text": "waiting"}]}'
+    return nil, 'closed', 'HTTP/1.1 200 OK\r\n\r\n{"reports": [{"pass_id": 7, "text": "waiting"}]}'
   end
   function c:close() end
   return c
@@ -246,6 +249,18 @@ def test_a_refused_token_is_tried_again_next_mission(tmp_path, recorded):
     assert len(to_hub2) == 1  # not hammered for the rest of the mission
     # Kept (not moved to sent/), so it goes again once the token is fixed and a new mission starts.
     assert list(out_dir.glob("approach-*.csv")) and not list((out_dir / "sent").glob("*.csv"))
+
+
+def test_calls_are_relayed_from_the_servers_hub(tmp_path, recorded):
+    requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=True)
+    firsts = [r.split("\r\n")[0] + " " + r.split("Host: ")[1].split("\r\n")[0] for r in requests if "/pilot-hook/here" not in r.split("\r\n")[0]]
+    # The server's hub (hub1) first, then its calls, then the other hub with them.
+    assert firsts == ["POST /api/v1/pilot-hook/approaches HTTP/1.1 hub1",
+                      f"GET /api/v1/pilot-hook/calls?pass_id=7&ucid={UCID} HTTP/1.1 hub1",
+                      "POST /lso/api/v1/pilot-hook/approaches HTTP/1.1 hub2.example.com"]
+    bodies = {split(r)[1]["Host"]: json.loads(split(r)[2]) for r in requests if r.startswith("POST")}
+    assert bodies["hub2.example.com"]["calls"] == [{"time": 1105.0, "along": 120.0, "call": "power"}]
+    assert bodies["hub2.example.com"]["calls_from"] == "hub1" and "calls" not in bodies["hub1"]
 
 
 def test_uploader_sends_to_all_hubs_with_their_tokens(tmp_path, recorded):

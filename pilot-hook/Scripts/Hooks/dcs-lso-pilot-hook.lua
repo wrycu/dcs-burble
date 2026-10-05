@@ -21,6 +21,8 @@ local HERE_EVERY_S = 60         -- ask the hubs again whether we're on one of th
 local RETRY_S = 30              -- after a network error
 local REQUEST_TIMEOUT_S = 30
 local GIVE_UP_S = 24 * 3600
+local CALLS_WAIT_S = 90         -- relaying calls: how long other hubs wait for the server's hub to have them
+local CALLS_POLL_S = 10
 
 local dir = lfs.writedir() .. 'Logs/dcs-lso/'
 local hubs = {}                 -- { url, host, port, path, token, ip, here, here_at, retry_at }
@@ -210,7 +212,7 @@ local function stamp(name)
   f:close()
 end
 
-local function upload_body(meta, csv, carrier)
+local function upload_body(meta, csv, carrier, calls)
   return '{"version":' .. VERSION
     .. ',"pilot":' .. json_string(meta.name or meta.pilot)
     .. ',"aircraft":' .. json_string(meta.aircraft)
@@ -221,6 +223,7 @@ local function upload_body(meta, csv, carrier)
     .. ',"sent_model_time":' .. (tonumber(meta.model_time) or 0)
     .. (tonumber(meta.sun_elevation) and (',"sun_elevation":' .. tonumber(meta.sun_elevation)) or '')
     .. ',"csv":' .. json_string(csv)
+    .. (calls and (',"calls":' .. calls.raw .. ',"calls_from":' .. json_string(calls.from)) or '')
     .. (carrier ~= '' and meta.carrier_type and (',"carrier":{"type":' .. json_string(meta.carrier_type)
         .. ',"unit":' .. json_string(meta.carrier_unit) .. ',"csv":' .. json_string(carrier) .. '}') or '')
     .. '}'
@@ -233,12 +236,36 @@ local function move(name, sub)
 end
 
 -- The hubs this file still has to go to.
+-- The hubs this file still has to go to: the hub of the server we're on first.
 local function destinations(state)
   local out = {}
-  for i, hub in ipairs(hubs) do
-    if not state.done[i] and (send_to_all or hub.here) then out[#out + 1] = i end
+  for _, first in ipairs({ true, false }) do
+    for i, hub in ipairs(hubs) do
+      if not state.done[i] and (send_to_all or hub.here) and (hub.here == first) then out[#out + 1] = i end
+    end
   end
   return out
+end
+
+-- Relaying the live LSO calls: the hub of the server we flew on has them (its server agent made them), the
+-- others don't. Once our upload is in there, ask it for the calls on that landing (until its server agent has
+-- reported it, or CALLS_WAIT_S), and send them along to the other hubs.
+local function waiting_for_calls(state, t)
+  if state.calls or not state.calls_until then return false end
+  return t < state.calls_until
+end
+
+local function ask_for_calls(state, t)
+  local hub = hubs[state.calls_hub]
+  state.calls_next = t + CALLS_POLL_S
+  return new_request(hub, 'GET', string.format('/api/v1/pilot-hook/calls?pass_id=%d&ucid=%s', state.calls_pass,
+                                               context.ucid or ''), nil, function(status, body)
+    if status == 200 and body:match('"ready"%s*:%s*true') then
+      state.calls = { raw = body:match('"calls"%s*:%s*(%b[])') or '[]', from = hub.host }
+    elseif status and status ~= 200 then
+      state.calls_until = nil  -- it can't give them: send without
+    end
+  end)
 end
 
 local function start_next()
@@ -264,16 +291,34 @@ local function start_next()
       if next(state.done) ~= nil then move(name, 'sent')  -- sent wherever it should go
       elseif t - state.first_seen > GIVE_UP_S then note(name .. ': no hub took it; moved to unsent/') move(name, 'unsent') end
     else
+      local here_pending = false
+      for _, i in ipairs(todo) do if hubs[i].here then here_pending = true end end
       for _, i in ipairs(todo) do
         local hub = hubs[i]
-        if t >= hub.retry_at then
+        local wait = false
+        if not hub.here then
+          if here_pending then
+            wait = true  -- the server's hub first (it has the calls)
+          elseif waiting_for_calls(state, t) then
+            if t >= (state.calls_next or 0) then return ask_for_calls(state, t) end
+            wait = true
+          end
+        end
+        if not wait and t >= hub.retry_at then
           local meta, csv, carrier = read_file(dir .. name)
           if not meta then files[name] = nil return nil end
           if not meta.mission then return nil end  -- not stamped yet (see stamp)
-          return new_request(hub, 'POST', '/api/v1/pilot-hook/approaches', upload_body(meta, csv, carrier), function(status, body)
+          local calls = not hub.here and state.calls or nil
+          return new_request(hub, 'POST', '/api/v1/pilot-hook/approaches', upload_body(meta, csv, carrier, calls), function(status, body)
             if status == 200 then
-              note(name .. ' -> ' .. hub.url .. ': ' .. (body:match('"text"%s*:%s*"([^"]*)"') or 'sent'))
+              note(name .. ' -> ' .. hub.url .. ': ' .. (body:match('"text"%s*:%s*"([^"]*)"') or 'sent')
+                   .. (calls and ' (with the LSO calls)' or ''))
               state.done[i] = true
+              local pass_id = tonumber(body:match('"pass_id"%s*:%s*(%d+)'))
+              if hub.here and pass_id and not state.calls_until then
+                state.calls_hub, state.calls_pass = i, pass_id
+                state.calls_until, state.calls_next = now() + CALLS_WAIT_S, now()
+              end
             elseif status == 401 or status == 403 then
               -- Not accepted (e.g. a wrong pilot token): try again next mission, after the settings are read again.
               note(name .. ' -> ' .. hub.url .. ': refused (' .. status .. ') ' .. body:sub(1, 200)
