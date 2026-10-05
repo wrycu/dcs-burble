@@ -153,3 +153,21 @@ def test_keep_your_turn_in_when_overshooting():
     engine = CalloutEngine()
     assert feed(engine, [state(t=i * 0.1, along=1.0 * NM, lateral=30.0, heading_error=-20.0, roll=-30.0)
                          for i in range(30)]) == []
+
+
+def test_urgent_calls_follow_quickly_others_wait_longer():
+    # "You're high" from 0.4 s (0.5 s long, so said until 0.9 s); then from 1.0 s the jet is low and sinking.
+    th = Thresholds()
+
+    def after_high(gs: float, gs_rate: float) -> tuple[Call, float]:
+        engine = CalloutEngine(th, {Call.HIGH: 0.5})
+        states = [state(t=i * 0.05, along=0.35 * NM - i * 3, gs=0.8) for i in range(20)]
+        states += [state(t=1.0 + i * 0.05, along=0.35 * NM - 60 - i * 3, gs=gs, gs_rate=gs_rate) for i in range(60)]
+        events = [e for s in states if (e := engine.update(s)) is not None]
+        assert events[0].call is Call.HIGH
+        return events[1].call, events[1].time - (events[0].time + 0.5)
+
+    call, gap = after_high(gs=-0.8, gs_rate=-0.4)  # sinking low: "power" can't wait
+    assert call in (Call.POWER, Call.LOW) and th.urgent_spacing_s <= gap < th.spacing_s
+    call, gap = after_high(gs=-0.45, gs_rate=0.0)  # a little low: coaching, unhurried
+    assert call is Call.LITTLE_LOW and gap >= th.spacing_s

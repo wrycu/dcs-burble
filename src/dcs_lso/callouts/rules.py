@@ -62,6 +62,8 @@ class Call(StrEnum):
 PRIORITY = {call: i for i, call in enumerate(Call)}
 POWER_CALLS = frozenset({Call.POWER, Call.POWER_X2, Call.POWER_X3})
 WAVE_OFFS = frozenset({Call.WAVE_OFF, Call.WAVE_OFF_FOUL_DECK, Call.WAVE_OFF_GEAR})
+# Calls that can't wait: said after only the short gap (Thresholds.urgent_spacing_s).
+URGENT_CALLS = POWER_CALLS | {Call.LOW, Call.DONT_SETTLE}
 # A trap welcome naming the wire: {plain welcome: {wire: call}}.
 WELCOME_WIRE = {
     Call.TRAPPED: {n: Call[f"TRAPPED_WIRE_{n}"] for n in (1, 2, 3, 4)},
@@ -134,8 +136,10 @@ class Thresholds:
     # ...the same call is not repeated until this long after it finished being said (and never
     # while being corrected)...
     repeat_s: float = 2.5
-    # ...and a new call waits at least this long after the previous one finished being said.
-    spacing_s: float = 0.5
+    # ...and a new call waits at least this long after the previous one finished being said (unhurried
+    # coaching), or only urgent_spacing_s for an urgent one (URGENT_CALLS; a wave-off interrupts anything).
+    spacing_s: float = 1.0
+    urgent_spacing_s: float = 0.5
     # Assumed length of a spoken call when the real clip length isn't known (e.g. replays).
     default_call_s: float = 0.8
 
@@ -311,7 +315,8 @@ class CalloutEngine:
             return self._keep_coming(s, active)
         call = min(ready, key=PRIORITY.__getitem__)
         # A wave-off interrupts anything; other calls wait for the previous one to finish.
-        if call not in WAVE_OFFS and s.time - self._busy_until < th.spacing_s:
+        gap = th.urgent_spacing_s if call in URGENT_CALLS else th.spacing_s
+        if call not in WAVE_OFFS and s.time - self._busy_until < gap:
             return None
         said_as = call
         if call is Call.POWER and self._last_power is not None and s.time - self._last_power <= th.power_escalate_s:
