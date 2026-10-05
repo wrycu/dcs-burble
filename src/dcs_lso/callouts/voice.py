@@ -25,8 +25,10 @@ PHRASES: dict[Call, str | tuple[str, ...]] = {
     Call.WAVE_OFF_FOUL_DECK: "Wave off, wave off, foul deck!",
     Call.WAVE_OFF_GEAR: "Wave off, gear!",
     Call.BOLTER: "Bolter, bolter, bolter!",
+    # Welcomes: "home"/"back" variants are for jets returning to the carrier they launched from, "aboard" ones
+    # for visitors, and ones saying neither for both (see `welcome_kind`).
     Call.TRAPPED: ("Welcome aboard.", "Welcome home.", "Welcome aboard, nice trap.", "Welcome home, good trap.",
-                   "Welcome back aboard."),
+                   "Welcome back aboard.", "Welcome back.", "Welcome aboard, good trap."),
     Call.TRAPPED_WAVED_OFF: ("Welcome aboard. That was a wave off, by the way.",
                              "Welcome home. See me in the ready room.",
                              "Welcome aboard. You did hear the wave off, right?",
@@ -56,12 +58,16 @@ PHRASES: dict[Call, str | tuple[str, ...]] = {
     Call.SLOW: "You're slow.",
     Call.KEEP_TURN_IN: "Keep your turn in.",
     Call.KEEP_IT_COMING: ("Keep it coming.", "Keep it coming, looking good."),
+    Call.ROUGH_LANDING: ("The crew chief wants to talk to you.", "Maintenance would like a word about that landing.",
+                         "Go easy on my deck.", "The airframe guys are going to love that one.",
+                         "Somebody check that landing gear."),
 }
 # Spoken digit by digit to put a side number in front of a call ("three zero one, power") when more
 # than one aircraft is in the groove.
 DIGITS = {"0": "Zero", "1": "One", "2": "Two", "3": "Three", "4": "Four", "5": "Five", "6": "Six", "7": "Seven",
           "8": "Eight", "9": "Nine"}
 SIDE_NUMBER_GAP_FRAMES = 2  # a short pause (80 ms) between the side number and the call
+FOLLOW_GAP_FRAMES = 8  # and between a welcome and a remark after it (320 ms)
 SILENCE_LEVEL = 150  # trimmed from the ends of digit clips (16-bit samples)...
 TRIM_MARGIN = 480  # ...keeping 30 ms either side so soft consonants ("eight", "two") survive
 
@@ -72,6 +78,8 @@ for _wire, _word in ((1, "one"), (2, "two"), (3, "three"), (4, "four")):
         f"Welcome home. {_word.capitalize()} wire.",
         f"{_word.capitalize()} wire, welcome aboard.",
         f"Nice trap, {_word} wire. Welcome home.",
+        f"Nice trap, {_word} wire. Welcome aboard.",
+        f"Welcome back, {_word} wire.",
     )
     PHRASES[Call[f"TRAPPED_WAVED_OFF_WIRE_{_wire}"]] = (
         f"{_word.capitalize()} wire. That was a wave off, by the way.",
@@ -79,6 +87,15 @@ for _wire, _word in ((1, "one"), (2, "two"), (3, "three"), (4, "four")):
         f"{_word.capitalize()} wire. You did hear the wave off, right?",
         f"Welcome home, {_word} wire. We'll talk about that wave off later.",
     )
+
+
+def welcome_kind(text: str) -> str | None:
+    """"home" for a welcome back to the jet's own carrier ("welcome home", "welcome back"), "aboard" for a
+    visitor's, None for one that says neither."""
+    text = text.lower()
+    if "home" in text or "back" in text:
+        return "home"
+    return "aboard" if "aboard" in text else None
 
 
 def is_praise(text: str) -> bool:
@@ -178,10 +195,19 @@ class ClipLibrary:
     def __getitem__(self, call: Call) -> Clip:
         return self.clips[call][0]
 
-    def pick(self, call: Call, praise: bool = True) -> Clip:
-        """A random variant; without `praise`, never one that compliments the landing."""
+    def pick(self, call: Call, praise: bool = True, home: bool | None = None) -> Clip:
+        """A random variant; without `praise`, never one that compliments the landing. `home`: a welcome back to
+        the jet's own carrier (True) or a visitor's (False), else either."""
         clips = self.clips[call] if praise else [c for c in self.clips[call] if not is_praise(c.text)]
+        if home is not None:
+            wrong = "aboard" if home else "home"
+            clips = [c for c in clips if welcome_kind(c.text) != wrong] or clips
         return random.choice(clips or self.clips[call])
+
+    def followed_by(self, clip: Clip, then: Clip) -> Clip:
+        """`clip`, a short pause, then `then` (e.g. a welcome and a dig about the landing)."""
+        gap = encode_pcm(array("h", [0] * (FRAME_SAMPLES * FOLLOW_GAP_FRAMES)))
+        return Clip(f"{clip.text} {then.text}", clip.frames + gap + then.frames)
 
     def durations(self) -> dict[Call, float]:
         """How long each call takes to say (its longest variant)."""

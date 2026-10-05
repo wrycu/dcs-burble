@@ -8,6 +8,8 @@ analysed with the same offline code as everything else.
 
 from __future__ import annotations
 
+import math
+
 from typing import Protocol
 
 from ..acmi import ObjectRemoved, ObjectTrack, ObjectUpdate, Record, Recording, Sample
@@ -32,6 +34,13 @@ def _extrapolate(a: tuple[float, CarrierPose], b: tuple[float, CarrierPose], t: 
 ON_DECK_HEIGHT_M = 3.0
 FOUL_DECK_STALE_S = 3.0
 
+# Seen sitting on a carrier's deck (inside the ship's footprint, at deck height, slower over the map than any
+# aircraft flies: on deck the jet moves with the ship): it departed from that carrier, so a later trap there is
+# "welcome home". Only counts this long before the trap (not the rollout of the trap being welcomed).
+DECK_HALF_WIDTH_M, DECK_HALF_LENGTH_M = 45.0, 170.0
+PARKED_SPEED_MS = 25.0
+DEPARTED_BEFORE_S = 120.0
+
 # Keep this much history per object (slices reach back 30 s before detection, and
 # nearby-aircraft checks need the whole window).
 HISTORY_S = 600.0
@@ -49,6 +58,7 @@ class PassListener(Protocol):
 class LivePassDetector:
     def __init__(self, listener: PassListener | None = None) -> None:
         self.listener = listener
+        self._on_deck: dict[tuple[int, int], float] = {}  # (carrier, aircraft) -> first seen sitting on its deck
         self.tracks: dict[int, ObjectTrack] = {}
         self._trackers: dict[tuple[int, int], tuple[PassTracker, DeckFrame]] = {}
         # Last two (time, pose) samples per carrier, for extrapolating to aircraft sample times.
@@ -97,6 +107,8 @@ class LivePassDetector:
         for carrier_id, poses in self._carrier_pose.items():
             pose = _extrapolate(poses[0], poses[-1], sample.time) if len(poses) == 2 else poses[-1][1]
             key = (carrier_id, plane.id)
+            if key not in self._on_deck and self._sitting_on_deck(carrier_id, pose, plane, sample):
+                self._on_deck[key] = sample.time
             entry = self._trackers.get(key)
             if entry is None:
                 if not is_recovery_attempt(pose, sample.transform):
@@ -110,6 +122,25 @@ class LivePassDetector:
             elif self.listener is not None:
                 self.listener.on_sample(self.tracks[carrier_id], plane, pose, sample, frame)
         return finished
+
+    def _sitting_on_deck(self, carrier_id: int, pose: CarrierPose, plane: ObjectTrack, sample: Sample) -> bool:
+        t = sample.transform
+        if t.u is None or t.v is None or t.alt is None or len(plane.samples) < 2:
+            return False
+        x, z = pose.to_local(t.u, t.v)
+        deck = pose.alt + CARRIERS[self.tracks[carrier_id].name].deck_altitude
+        if abs(x) > DECK_HALF_WIDTH_M or abs(z) > DECK_HALF_LENGTH_M or abs(t.alt - deck) > ON_DECK_HEIGHT_M:
+            return False
+        earlier = next((s for s in reversed(plane.samples[:-1]) if sample.time - s.time >= 0.5), None)
+        if earlier is None or earlier.transform.u is None or earlier.transform.v is None:
+            return False
+        speed = math.hypot(t.u - earlier.transform.u, t.v - earlier.transform.v) / (sample.time - earlier.time)
+        return speed < PARKED_SPEED_MS
+
+    def departed_from(self, carrier_id: int, aircraft_id: int, before: float) -> bool:
+        """Was this aircraft sitting on this carrier's deck earlier in the mission (it launched from it)?"""
+        seen = self._on_deck.get((carrier_id, aircraft_id))
+        return seen is not None and seen <= before - DEPARTED_BEFORE_S
 
     def landing_area_foul(self, carrier_id: int, pose: CarrierPose, frame: DeckFrame, exclude: int, now: float) -> bool:
         """Is another aircraft on deck in the landing area right now (from the ramp to the forward end

@@ -545,3 +545,29 @@ def test_ai_passes_get_calls_but_are_not_uploaded(tmp_path, clips, players, uplo
                                                          tmp_path / "edge", clips, hooks=PlayerHooks(players)))
     assert any(call is Call.TRAPPED or call in WELCOMES for call, _ in sink.said)  # the LSO still talked to it
     assert bool(collector.outbox.pending()) is uploaded
+
+
+@pytest.mark.parametrize(("roll", "dig"), [(0.0, True), (0.99, False)])
+def test_rough_landings_get_a_dig_now_and_then(tmp_path, clips, monkeypatch, roll, dig):
+    """A poor pass (graded No Grade) gets a dig after its welcome, but only by chance (default one in three)."""
+    import dcs_lso.agent.callouts as callouts_mod
+    from dcs_lso.callouts.voice import PHRASES
+    monkeypatch.setattr(callouts_mod.random, "random", lambda: roll)
+    _, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi",
+                                           tmp_path / "edge", clips))
+    assert sink.said[-1][0] is Call.TRAPPED
+    assert any(sink.texts[-1].endswith(d) for d in PHRASES[Call.ROUGH_LANDING]) is dig
+
+
+def test_a_visitor_is_welcomed_aboard_not_home(tmp_path, clips, monkeypatch):
+    """The jet in this recording never sat on the carrier's deck before its trap: "welcome aboard", never "home"."""
+    import dcs_lso.agent.callouts as callouts_mod
+    import dcs_lso.callouts.voice as voice
+    monkeypatch.setattr(callouts_mod.random, "random", lambda: 0.99)  # no dig: the last pick is the welcome
+    picked = []
+    real = voice.random.choice
+    monkeypatch.setattr(voice.random, "choice", lambda options: picked.append([c.text for c in options]) or real(options))
+    _, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi",
+                                           tmp_path / "edge", clips))
+    welcome_options = picked[-1]
+    assert welcome_options and all(voice.welcome_kind(t) != "home" for t in welcome_options)

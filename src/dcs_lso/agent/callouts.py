@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass, field, fields, replace
 from collections.abc import Callable
@@ -45,6 +46,8 @@ KEEP_CALLS_S = 900.0
 GROOVE_BUSY_S = 2.0
 # Welcomes that compliment the landing ("nice trap") only for these grades.
 PRAISE_GRADES = frozenset({Grade.PERFECT, Grade.OK})
+# ...and now and then (Thresholds.rough_dig_chance) add a dig about the landing for these.
+ROUGH_GRADES = frozenset({Grade.NO_GRADE, Grade.CUT})
 # On a trap, wait this long for DCS's wire (its LSO grade arrives ~0.3 s after we detect the trap)
 # so the welcome can name it; checked every WIRE_POLL_S.
 WIRE_WAIT_S = 0.6
@@ -207,6 +210,8 @@ class LiveCallouts:
         self.carrier_radio: Callable[[str], Radio | None] | None = None
         # Is another aircraft in the landing area (carrier id, pose, frame, this aircraft's id, time)?
         self.deck_foul: Callable[[int, CarrierPose, DeckFrame, int, float], bool] | None = None
+        # Did this aircraft launch from this carrier earlier (carrier id, aircraft id, before)? For "welcome home".
+        self.departed_from: Callable[[int, int, float], bool] | None = None
         # A pilot's side number at a mission time (from the hook), to say before calls when the groove is busy.
         self.side_number_for: Callable[[str | None, float], str | None] | None = None
         self._groove_seen: dict[tuple[int, int], float] = {}  # (carrier, aircraft) -> last time in the groove
@@ -283,8 +288,13 @@ class LiveCallouts:
         call = WELCOME_WIRE[event.call].get(wire, event.call) if wire is not None else event.call
         if made is not None and call in self.clips:
             made.call = call  # e.g. "welcome aboard, two wire"
+        # "Welcome home" for a jet back on the carrier it launched from, "welcome aboard" for a visitor.
+        home = self.departed_from(carrier.id, plane.id, event.time) if self.departed_from is not None else None
+        # A dig about a poor or cut landing, now and then (a trap through a wave-off already gets the salty one).
+        dig = (event.call is Call.TRAPPED and grade in ROUGH_GRADES and Call.ROUGH_LANDING in self.clips
+               and random.random() < self.settings.thresholds.rough_dig_chance)
         await self._say(carrier, plane, call if call in self.clips else event.call, event,
-                        praise=grade in PRAISE_GRADES)
+                        praise=grade in PRAISE_GRADES, home=home, dig=dig)
 
     def _side_number(self, carrier_id: int, plane: ObjectTrack, now: float) -> str | None:
         """The pilot's side number, if another aircraft is in this carrier's groove too."""
@@ -293,9 +303,13 @@ class LiveCallouts:
         return self.side_number_for(plane.pilot, now)
 
     async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent,
-                   praise: bool = False, side_number: str | None = None) -> None:
+                   praise: bool = False, side_number: str | None = None, home: bool | None = None,
+                   dig: bool = False) -> None:
         radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
-        clip = self.clips.with_side_number(self.clips.pick(call, praise), side_number)  # whose call, if busy
+        clip = self.clips.pick(call, praise, home)
+        if dig:
+            clip = self.clips.followed_by(clip, self.clips.pick(Call.ROUGH_LANDING))
+        clip = self.clips.with_side_number(clip, side_number)  # whose call, if busy
         log.info("CALL %s -> %s (%.2f nm, %s): %r", call.value, plane.pilot or hex(plane.id),
                  event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}", clip.text)
         await self.sink.say(call, clip, radio, time.monotonic())

@@ -479,6 +479,7 @@ class Agent:
         if callouts is not None:
             callouts.grade_for = lambda carrier_id, aircraft_id: _provisional_grade(session, carrier_id, aircraft_id)
             callouts.deck_foul = session.detector.landing_area_foul
+            callouts.departed_from = session.detector.departed_from
             if self.hooks is not None:
                 hooks = self.hooks
                 callouts.side_number_for = lambda pilot, t: (hooks.slot_for(pilot, t) or {}).get("onboard_num")

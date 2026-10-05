@@ -361,3 +361,24 @@ def test_hook_feed_knows_who_is_a_player(tmp_path):
     assert feed.player_names() == {"Host Pilot", "Wrycu"}
     feed.add(parse_hook_line(prefix + '{"event":"handler_installed","t":0}'))  # a new mission
     assert feed.player_names() is None
+
+
+def test_a_jet_sitting_on_the_deck_departed_from_that_carrier():
+    from dcs_lso.acmi import AcmiParser
+    from dcs_lso.agent.live import LivePassDetector
+    detector = LivePassDetector()
+    parser = AcmiParser()
+    lines = ["FileType=text/acmi/tacview", "FileVersion=2.2", "0,ReferenceTime=2016-06-21T05:00:00Z"]
+    for i in range(30):  # the carrier steams north at 10 m/s; the jet sits on its deck, then takes off
+        t = i * 1.0
+        lines.append(f"#{t}")
+        lines.append(f"1,T=35|35|0|0|0|0|0|{10 * t}|0,Type=Sea+Watercraft+AircraftCarrier,Name=CVN_75")
+        jet_alt = 20.2 if t < 10 else 20.2 + (t - 10) * 15
+        jet_v = 10 * t - 60 if t < 10 else 10 * t - 60 + (t - 10) ** 2 * 5
+        lines.append(f"2,T=35|35|{jet_alt}|0|0|0|5|{jet_v}|0,Type=Air+FixedWing,Name=FA-18C_hornet,Pilot=Wrycu")
+    for line in lines:
+        for record in parser.feed(line):
+            detector.feed(record)
+    assert detector.departed_from(1, 2, before=600.0)  # a trap here later: "welcome home"
+    assert not detector.departed_from(1, 2, before=60.0)  # not within 2 minutes of being on deck (the trap itself)
+    assert not detector.departed_from(1, 3, before=600.0)  # another jet: never on this deck

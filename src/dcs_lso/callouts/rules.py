@@ -56,6 +56,7 @@ class Call(StrEnum):
     SLOW = "you're slow"
     KEEP_TURN_IN = "keep your turn in"  # overshooting the turn to final (before the groove)
     KEEP_IT_COMING = "keep it coming"  # reassurance: on glideslope and centerline, nothing to say
+    ROUGH_LANDING = "rough landing"  # a dig after the welcome, now and then, for a poor or cut pass (not a call of its own)
 
 
 # Lower number = more urgent (declaration order above).
@@ -140,6 +141,9 @@ class Thresholds:
     # coaching), or only urgent_spacing_s for an urgent one (URGENT_CALLS; a wave-off interrupts anything).
     spacing_s: float = 1.0
     urgent_spacing_s: float = 0.5
+    # How often a poor (No Grade) or cut trap's welcome gets a dig ("the crew chief wants to talk to you"): now
+    # and then, not every time.
+    rough_dig_chance: float = 0.33
     # Assumed length of a spoken call when the real clip length isn't known (e.g. replays).
     default_call_s: float = 0.8
 

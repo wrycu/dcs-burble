@@ -171,3 +171,16 @@ def test_urgent_calls_follow_quickly_others_wait_longer():
     assert call in (Call.POWER, Call.LOW) and th.urgent_spacing_s <= gap < th.spacing_s
     call, gap = after_high(gs=-0.45, gs_rate=0.0)  # a little low: coaching, unhurried
     assert call is Call.LITTLE_LOW and gap >= th.spacing_s
+
+
+def test_welcome_kinds_and_picking():
+    from dcs_lso.callouts.voice import PHRASES, variants, welcome_kind
+    assert welcome_kind("Welcome home, good trap.") == welcome_kind("Welcome back aboard.") == "home"
+    assert welcome_kind("Two wire, welcome aboard.") == "aboard"
+    assert welcome_kind("Two wire. That was a wave off, by the way.") is None
+    # Every welcome has both kinds to pick from (or ones that suit both).
+    welcomes = [Call.TRAPPED, Call.TRAPPED_WAVED_OFF] + [c for c in Call if c.name.startswith("TRAPPED_")]
+    for call in welcomes:
+        kinds = {welcome_kind(t) for t in variants(call)}
+        assert ("home" in kinds or None in kinds) and ("aboard" in kinds or None in kinds), call
+    assert len(variants(Call.ROUGH_LANDING)) >= 3 and Call.ROUGH_LANDING in PHRASES
