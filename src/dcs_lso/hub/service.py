@@ -506,6 +506,8 @@ class Hub:
                         self._regrade(s, landing)  # DCS's wire, and the accuracy that comes with it
                     elif existing.kind == "track":
                         self._show_dcs_only(s, existing)
+                    elif not existing.is_track:
+                        self._regrade(s, existing)  # the landing itself: its wire and accuracy change
                 shown = s.get(Pass, existing.merged_into_id) if existing.merged_into_id else existing
                 g = shown.grade
                 return IngestResult(shown.id, False, g.grade if g else "", g.text if g else "")

@@ -379,3 +379,15 @@ def test_where_a_pilot_hooks_landing_was_flown(tmp_path, extra, where):
     assert landing["accuracy"]["flown"]["where"] == where
     card = client.get(f"/passes/{report['pass_id']}/card.svg").text
     assert ("another server" in card) == (where == "elsewhere")
+
+
+def test_accuracy_is_rescored_when_dcss_grade_arrives_later(tmp_path):
+    hub, client, token = other_communitys_hub(tmp_path)
+    (first,) = post(client, carrier_upload(), token).json()["reports"]  # the landing itself (has the carrier)
+    parts, scores = accuracy_of(client)
+    assert not parts["DCS comms"]
+    post(client, carrier_upload(dcs_grade="LSO: GRADE:OK : (LOAR)  WIRE# 3"), token)  # after the mission
+    parts, scores = accuracy_of(client)
+    assert parts["DCS comms"] and scores["wire"] == "Full"
+    with hub.sessions() as s:
+        assert s.get(Pass, first["pass_id"]).grade.detail["accuracy"]["wire"]["note"] == "#3, from DCS"
