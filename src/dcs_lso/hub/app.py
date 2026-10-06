@@ -23,7 +23,7 @@ from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M
 from ..grading import grade_pass
 from ..grading.trends import DEFAULT_PASSES
 from . import pages
-from .accuracy import accuracy_of
+from .accuracy import accuracy_of, flown_elsewhere
 from .db import Pass, Pilot, Source, Upload
 from .pilothook import PILOT_HOOK_VERSION
 from .service import Hub, IngestError
@@ -378,7 +378,13 @@ def create_app(hub: Hub) -> FastAPI:
         owner = key is not None and upload.key is not None and secrets.compare_digest(upload.key, key)
         return pages.upload_status_page(upload, key if owner else None)
 
-    def _passes(days: int, pilot: str | None, source: str | None) -> list[Pass]:
+    def _servers(servers: str | None) -> str:
+        """"ours" (this hub's servers only) or "all"; unset: the hub's default (`--other-servers`)."""
+        if servers in ("ours", "all"):
+            return servers
+        return "ours" if hub.other_servers == "hidden" else "all"
+
+    def _passes(days: int, pilot: str | None, source: str | None, servers: str = "all") -> list[Pass]:
         with hub.sessions() as s:
             # Landings only: reports merged into another (same landing) and lone track reports are hidden.
             q = (select(Pass).where(Pass.merged_into_id.is_(None), or_(Pass.kind.is_(None), Pass.kind != "track"))
@@ -392,7 +398,8 @@ def create_app(hub: Hub) -> FastAPI:
                 # A landing belongs to every source that reported it.
                 theirs = select(Pass.merged_into_id).join(Pass.source).where(Source.name == source)
                 q = q.join(Pass.source).where(or_(Source.name == source, Pass.id.in_(theirs)))
-            return list(s.scalars(q))
+            found = list(s.scalars(q))
+            return [p for p in found if not flown_elsewhere(p)] if servers == "ours" else found
 
     @app.get("/api/v1/config")
     def get_config(source: Annotated[Source, Depends(source_from_token)]) -> dict:
@@ -400,9 +407,11 @@ def create_app(hub: Hub) -> FastAPI:
         return source.config or {}
 
     @app.get("/api/v1/passes")
-    def list_passes(days: int = 30, pilot: str | None = None, source: str | None = None) -> list[dict]:
+    def list_passes(days: int = 30, pilot: str | None = None, source: str | None = None,
+                    servers: str | None = None) -> list[dict]:
+        """`servers`: "ours" (flown on this hub's servers, or unknown) or "all"; default per `--other-servers`."""
         out = []
-        for p in _passes(days, pilot, source):
+        for p in _passes(days, pilot, source, _servers(servers)):
             g = p.grade
             reports = hub.reports(p)
             out.append({"id": p.id, "pilot": p.pilot.name, "source": p.source.name,
@@ -451,13 +460,14 @@ def create_app(hub: Hub) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None,
-              empty: bool = False) -> str:
+              empty: bool = False, servers: str | None = None) -> str:
         pilot, source = pilot or None, source or None  # the form sends "" for All
-        passes = _passes(days, pilot, source)
+        servers = _servers(servers)
+        passes = _passes(days, pilot, source, servers)
         with hub.sessions() as s:
             pilots = sorted(s.scalars(select(Pilot.name)), key=str.lower)
             sources = sorted(s.scalars(select(Source.name)), key=str.lower)
-        return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS, empty)
+        return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS, empty, servers)
 
     def _badges(accuracy) -> dict:
         if accuracy is None:

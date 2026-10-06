@@ -254,7 +254,8 @@ def _hub(args: argparse.Namespace):
                          "data, or add --create to start a new hub in that folder.")
     url = args.database_url or f"sqlite:///{(data_dir / 'lso.db').resolve()}"
     data_dir.mkdir(parents=True, exist_ok=True)
-    return Hub(url, data_dir, require_upload_token=args.require_upload_token, pilot_hook_accept=args.pilot_hook_accept)
+    return Hub(url, data_dir, require_upload_token=args.require_upload_token, pilot_hook_accept=args.pilot_hook_accept,
+               other_servers=args.other_servers)
 
 
 def _hub_serve(args: argparse.Namespace) -> int:
@@ -539,6 +540,11 @@ def main(argv: list[str] | None = None) -> int:
                      default=os.environ.get("DCS_LSO_PILOT_HOOK_ACCEPT", "ours"),
                      help="pilot hook traps accepted: flown on this hub's own servers only (ours, the default), or "
                           "from any server with a pilot token (any) [$DCS_LSO_PILOT_HOOK_ACCEPT]")
+    hub.add_argument("--other-servers", choices=["shown", "hidden"],
+                     default=os.environ.get("DCS_LSO_OTHER_SERVERS", "shown"),
+                     help="landings pilots flew on other servers (pilot hooks): on the greenie board by default "
+                          "(shown, the default), or only when a viewer picks \"All servers\" (hidden; also left off "
+                          "Discord) [$DCS_LSO_OTHER_SERVERS]")
     hub_sub = hub.add_subparsers(dest="hub_command", required=True)
     serve = hub_sub.add_parser("serve", help="serve the API, greenie board and pass pages")
     serve.add_argument("--host", default="127.0.0.1")

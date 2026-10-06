@@ -148,6 +148,12 @@ def _flown(server: list[Pass], hook: list[Pass]) -> Score:
     return Score("unknown")
 
 
+def flown_elsewhere(landing: Pass) -> bool:
+    """Flown on another server than this hub's (as stored with its grade)."""
+    a = accuracy_of(landing)
+    return a is not None and a.flown.level == "elsewhere"
+
+
 def accuracy_of(landing: Pass, reports: list[Pass] | None = None) -> Accuracy | None:
     """As stored with the landing's grade; worked out now for grades from before it was (`reports` needed)."""
     stored = ((landing.grade.detail or {}) if landing.grade else {}).get("accuracy")

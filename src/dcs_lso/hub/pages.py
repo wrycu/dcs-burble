@@ -116,8 +116,9 @@ def _when(dt: datetime | None) -> str:
 
 
 def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: int, pilot: str | None,
-               source: str | None, columns: int, empty: bool = False) -> str:
-    """`empty`: also list pilots with no passes in the filter (e.g. joined, not flown here yet)."""
+               source: str | None, columns: int, empty: bool = False, servers: str = "all") -> str:
+    """`empty`: also list pilots with no passes in the filter (e.g. joined, not flown here yet). `servers`: "ours"
+    leaves out landings flown on other servers (the passes are already filtered; this sets the form)."""
     by_pilot: dict[str, list[Pass]] = defaultdict(list)
     for p in sorted(passes, key=lambda p: (p.occurred_at or p.created_at)):
         by_pilot[p.pilot.name].append(p)
@@ -135,6 +136,8 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
         + "".join(option(n, n, pilot) for n in pilots)
         + '</select></label><label>Source <select name="source">' + option("", "All", source)
         + "".join(option(n, n, source) for n in sources)
+        + '</select></label><label>Servers <select name="servers">'
+        + option("ours", "This hub's servers", servers) + option("all", "All servers", servers)
         + '</select></label><label class="check"><input type="checkbox" name="empty" value="1"'
         + (" checked" if empty else "") + "> Show pilots with no passes</label>"
         + '<button type="submit">Apply</button></form>'

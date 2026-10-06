@@ -391,3 +391,23 @@ def test_accuracy_is_rescored_when_dcss_grade_arrives_later(tmp_path):
     assert parts["DCS comms"] and scores["wire"] == "Full"
     with hub.sessions() as s:
         assert s.get(Pass, first["pass_id"]).grade.detail["accuracy"]["wire"]["note"] == "#3, from DCS"
+
+
+@pytest.mark.parametrize("default", ["shown", "hidden"])
+def test_landings_from_other_servers_can_be_hidden(tmp_path, default):
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any", other_servers=default)
+    client, token = client_at(hub, "8.8.4.4"), hub.add_pilot_token("Wrycu", "pilot hook")
+    post(client, {**carrier_upload(), "version": 3, "here": False}, token)  # flown on another community's server
+
+    def ids(query: str = "") -> int:
+        return len(client.get(f"/api/v1/passes?days=0{query}").json())
+
+    assert (ids(), ids("&servers=all"), ids("&servers=ours")) == ((1 if default == "shown" else 0), 1, 0)
+    board = client.get("/?days=0").text
+    assert ('value="ours" selected' in board) == (default == "hidden") and "This hub&#x27;s servers" in board
+    assert ("Wrycu" in client.get("/?days=0&servers=ours").text.split("</form>")[1]) is False
+    assert "Wrycu" in client.get("/?days=0&servers=all").text.split("</form>")[1]
+    from dcs_lso.hub.discord import Discord
+    import httpx
+    discord = Discord(hub, client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))), start=False)
+    assert [r.name for r in discord.board_rows()] == ([] if default == "hidden" else ["Wrycu"])

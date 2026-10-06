@@ -25,7 +25,7 @@ from ..cards import render_card
 from ..cards.board import BoardRow, render_board
 from ..grading import grade_name, grade_pass, grade_short
 from ..grading.grade import Grade as GradeValue
-from .accuracy import accuracy_of
+from .accuracy import accuracy_of, flown_elsewhere
 from .db import Pass, Setting
 from .pages import card_title
 
@@ -153,6 +153,8 @@ class Discord:
                 selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.slice), selectinload(Pass.source)))
             if p is None or p.merged_into_id is not None or (p.is_track and not p.is_dcs_only) or p.grade is None:
                 return
+            if hub.other_servers == "hidden" and flown_elsewhere(p):
+                return  # flown on another server: the hub keeps those off Discord
             when = p.occurred_at or p.created_at
             if p.discord_message_id is None and when is not None and \
                     datetime.now(UTC) - when.replace(tzinfo=when.tzinfo or UTC) > POST_MAX_AGE:
@@ -204,6 +206,8 @@ class Discord:
                  .options(selectinload(Pass.grades), selectinload(Pass.pilot)))
             by_pilot: dict[str, list[Pass]] = defaultdict(list)
             for p in s.scalars(q):
+                if self.hub.other_servers == "hidden" and flown_elsewhere(p):
+                    continue
                 by_pilot[p.pilot.name].append(p)
             rows = []
             for name in sorted(by_pilot, key=str.lower):

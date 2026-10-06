@@ -45,6 +45,7 @@ PLAYER_RECENT = timedelta(minutes=30)
 # A server agent's player list is current if it reported it this recently (it reports at least every 2 min).
 PLAYERS_FRESH = timedelta(minutes=10)
 PILOT_HOOK_ACCEPT = ("ours", "any")
+OTHER_SERVERS = ("shown", "hidden")
 UPLOAD_PILOT_WAIT = timedelta(days=1)  # how long an upload waits for its uploader to pick a pilot
 DEFAULT_PILOT_REFUSED = ("passes flown under DCS's default pilot name aren't recorded, since they can't be "
                          "credited to a pilot")
@@ -124,9 +125,14 @@ class WireCheck:
 
 class Hub:
     def __init__(self, database_url: str, data_dir: str | Path, require_upload_token: bool = False,
-                 pilot_hook_accept: str = "ours") -> None:
+                 pilot_hook_accept: str = "ours", other_servers: str = "shown") -> None:
         if pilot_hook_accept not in PILOT_HOOK_ACCEPT:
             raise ValueError(f"pilot_hook_accept must be one of {PILOT_HOOK_ACCEPT}")
+        if other_servers not in OTHER_SERVERS:
+            raise ValueError(f"other_servers must be one of {OTHER_SERVERS}")
+        # Landings flown on other servers (pilot hooks, see hub/accuracy.py): on the board by default ("shown"), or
+        # only when a viewer asks for them ("hidden": also left off the Discord board, and not posted there).
+        self.other_servers = other_servers
         # Pilot hook uploads: only traps flown on this hub's own servers ("ours"), or from anywhere with a
         # pilot token ("any"; traps from other communities' servers have no carrier here yet).
         self.pilot_hook_accept = pilot_hook_accept
