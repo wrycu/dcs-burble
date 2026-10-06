@@ -3,9 +3,11 @@ reported it (a server agent, the pilot hook, an uploaded recording, DCS's LSO th
 those four scores, each Full / High / Medium / Low / None:
 
 - approach: the pilot's own track (recorded AOA: the pilot hook, a listen server's host, an own Tacview file)
-  against a recorded carrier is Full; the server's copy of the jet (AOA from motion, about 5 Hz) is High; no
-  carrier, DCS's grade only, is None.
-- wire (traps): DCS's is Full; our estimate from the pilot's own track is High; otherwise None.
+  against a recorded carrier is Full; the server's copy of the jet (AOA from motion, about 5 Hz) is High; against
+  the carrier rebuilt from the jet (detect/rebuild.py) Medium with DCS's wire to place it, else Low (measured:
+  10-25 m out at the start of the groove); no carrier, DCS's grade only, is None.
+- wire (traps): DCS's is Full; our estimate from the pilot's own track is High; assumed (to place a rebuilt
+  carrier) Low; otherwise None.
 - comms: the LSO's live calls on the card (made by a server agent; relayed to other hubs by the pilot hook).
 - overall: the approach score (a missing wire has its own score), Low for DCS's grade only.
 
@@ -100,7 +102,10 @@ def landing_accuracy(landing: Pass, reports: list[Pass]) -> Accuracy:
     best = max(tracks, key=lambda r: (bool(_info(r).get("aoa_recorded")), float(_info(r).get("sample_rate_hz") or 0)))
     own = bool(_info(best).get("aoa_recorded"))
     rate = f"{_rate(best)}, " if _rate(best) else ""
-    if landing.is_dcs_only or not gradable:
+    if landing.is_rebuilt:
+        approach = (Score("Medium", "carrier rebuilt from the jet, placed by DCS's wire") if landing.wire is not None
+                    else Score("Low", "carrier rebuilt from the jet, placed by an assumed wire"))
+    elif landing.is_dcs_only or not gradable:
         approach = Score("None", "no carrier in any report: DCS's grade only")
     elif own:
         who = "the pilot hook's track" if _is_pilot_hook(best) else "the jet's own track"
@@ -113,6 +118,8 @@ def landing_accuracy(landing: Pass, reports: list[Pass]) -> Accuracy:
         wire = Score("n/a", "not a trap")
     elif landing.wire is not None:
         wire = Score("Full", f"#{landing.wire}, from DCS")
+    elif landing.is_rebuilt:
+        wire = Score("Low", "assumed: wire 3, to place the rebuilt carrier")
     elif estimate is not None:
         wire = Score("High", f"#{estimate}, estimated from where the jet stopped")
     elif own and approach.level == "Full":

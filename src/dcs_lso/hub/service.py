@@ -19,6 +19,8 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 from ..acmi import ObjectTrack, Recording, Sample, load_recording
 from ..dcslog import Debrief, LsoGrade, load_debrief
 from ..detect import PassResult, find_passes
+from ..detect.passes import Outcome
+from ..detect.rebuild import rebuild_carrier
 from ..detect.wire import WireSignals, wire_signals
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame, WindProfile
 from ..slices import is_default_pilot, own_pilots, slice_recording
@@ -45,6 +47,10 @@ PLAYER_RECENT = timedelta(minutes=30)
 # A server agent's player list is current if it reported it this recently (it reports at least every 2 min).
 PLAYERS_FRESH = timedelta(minutes=10)
 PILOT_HOOK_ACCEPT = ("ours", "any")
+# A carrier rebuilt from a jet (detect/rebuild.py): its type isn't known; the Nimitz class's deck is assumed.
+REBUILT_CARRIER_TYPE = "CVN_71"
+REBUILT_CARRIER_UNIT = "rebuilt from the jet (Nimitz class assumed)"
+REBUILT_STOP_S = 20.0  # the trap found against the rebuilt carrier ends this close to the jet's stop
 OTHER_SERVERS = ("shown", "hidden")
 UPLOAD_PILOT_WAIT = timedelta(days=1)  # how long an upload waits for its uploader to pick a pilot
 DEFAULT_PILOT_REFUSED = ("passes flown under DCS's default pilot name aren't recorded, since they can't be "
@@ -337,6 +343,14 @@ class Hub:
     def load_pass(self, p: Pass, reports: list[Pass] | None = None, s: Session | None = None) -> PassResult:
         """Rebuild the landing from its stored slices: the most detailed aircraft track among its
         reports, graded against the carrier in this (gradable) report, plus DCS's grade and wire."""
+        if p.is_rebuilt:
+            result = self._rebuilt_pass(p)
+            if result is None:
+                raise IngestError("the carrier could not be rebuilt from the jet's track")
+            result.dcs_grade = LsoGrade.parse(p.dcs_grade) if p.dcs_grade else None
+            result.wire = p.wire
+            result.track_source = p.source.name if p.source is not None else None
+            return result
         if p.is_dcs_only:
             raise IngestError("graded by DCS's LSO only (no report of this landing has the carrier: the server "
                               "doesn't share other objects with pilots)")
@@ -359,6 +373,46 @@ class Hub:
         result.wire = p.wire
         result.track_source = best.source.name if best.source is not None else None
         return result
+
+    def _rebuilt_pass(self, p: Pass) -> PassResult | None:
+        """The trap in `p`'s own-jet track, against the carrier rebuilt from it (placed by DCS's wire if known)."""
+        recording = load_recording(self.store.path(p.slice.sha256))
+        plane = recording.objects.get(p.aircraft_id)
+        if plane is None or plane.name not in AIRCRAFT:
+            return None
+        rebuilt = rebuild_carrier(plane, CARRIERS[REBUILT_CARRIER_TYPE], AIRCRAFT[plane.name], p.wire)
+        if rebuilt is None:
+            return None
+        carrier_id = max(recording.objects) + 1
+        objects = {**recording.objects, carrier_id: ObjectTrack(carrier_id, {"Name": REBUILT_CARRIER_TYPE},
+                                                                rebuilt.samples)}
+        traps = [c for c in find_passes(Recording(recording.globals, objects, recording.first_frame))
+                 if c.aircraft_id == p.aircraft_id and c.outcome is Outcome.TRAP
+                 and abs(c.end_time - rebuilt.stop_time) <= REBUILT_STOP_S]
+        if not traps:
+            return None
+        result = min(traps, key=lambda c: abs(c.end_time - rebuilt.stop_time))
+        result.wire_estimate = None  # it would only read back the wire the carrier was placed by
+        return result
+
+    def _promote_track(self, s: Session, row: Pass) -> bool:
+        """An own-jet track no report with the carrier joined: a landing graded against the carrier rebuilt from
+        the jet (a trap), else by DCS's grade alone (if it has one). False: neither (it keeps waiting)."""
+        try:
+            result = self._rebuilt_pass(row)
+        except (OSError, ValueError, KeyError):
+            result = None
+        elevation = (row.slice.sidecar or {}).get("sun_elevation")
+        if result is not None:
+            row.kind, row.carrier_type, row.carrier_unit = "rebuilt", REBUILT_CARRIER_TYPE, REBUILT_CARRIER_UNIT
+            row.start_time, row.end_time = result.start_time, result.end_time
+            row.night = None if elevation is None else float(elevation) < NIGHT_BELOW_DEG
+            self._regrade(s, row)
+            return True
+        if row.dcs_grade:
+            self._show_dcs_only(s, row)
+            return True
+        return False
 
     def _with_track(self, recording: Recording, landing: Pass, other: Pass,
                     s: Session | None = None) -> tuple[Recording, int]:
@@ -430,7 +484,14 @@ class Hub:
 
     def _regrade(self, s: Session, row: Pass) -> GradeResult:
         if row.is_dcs_only:
-            return self._grade_dcs_only(s, row)
+            try:
+                rebuilt = self._rebuilt_pass(row)  # e.g. a trap shown by DCS's grade before rebuilding existed
+            except (OSError, ValueError, KeyError):
+                rebuilt = None
+            if rebuilt is None:
+                return self._grade_dcs_only(s, row)
+            row.kind, row.carrier_type, row.carrier_unit = "rebuilt", REBUILT_CARRIER_TYPE, REBUILT_CARRIER_UNIT
+            row.start_time, row.end_time = rebuilt.start_time, rebuilt.end_time
         reports = self.reports(row, s)
         loaded = self.load_pass(row, reports, s)
         row.outcome = loaded.outcome.value  # from the best track (and the current detection)
@@ -511,8 +572,8 @@ class Hub:
                         self._attach(s, landing, existing)
                         self._regrade(s, landing)  # DCS's wire, and the accuracy that comes with it
                     elif existing.kind == "track":
-                        self._show_dcs_only(s, existing)
-                    elif not existing.is_track:
+                        self._promote_track(s, existing)
+                    else:
                         self._regrade(s, existing)  # the landing itself: its wire and accuracy change
                 shown = s.get(Pass, existing.merged_into_id) if existing.merged_into_id else existing
                 g = shown.grade
@@ -565,9 +626,13 @@ class Hub:
             if landing is None and not row.is_track:
                 landing = row
             # Else a landing graded by DCS alone, if there is one (a report with the carrier takes over from it).
-            landing = landing or next((m for m in matches if m.is_dcs_only), None)
-            if landing is None and row.dcs_grade:
-                self._show_dcs_only(s, row)
+            landing = landing or next((m for m in matches if m.kind in ("rebuilt", "dcs")), None)
+            # Else this track has no landing to join. Grade it on its own (the carrier rebuilt from the jet, or DCS's
+            # grade) when no report with the carrier will come: flown on another server, or sent after the mission
+            # with DCS's grade (any server agent's report would be in by then).
+            elsewhere = ((sidecar.get("pilot_hook") or {}).get("here") is False
+                         and (sidecar.get("pilot_hook") or {}).get("server"))
+            if landing is None and row.kind == "track" and (row.dcs_grade or elsewhere) and self._promote_track(s, row):
                 landing = row
             if landing is None:
                 return IngestResult(row.id, True, "", "waiting for a report of this landing that has the carrier")

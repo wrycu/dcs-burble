@@ -151,7 +151,7 @@ class Discord:
         with hub.sessions() as s:
             p = s.scalar(select(Pass).where(Pass.id == landing_id).options(
                 selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.slice), selectinload(Pass.source)))
-            if p is None or p.merged_into_id is not None or (p.is_track and not p.is_dcs_only) or p.grade is None:
+            if p is None or p.merged_into_id is not None or p.kind == "track" or p.grade is None:
                 return
             if hub.other_servers == "hidden" and flown_elsewhere(p):
                 return  # flown on another server: the hub keeps those off Discord

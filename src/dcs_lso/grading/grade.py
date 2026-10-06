@@ -13,6 +13,7 @@ told apart and passes regraded.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from enum import IntEnum, StrEnum
 
@@ -284,7 +285,11 @@ def dcs_only_grade(dcs_grade: str) -> tuple[Grade, str]:
         grade = Grade(parsed.grade or "")
     except ValueError:
         grade = Grade.NO_GRADE
-    return grade, f"{grade.value} : {parsed.remarks}" if parsed.remarks else grade.value
+    # DCS writes "GRADE:C : remarks" for traps but "GRADE:B  remarks" for bolters (no colon).
+    rest = parsed.raw.split("GRADE:", 1)[-1].strip()
+    rest = rest[len(parsed.grade or ""):].lstrip(" :") if parsed.grade and rest.startswith(parsed.grade) else rest
+    remarks = " ".join(re.sub(r"WIRE#\s*\d", "", rest).split())
+    return grade, f"{grade.value} : {remarks}" if remarks else grade.value
 
 
 def dcs_only_outcome(dcs_grade: str, wire: int | None) -> str:

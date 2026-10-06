@@ -29,13 +29,17 @@ UCID = "fa2691780c6ae51b644a3a84aea04ceb"
 HOME = "69.222.184.25"  # the pilot's address, as the DCS server sees it
 
 
-def hook_upload(pilot: str = "Wrycu", **extra) -> dict:
-    recording = load_recording(PILOT)
+BOLTER = Path(__file__).parent / "fixtures" / "live" / "bolter-pilot-hook.zip.acmi"  # Wrycu's bolter, pass 27
+
+
+def hook_upload(pilot: str = "Wrycu", source: Path = PILOT, shift: float = JOINED_S, **extra) -> dict:
+    """`source`: an own-jet recording; `shift`: added to its times to make them mission time."""
+    recording = load_recording(source)
     (jet,) = [o for o in recording.objects.values() if o.name == "FA-18C_hornet"]
     lines = ["t,x,y,z,heading,pitch,bank,aoa,lat,lon"]
     for s in jet.samples:
         t = s.transform
-        lines.append(f"{s.time + JOINED_S:.4f},{t.v:.3f},{t.alt:.3f},{t.u:.3f},{math.radians(t.heading):.6f},"
+        lines.append(f"{s.time + shift:.4f},{t.v:.3f},{t.alt:.3f},{t.u:.3f},{math.radians(t.heading):.6f},"
                      f"{math.radians(t.pitch):.6f},{math.radians(t.roll):.6f},{s.aoa if s.aoa is not None else 'nil'},"
                      f"{t.lat:.7f},{t.lon:.7f}")
     return {"version": 1, "pilot": pilot, "aircraft": "FA-18C_hornet", "mission": recording.globals["Title"],
@@ -283,6 +287,12 @@ def test_wire_check_measures_the_server_copy_against_the_pilots_own_track(hub, c
 
 
 DCS_GRADE = "LSO: GRADE:(OK) : _LULX_ 3PTSIW  WIRE# 3"
+DCS_BOLTER = "LSO: GRADE:B  _TMRDAR_  BIW [BC]"
+
+
+def bolter_upload(**extra) -> dict:
+    """Wrycu's bolter (pass 27), without the carrier: nothing to rebuild it from."""
+    return hook_upload(source=BOLTER, shift=0.0, **extra)
 
 
 def other_communitys_hub(tmp_path) -> tuple[Hub, TestClient, str]:
@@ -291,32 +301,34 @@ def other_communitys_hub(tmp_path) -> tuple[Hub, TestClient, str]:
     return hub, client_at(hub, "8.8.4.4"), hub.add_pilot_token("Wrycu", "pilot hook")
 
 
-def test_a_track_with_dcss_grade_is_a_landing_graded_by_dcs(tmp_path):
+def test_a_bolter_with_dcss_grade_is_a_landing_graded_by_dcs(tmp_path):
     hub, client, token = other_communitys_hub(tmp_path)
-    (track,) = post(client, hook_upload(), token).json()["reports"]  # no carrier visible: waits as a track
+    (track,) = post(client, bolter_upload(), token).json()["reports"]  # no carrier visible: waits as a track
     assert "waiting" in track["text"] and client.get("/api/v1/passes?days=0").json() == []
-    # After the mission: DCS's grade from debrief.log, sent again.
-    (again,) = post(client, hook_upload(dcs_grade=DCS_GRADE), token).json()["reports"]
-    assert again["pass_id"] == track["pass_id"] and again["grade"] == "(OK)"
+    # After the mission: DCS's grade from debrief.log, sent again. A bolter can't rebuild the carrier.
+    (again,) = post(client, bolter_upload(dcs_grade=DCS_BOLTER), token).json()["reports"]
+    assert again["pass_id"] == track["pass_id"] and again["grade"] == "B"
     (landing,) = client.get("/api/v1/passes?days=0").json()
-    assert (landing["outcome"], landing["wire"], landing["grade"], landing["text"]) == ("trap", 3, "(OK)", "(OK) : _LULX_ 3PTSIW")
+    assert (landing["outcome"], landing["wire"], landing["grade"], landing["text"]) == ("bolter", None, "B", "B : _TMRDAR_ BIW [BC]")
     page = client.get(f"/passes/{landing['id']}").text
     assert "graded by DCS&#x27;s LSO only" in page or "graded by DCS's LSO only" in page
     assert client.get(f"/passes/{landing['id']}/card.svg").status_code == 404
     hub.regrade(force=True)  # stays as it is
-    assert client.get("/api/v1/passes?days=0").json()[0]["text"] == "(OK) : _LULX_ 3PTSIW"
+    assert client.get("/api/v1/passes?days=0").json()[0]["text"] == "B : _TMRDAR_ BIW [BC]"
 
 
-def test_a_track_sent_with_dcss_grade_the_first_time(tmp_path):
+def test_a_bolter_sent_with_dcss_grade_the_first_time(tmp_path):
     hub, client, token = other_communitys_hub(tmp_path)
-    (report,) = post(client, hook_upload(dcs_grade=DCS_GRADE), token).json()["reports"]  # e.g. sent after the mission
-    assert report["grade"] == "(OK)"
+    (report,) = post(client, bolter_upload(dcs_grade=DCS_BOLTER), token).json()["reports"]  # e.g. sent after the mission
+    assert report["grade"] == "B"
     assert [p["id"] for p in client.get("/api/v1/passes?days=0").json()] == [report["pass_id"]]
 
 
-def test_a_report_with_the_carrier_takes_over_from_dcss_grade(tmp_path):
+def test_a_report_with_the_carrier_takes_over_from_a_rebuilt_carrier(tmp_path):
     hub, client, token = other_communitys_hub(tmp_path)
     (dcs_only,) = post(client, hook_upload(dcs_grade=DCS_GRADE), token).json()["reports"]
+    with hub.sessions() as s:
+        assert s.get(Pass, dcs_only["pass_id"]).kind == "rebuilt"
     hub.add_source("server1")
     with hub.sessions() as s:
         server1 = s.scalar(select(Source.id).where(Source.name == "server1"))
@@ -350,10 +362,10 @@ def test_accuracy_rows(tmp_path, hub):
 
 def test_accuracy_of_a_landing_graded_by_dcs_alone(tmp_path):
     hub, client, token = other_communitys_hub(tmp_path)
-    post(client, hook_upload(dcs_grade=DCS_GRADE), token)
+    post(client, bolter_upload(dcs_grade=DCS_BOLTER), token)
     parts, scores = accuracy_of(client)
     assert parts == {"Server report": False, "Pilot hook": True, "DCS comms": True}
-    assert scores == {"overall": "Low", "approach": "None", "wire": "Full", "comms": "None"}
+    assert scores == {"overall": "Low", "approach": "None", "wire": "n/a", "comms": "None"}
 
 
 def test_accuracy_is_stored_with_the_grade_and_says_where_it_was_flown(tmp_path, hub):
@@ -411,3 +423,45 @@ def test_landings_from_other_servers_can_be_hidden(tmp_path, default):
     import httpx
     discord = Discord(hub, client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))), start=False)
     assert [r.name for r in discord.board_rows()] == ([] if default == "hidden" else ["Wrycu"])
+
+
+def test_a_trap_on_another_server_is_graded_against_the_carrier_rebuilt_from_the_jet(tmp_path):
+    hub, client, token = other_communitys_hub(tmp_path)
+    # Flown on a server that shares no objects: no carrier in the upload, and no server agent of this hub there.
+    (report,) = post(client, {**hook_upload(), "version": 3, "here": False}, token).json()["reports"]
+    assert report["grade"]  # graded straight away, not waiting
+    (landing,) = client.get("/api/v1/passes?days=0").json()
+    assert (landing["outcome"], landing["wire"], landing["wire_estimated"]) == ("trap", None, None)
+    a = landing["accuracy"]
+    assert (a["approach"]["level"], a["wire"]["level"], a["flown"]["where"]) == ("Low", "Low", "elsewhere")
+    page = client.get(f"/passes/{landing['id']}").text
+    assert "rebuilt from the jet" in page and client.get(f"/passes/{landing['id']}/card.svg").status_code == 200
+    # DCS's grade arrives after the mission: the carrier is placed by DCS's wire now.
+    post(client, {**hook_upload(dcs_grade="LSO: GRADE:OK : (LOAR)  WIRE# 2"), "version": 3, "here": False}, token)
+    (landing,) = client.get("/api/v1/passes?days=0").json()
+    assert landing["wire"] == 2 and landing["accuracy"]["approach"]["level"] == "Medium"
+    assert landing["accuracy"]["wire"]["level"] == "Full"
+
+
+def test_a_track_on_this_hubs_server_waits_for_the_server_report(tmp_path):
+    hub, client, token = other_communitys_hub(tmp_path)
+    (report,) = post(client, {**hook_upload(), "version": 3, "here": True}, token).json()["reports"]
+    assert "waiting" in report["text"] and client.get("/api/v1/passes?days=0").json() == []
+
+
+def test_the_rebuilt_carrier_is_close_to_the_real_one():
+    """Pass 25: the pilot hook recorded the real carrier too. Rebuilt from the jet alone (placed by wire 2)."""
+    import math
+    from dcs_lso.detect.passes import CarrierTimeline
+    from dcs_lso.detect.rebuild import rebuild_carrier
+    from dcs_lso.geometry import AIRCRAFT, CARRIERS
+    recording = load_recording(Path(__file__).parent / "fixtures" / "live" / "trap-pilot-hook.zip.acmi")
+    (p,) = [x for x in find_passes(recording) if x.outcome.value == "trap"]
+    carrier, plane = recording.objects[p.carrier_id], recording.objects[p.aircraft_id]
+    rebuilt = rebuild_carrier(plane, CARRIERS[carrier.name], AIRCRAFT[plane.name], wire=2)
+    real, ours = CarrierTimeline(carrier.samples), CarrierTimeline(rebuilt.samples)
+    for back_s, within_m in ((0, 3.0), (30, 15.0)):
+        a, b = real.at(rebuilt.stop_time - back_s), ours.at(rebuilt.stop_time - back_s)
+        assert math.hypot(a.u - b.u, a.v - b.v) < within_m
+    assert abs((rebuilt.heading - real.at(rebuilt.stop_time).heading + 180) % 360 - 180) < 0.5
+    assert abs(rebuilt.speed_ms - 13.9) < 1.0

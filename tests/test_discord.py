@@ -11,7 +11,7 @@ import pytest
 from dcs_lso.hub.db import Pass, Setting
 from dcs_lso.hub.discord import BOARD_SETTING, Discord
 from dcs_lso.hub.service import Hub
-from test_pilot_hook import HOME, client_at, hook_upload, post, server_report
+from test_pilot_hook import DCS_BOLTER, HOME, bolter_upload, client_at, hook_upload, post, server_report
 
 TRAPS = "https://discord.test/api/webhooks/1/traps"
 BOARD = "https://discord.test/api/webhooks/2/board"
@@ -155,7 +155,7 @@ def test_a_regrade_from_the_command_line_reaches_discord(setup):
 
 def test_a_landing_graded_by_dcs_alone_is_posted_without_a_card(setup):
     hub, discord, fake = setup
-    (report,) = post(client_at(hub, HOME), hook_upload(dcs_grade="LSO: GRADE:OK : (LOAR)  WIRE# 2"), hub.token).json()["reports"]
+    (report,) = post(client_at(hub, HOME), bolter_upload(dcs_grade=DCS_BOLTER), hub.token).json()["reports"]
     discord.step(report["pass_id"], now=0.0)
     (method, url, payload, image), _board = fake.requests
     assert url == TRAPS + "?wait=true" and image is None and "image" not in payload["embeds"][0]

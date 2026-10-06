@@ -153,7 +153,13 @@ class Pass(Base):
     @property
     def is_track(self) -> bool:
         """No carrier in this report: an own-jet track, or one shown as a DCS-only landing (see `is_dcs_only`)."""
-        return self.kind in ("track", "dcs")
+        return self.kind in ("track", "dcs", "rebuilt")
+
+    @property
+    def is_rebuilt(self) -> bool:
+        """An own-jet track that no report with the carrier joined, graded against the carrier rebuilt from the
+        jet after its trap (detect/rebuild.py). A report with the carrier still takes over if one arrives."""
+        return self.kind == "rebuilt"
 
     @property
     def is_dcs_only(self) -> bool:
