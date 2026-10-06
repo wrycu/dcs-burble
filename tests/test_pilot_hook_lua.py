@@ -266,7 +266,7 @@ def test_uploader_logs_once_that_a_newer_version_is_out(tmp_path, recorded):
     run_uploader(tmp_path, recorded[0], send_to_all=True)
     sent = [line for line in run_uploader.log if "->" in line]
     updates = [line for line in run_uploader.log if "newer pilot hook" in line]
-    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 2): see http://hub1:8000"]
+    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 3): see http://hub1:8000"]
 
 
 def test_uploader_sends_dcss_own_sun(tmp_path, recorded):
@@ -311,6 +311,8 @@ def test_calls_are_relayed_from_the_servers_hub(tmp_path, recorded):
     bodies = {split(r)[1]["Host"]: json.loads(split(r)[2]) for r in requests if r.startswith("POST")}
     assert bodies["hub2.example.com"]["calls"] == [{"time": 1105.0, "along": 120.0, "call": "power"}]
     assert bodies["hub2.example.com"]["calls_from"] == "hub1" and "calls" not in bodies["hub1"]
+    # Each hub is told whether it was the server's hub when the approach was flown.
+    assert (bodies["hub1"]["here"], bodies["hub2.example.com"]["here"]) == (True, False)
 
 
 def test_uploader_sends_to_all_hubs_with_their_tokens(tmp_path, recorded):

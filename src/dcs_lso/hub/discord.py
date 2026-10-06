@@ -25,6 +25,7 @@ from ..cards import render_card
 from ..cards.board import BoardRow, render_board
 from ..grading import grade_name, grade_pass, grade_short
 from ..grading.grade import Grade as GradeValue
+from .accuracy import accuracy_of
 from .db import Pass, Setting
 from .pages import card_title
 
@@ -156,17 +157,22 @@ class Discord:
             if p.discord_message_id is None and when is not None and \
                     datetime.now(UTC) - when.replace(tzinfo=when.tzinfo or UTC) > POST_MAX_AGE:
                 return  # backfilled: the board shows it, no post of its own
+            reports = hub.reports(p, s)
+            accuracy = accuracy_of(p, reports)
             svg = None
             if not p.is_dcs_only:  # graded by DCS alone: no carrier, so no trap card
-                result = hub.load_pass(p)
+                result = hub.load_pass(p, reports, s)
                 svg = render_card(result, grade_pass(result), card_title(p), uid="discord", calls=p.calls,
-                                  night=bool(p.night), dark=True)
+                                  night=bool(p.night), dark=True, accuracy=accuracy.overall.level,
+                                  elsewhere=accuracy.flown.level == "elsewhere")
             g = GradeValue(p.grade.grade)
             estimate = (p.grade.detail or {}).get("wire_estimate")
             wire = f"wire #{p.wire}" if p.wire is not None else (f"wire #{estimate} (est.)" if estimate else None)
             facts = [p.outcome, wire if p.outcome == "trap" else None, p.carrier_unit or p.carrier_type,
                      p.aircraft_type.replace("_hornet", ""), "🌙 night" if p.night else None,
-                     "graded by DCS's LSO" if p.is_dcs_only else None]
+                     "graded by DCS's LSO" if p.is_dcs_only else None,
+                     f"{accuracy.overall.level.lower()} accuracy",
+                     "another server" if accuracy.flown.level == "elsewhere" else None]
             payload = {"embeds": [{
                 "title": f"{p.pilot.name} · {grade_name(g.value)} ({grade_short(g.value)})",
                 "url": self._link(f"/passes/{p.id}"),

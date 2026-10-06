@@ -23,7 +23,7 @@ from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M
 from ..grading import grade_pass
 from ..grading.trends import DEFAULT_PASSES
 from . import pages
-from .accuracy import landing_accuracy
+from .accuracy import accuracy_of
 from .db import Pass, Pilot, Source, Upload
 from .pilothook import PILOT_HOOK_VERSION
 from .service import Hub, IngestError
@@ -415,7 +415,7 @@ def create_app(hub: Hub) -> FastAPI:
                         "wire_estimated": ((g.detail or {}).get("wire_estimate") if g else None),
                         "grade": g.grade if g else None, "text": g.text if g else None,
                         "points": g.points if g else None, "grading_version": g.version if g else None,
-                        "accuracy": landing_accuracy(p, reports).to_dict()})
+                        "accuracy": accuracy_of(p, reports).to_dict()})
         return out
 
     @app.get("/api/v1/pilots/{name}/trends")
@@ -459,6 +459,11 @@ def create_app(hub: Hub) -> FastAPI:
             sources = sorted(s.scalars(select(Source.name)), key=str.lower)
         return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS, empty)
 
+    def _badges(accuracy) -> dict:
+        if accuracy is None:
+            return {}
+        return {"accuracy": accuracy.overall.level, "elsewhere": accuracy.flown.level == "elsewhere"}
+
     def _get(pass_id: int) -> Pass:
         with hub.sessions() as s:
             q = select(Pass).where(Pass.id == pass_id).options(
@@ -475,11 +480,11 @@ def create_app(hub: Hub) -> FastAPI:
         if p.merged_into_id is not None:
             return RedirectResponse(f"/passes/{p.merged_into_id}", status_code=307)
         reports = hub.reports(p)
-        accuracy = landing_accuracy(p, reports)
+        accuracy = accuracy_of(p, reports)
         try:
             result = hub.load_pass(p, reports)
             svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls,
-                              night=bool(p.night), zoom_hint=True)
+                              night=bool(p.night), zoom_hint=True, **_badges(accuracy))
             return pages.pass_page(p, svg, reports=reports, track_source=result.track_source, accuracy=accuracy)
         except (IngestError, OSError) as exc:
             return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports, accuracy=accuracy)
@@ -494,12 +499,14 @@ def create_app(hub: Hub) -> FastAPI:
             query = f"?{request.url.query}" if request.url.query else ""  # keep the zoom
             return RedirectResponse(f"/passes/{p.merged_into_id}/card.svg{query}", status_code=307)
         try:
-            result = hub.load_pass(p)
+            reports = hub.reports(p)
+            result = hub.load_pass(p, reports)
         except (IngestError, OSError) as exc:
             raise HTTPException(404, f"trap card unavailable: {exc}") from exc
         view = _view(near, far)
         svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}" if zoom else f"hover{p.id}",
-                          calls=p.calls, night=bool(p.night), view=view, zoom_hint=zoom)
+                          calls=p.calls, night=bool(p.night), view=view, zoom_hint=zoom,
+                          **_badges(accuracy_of(p, reports)))
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=300"})
 
     @app.get("/passes/{pass_id}/acmi")

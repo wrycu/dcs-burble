@@ -49,7 +49,8 @@ In DCS: **Options > Special > DCS-LSO**.
 - What it's doing is logged in `Saved Games/DCS/Logs/dcs.log`, on lines starting with `DCSLSO-PILOT`.
 
 Uploads use plain HTTP, because DCS's Lua can't do HTTPS. They contain your jet's track (and the carrier's, when visible), your DCS name and
-account id (UCID), the server's address, and the sun's elevation at the time (for night passes).
+account id (UCID), the server's address, whether that hub was the server's hub when you flew it (shown on the
+pass as "this hub's servers" or "another server"), and the sun's elevation at the time (for night passes).
 
 ## For hub admins
 

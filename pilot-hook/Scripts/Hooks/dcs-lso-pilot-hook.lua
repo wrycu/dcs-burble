@@ -18,7 +18,7 @@ package.cpath = package.cpath .. ';.\\LuaSocket\\?.dll;'
 local socket = require('socket')
 local lfs = require('lfs')
 
-local VERSION = 2
+local VERSION = 3
 local HUB_SLOTS = 3
 local SCAN_EVERY_S = 2          -- look for new approach files
 local HERE_EVERY_S = 60         -- ask the hubs again whether we're on one of their servers
@@ -237,8 +237,9 @@ local function stamp(name)
   f:close()
 end
 
-local function upload_body(meta, csv, carrier, calls)
+local function upload_body(meta, csv, carrier, calls, here)
   return '{"version":' .. VERSION
+    .. ',"here":' .. tostring(here == true)  -- was this hub the server's when it was flown
     .. ',"pilot":' .. json_string(meta.name or meta.pilot)
     .. ',"aircraft":' .. json_string(meta.aircraft)
     .. ',"mission":' .. json_string(meta.mission)
@@ -342,7 +343,7 @@ local function start_next()
           if not meta then files[name] = nil return nil end
           if not meta.mission then return nil end  -- not stamped yet (see stamp)
           local calls = not is_here(state, hub) and state.calls or nil
-          return new_request(hub, 'POST', '/api/v1/pilot-hook/approaches', upload_body(meta, csv, carrier, calls), function(status, body)
+          return new_request(hub, 'POST', '/api/v1/pilot-hook/approaches', upload_body(meta, csv, carrier, calls, is_here(state, hub)), function(status, body)
             if status == 200 then
               note(name .. ' -> ' .. hub.url .. ': ' .. (body:match('"text"%s*:%s*"([^"]*)"') or 'sent')
                    .. (calls and ' (with the LSO calls)' or ''))

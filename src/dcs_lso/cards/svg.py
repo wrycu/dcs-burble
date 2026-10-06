@@ -408,15 +408,33 @@ def _legend(on_speed: tuple[float, float], out: list[str]) -> None:
         out.append(f'<text class="tc-muted" x="{lx + 18}" y="{SIDE_TOP - 11}" font-size="11">{AOA_LABELS[cls]}</text>')
 
 
+ACCURACY_COLORS = {"Full": "#1a7f37", "High": "#0969da", "Medium": "#bf8700", "Low": "#cf4d1a", "None": "#8c959f"}
+
+
+def _badges(out: list[str], right: float, top: float, badges: list[tuple[str, str]]) -> None:
+    """Small pills ending at `right`, right to left in the order given."""
+    x = right
+    for text, color in badges:
+        w = 14 + len(text) * 6.3
+        x -= w
+        out.append(f'<rect x="{x:.1f}" y="{top}" width="{w:.1f}" height="18" rx="9" fill="{color}"/>'
+                   f'<text x="{x + w / 2:.1f}" y="{top + 13}" font-size="11" font-weight="700" fill="#ffffff" '
+                   f'text-anchor="middle">{escape(text)}</text>')
+        x -= 6
+
+
 def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc",
                 calls: list[dict] | None = None, night: bool = False, view: tuple[float, float] | None = None,
-                zoom_hint: bool = False, dark: bool = False) -> str:
+                zoom_hint: bool = False, dark: bool = False, accuracy: str | None = None,
+                elsewhere: bool = False) -> str:
     """`uid` prefixes element ids, so several cards can be inlined in one page. `calls` are the
     live LSO calls made during the pass ({"time", "along", "call"}), if any. `night`: flown at night
     (marked with a black dot, as on the greenie board). `view`: the stretch of the approach to show, as
     (near, far) meters short of the aim point (zoomed in); default the whole approach. The root element
     carries the view (data-near/data-far) so a page can zoom by dragging; `zoom_hint` says so on the card.
-    `dark`: always the dark colours (otherwise they follow the viewer's light or dark mode)."""
+    `dark`: always the dark colours (otherwise they follow the viewer's light or dark mode). `accuracy`: the
+    landing's overall accuracy level (hub/accuracy.py), shown as a badge; `elsewhere`: flown on another
+    server than the hub's own, marked beside it."""
     calls = sorted(calls or [], key=lambda c: c["time"])
     listed = _wrap("LSO calls:", [f"{c['call'].capitalize()} ({c['along'] / NM:.2f} nm)" for c in calls],
                    12, PLOT_W) if calls else []
@@ -452,6 +470,9 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     if p.wire_label:
         detail = f"wire {p.wire_label} · " + detail
     out.append(f'<text class="tc-muted" x="{gx}" y="56" font-size="12" text-anchor="end">{escape(detail)}</text>')
+    if accuracy:
+        _badges(out, gx - 78, 20, [(f"{accuracy} accuracy", ACCURACY_COLORS.get(accuracy, "#8c959f"))]
+                + ([("another server", "#6e40c9")] if elsewhere else []))
     if p.dcs_grade:
         dcs = p.dcs_grade.raw.removeprefix("LSO:").strip()
         out.append(f'<text class="tc-muted" x="{gx}" y="72" font-size="11" text-anchor="end">'

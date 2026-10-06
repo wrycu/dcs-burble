@@ -242,6 +242,8 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
         ("DCS LSO", p.dcs_grade or "–"),
         ("Wire", _wire(p)),
     ]
+    if accuracy is not None:
+        facts.append(("Flown on", accuracy.flown_label + (f" ({accuracy.flown.note})" if accuracy.flown.note else "")))
     if relayed := (p.slice.sidecar or {}).get("calls_from"):
         facts.append(("LSO calls", f"made on {relayed}'s server, relayed by the pilot hook"))
     dl = "".join(f"<dt>{escape(k)}</dt><dd>{escape(v)}</dd>" for k, v in facts)

@@ -27,6 +27,7 @@ from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.grade import POINTS, dcs_only_grade, dcs_only_outcome
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
+from .accuracy import landing_accuracy
 from .db import Grade, Pass, Pilot, PilotAlias, PlayerSeen, Slice, Source, Upload, make_engine, make_sessionmaker
 from .pilothook import HookUploadError, hook_reports, parse_upload
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
@@ -424,7 +425,8 @@ class Hub:
     def _regrade(self, s: Session, row: Pass) -> GradeResult:
         if row.is_dcs_only:
             return self._grade_dcs_only(s, row)
-        loaded = self.load_pass(row, self.reports(row, s), s)
+        reports = self.reports(row, s)
+        loaded = self.load_pass(row, reports, s)
         row.outcome = loaded.outcome.value  # from the best track (and the current detection)
         result = grade_pass(loaded)
         current = next((g for g in row.grades if g.version == result.version), None)
@@ -432,7 +434,14 @@ class Hub:
             row.grades.remove(current)
             s.flush()
         row.grades.append(_grade_row(result))
+        self._store_accuracy(row, reports)
         return result
+
+    @staticmethod
+    def _store_accuracy(row: Pass, reports: list[Pass]) -> None:
+        """The landing's accuracy scores and where it was flown, kept with its newest grade."""
+        grade = row.grades[-1]
+        grade.detail = {**(grade.detail or {}), "accuracy": landing_accuracy(row, reports).to_dict()}
 
     def _grade_dcs_only(self, s: Session, row: Pass) -> GradeResult:
         grade, text = dcs_only_grade(row.dcs_grade or "")
@@ -442,6 +451,7 @@ class Hub:
         s.flush()
         row.grades.append(Grade(version=GRADING_VERSION, grade=grade.value, points=POINTS[grade], text=text,
                                 detail={"source": "dcs", "grade": grade.value, "points": POINTS[grade], "text": text}))
+        self._store_accuracy(row, self.reports(row, s))
         return GradeResult(GRADING_VERSION, grade, POINTS[grade])
 
     def _show_dcs_only(self, s: Session, row: Pass) -> None:
@@ -491,7 +501,9 @@ class Hub:
                     existing.dcs_grade = dcs["grade"]["raw"]
                     existing.wire = dcs.get("wire")
                     if existing.merged_into_id is not None:
-                        self._attach(s, s.get(Pass, existing.merged_into_id), existing)
+                        landing = s.get(Pass, existing.merged_into_id)
+                        self._attach(s, landing, existing)
+                        self._regrade(s, landing)  # DCS's wire, and the accuracy that comes with it
                     elif existing.kind == "track":
                         self._show_dcs_only(s, existing)
                 shown = s.get(Pass, existing.merged_into_id) if existing.merged_into_id else existing

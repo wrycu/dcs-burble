@@ -48,7 +48,7 @@ PLACEHOLDER_REFERENCE = "2000-01-01T00:00:00Z"
 
 # The pilot hook's latest version (`VERSION` in pilot-hook/Scripts/Hooks/dcs-lso-pilot-hook.lua). The hub tells an
 # older hook in its reply, and the hook logs that an update is available.
-PILOT_HOOK_VERSION = 2
+PILOT_HOOK_VERSION = 3  # 3: says whether this hub was the server's when the approach was flown (`here`)
 
 
 class HookUploadError(ValueError):
@@ -77,6 +77,8 @@ class HookUpload:
     rows: list[dict[str, float]]
     carrier: HookCarrier | None = None
     sun_elevation: float | None = None  # DCS's own sun (degrees) where and when the approach ended
+    # Was the hub this was sent to the hub of the server it was flown on? (version 3; None from older hooks)
+    here: bool | None = None
     # Live LSO calls relayed from the hub of the server the pass was flown on (its server agent made them), and
     # that hub's address: {"time", "along", "call"}, mission time.
     calls: list[dict] | None = None
@@ -132,7 +134,8 @@ def parse_upload(body: dict) -> HookUpload:
                       sent_model_time=sent_model_time, livery=optional("livery"),
                       onboard_num=optional("onboard_num"), rows=rows, carrier=carrier,
                       sun_elevation=_number(body.get("sun_elevation")), calls=_calls(body.get("calls")),
-                      calls_from=optional("calls_from"), dcs_grade=_dcs_grade(body.get("dcs_grade")))
+                      calls_from=optional("calls_from"), dcs_grade=_dcs_grade(body.get("dcs_grade")),
+                      here=body["here"] if isinstance(body.get("here"), bool) else None)
 
 
 def _dcs_grade(value: object) -> str | None:
@@ -247,7 +250,8 @@ def hook_reports(upload: HookUpload, work_dir: Path) -> list[tuple[bytes, dict]]
         if upload.calls:
             meta["calls"] = [c for c in upload.calls if start - 60 <= c["time"] <= end + 30]  # this pass's
             meta["calls_from"] = upload.calls_from
-        meta["pilot_hook"] = {"version": upload.version, "ucid": upload.ucid, "server": upload.server}
+        meta["pilot_hook"] = {"version": upload.version, "ucid": upload.ucid, "server": upload.server,
+                              "here": upload.here}
         if upload.sent_at is not None and upload.sent_model_time is not None:
             ended = upload.sent_at - timedelta(seconds=max(0.0, upload.sent_model_time - end))
             meta["pass"]["occurred_at"] = (ended - timedelta(seconds=end - start)).isoformat()

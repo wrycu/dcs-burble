@@ -331,7 +331,7 @@ def test_a_report_with_the_carrier_takes_over_from_dcss_grade(tmp_path):
 def accuracy_of(client, pass_id=None):
     (landing,) = [p for p in client.get("/api/v1/passes?days=0").json() if pass_id in (None, p["id"])]
     a = landing["accuracy"]
-    return a["parts"], {k: a[k]["level"] for k in ("overall", "approach", "wire", "comms")}
+    return {x["name"]: x["present"] for x in a["parts"]}, {k: a[k]["level"] for k in ("overall", "approach", "wire", "comms")}
 
 
 def test_accuracy_rows(tmp_path, hub):
@@ -354,3 +354,28 @@ def test_accuracy_of_a_landing_graded_by_dcs_alone(tmp_path):
     parts, scores = accuracy_of(client)
     assert parts == {"Server report": False, "Pilot hook": True, "DCS comms": True}
     assert scores == {"overall": "Low", "approach": "None", "wire": "Full", "comms": "None"}
+
+
+def test_accuracy_is_stored_with_the_grade_and_says_where_it_was_flown(tmp_path, hub):
+    client = client_at(hub)
+    hub.ingest(1, *server_report())
+    post(client, {**hook_upload(), "version": 3, "here": True}, hub.token)
+    with hub.sessions() as s:
+        (landing,) = [p for p in s.query(Pass).all() if p.merged_into_id is None and not p.is_track]
+        stored = landing.grade.detail["accuracy"]
+    assert stored["overall"]["level"] == "Full" and stored["flown"] == {"where": "here", "note": "server1"}
+    page = client.get(f"/passes/{landing.id}").text
+    assert "Flown on" in page and "this hub&#x27;s servers (server1)" in page
+    card = client.get(f"/passes/{landing.id}/card.svg").text
+    assert "Full accuracy" in card and "another server" not in card
+
+
+@pytest.mark.parametrize("extra, where", [({"here": False}, "elsewhere"), ({"server": None}, "single player"),
+                                          ({}, "unknown")])
+def test_where_a_pilot_hooks_landing_was_flown(tmp_path, extra, where):
+    hub, client, token = other_communitys_hub(tmp_path)
+    (report,) = post(client, {**carrier_upload(), "version": 3, **extra}, token).json()["reports"]
+    (landing,) = client.get("/api/v1/passes?days=0").json()
+    assert landing["accuracy"]["flown"]["where"] == where
+    card = client.get(f"/passes/{report['pass_id']}/card.svg").text
+    assert ("another server" in card) == (where == "elsewhere")
