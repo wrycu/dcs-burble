@@ -41,6 +41,8 @@ In DCS: **Options > Special > DCS-LSO**.
 - The uploader sends it in the background, while you fly and in the menus after the mission. Sent files move
   to `Logs/dcs-lso/sent/`. The settings page shows how many are waiting, with a **Send now** button (also after
   fixing a pilot token).
+- If a hub was down or unreachable while you flew, it still gets the approach later (without your token): it
+  takes it if it recognises you from its own servers, and turns it down otherwise.
 - After the mission, DCS's own LSO grade for each trap (from `Logs/debrief.log`, when you used carrier comms) is
   added and sent too.
 - With "send to all", the other hubs also get the live calls the LSO made on that server: the uploader asks the

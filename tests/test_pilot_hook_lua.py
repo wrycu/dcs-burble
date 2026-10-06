@@ -157,6 +157,7 @@ local function conn_for()
       return nil, 'closed', 'HTTP/1.1 200 OK\r\n\r\n{"ready": true, "calls": [{"time": 1105.0, "along": 120.0, "call": "power"}]}'
     end
     if self.sent:match('^GET') then
+      if host == 'hub1' and FLAGS:find('herefail') then return nil, 'closed', '' end  -- down
       local here = host == 'hub1' and not FLAGS:find('elsewhere')
       return nil, 'closed', 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"here": ' .. tostring(here) .. '}'
     end
@@ -235,8 +236,13 @@ re_written = re.compile(r"# written_at=\d+")
 def test_a_file_from_the_last_session_is_stamped_with_it(tmp_path, recorded):
     previous = f"mission=the previous mission\nucid={UCID}\nname=Wrycu\nserver=10.0.0.1:10308\nstarted=900\n"
     requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False, previous_session=previous)
-    (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
-    assert (json.loads(body)["mission"], json.loads(body)["server"]) == ("the previous mission", "10.0.0.1:10308")
+    posts = {h["Host"]: (h, json.loads(body)) for _, h, body in (split(r) for r in requests if r.startswith("POST"))}
+    _, body = posts["hub1"]
+    assert (body["mission"], body["server"]) == ("the previous mission", "10.0.0.1:10308")
+    # That session (an older pilot hook) didn't record which hubs answered: hub2 may have been its server's
+    # hub, so it gets the file too, without the token (it decides by whether it knows us from its servers).
+    headers, body = posts["hub2.example.com"]
+    assert "Authorization" not in headers and "here" not in body
     # This session is saved for next time.
     assert f"mission={MISSION}" in (tmp_path / "Logs" / "dcs-lso" / "session.txt").read_text()
 
@@ -266,13 +272,35 @@ def test_uploader_logs_once_that_a_newer_version_is_out(tmp_path, recorded):
     run_uploader(tmp_path, recorded[0], send_to_all=True)
     sent = [line for line in run_uploader.log if "->" in line]
     updates = [line for line in run_uploader.log if "newer pilot hook" in line]
-    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 3): see http://hub1:8000"]
+    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 4): see http://hub1:8000"]
 
 
 def test_uploader_sends_dcss_own_sun(tmp_path, recorded):
     requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False)
     (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
     assert json.loads(body)["sun_elevation"] == -12.5
+
+
+def test_a_hub_that_was_down_while_flying_still_gets_the_approach(tmp_path, recorded):
+    # hub1 (no token) doesn't answer "are you on our server?" (down); later it's up again. Not "send to all".
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=False, flags="herefail")
+    (headers, body), = [(h, json.loads(b)) for _, h, b in (split(r) for r in requests if r.startswith("POST"))
+                        if h["Host"] == "hub1"]
+    assert "Authorization" not in headers and "here" not in body  # unknown: the hub decides
+    assert list((out_dir / "sent").glob("approach-*.csv"))
+
+
+def test_a_hub_that_was_down_and_doesnt_know_us_is_left_alone(tmp_path, recorded):
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=False, refuse="hub1", flags="herefail")
+    assert len([r for r in requests if r.startswith("POST") and "Host: hub1" in r]) == 1  # asked once, not again
+    assert any("not taken (not flown on its servers" in line for line in run_uploader.log)
+
+
+def test_a_refusing_servers_hub_doesnt_hold_up_the_others(tmp_path, recorded):
+    # hub1 is the server's hub but refuses (401, with no token: e.g. it no longer recognises the player); hub2
+    # (with its token) still gets the approach, instead of waiting for hub1 forever.
+    requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=True, refuse="hub1")
+    assert {split(r)[1]["Host"] for r in requests if r.startswith("POST")} == {"hub1", "hub2.example.com"}
 
 
 def test_send_to_all_is_on_unless_switched_off(tmp_path, recorded):

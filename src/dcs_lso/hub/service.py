@@ -41,9 +41,10 @@ log = logging.getLogger(__name__)
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
 PILOT_HOOKS = "pilot hooks"  # source of pilot hook uploads recognised without a token (see pilot_hook_access)
 INTERNAL_SOURCES = (PUBLIC_UPLOADS, PILOT_HOOKS)
-# A player counts as flying on one of this hub's servers if a server agent reported them this recently
-# (a pilot hook sends each approach right after it ends).
-PLAYER_RECENT = timedelta(minutes=30)
+# A player counts as flying on one of this hub's servers if a server agent reported them this recently. Not only
+# right after an approach: the pilot hook sends again after the mission (with DCS's grade), or in the next DCS
+# session (when it ended before sending), and gives up after a day. Their address must still match.
+PLAYER_RECENT = timedelta(hours=24)
 # A server agent's player list is current if it reported it this recently (it reports at least every 2 min).
 PLAYERS_FRESH = timedelta(minutes=10)
 PILOT_HOOK_ACCEPT = ("ours", "any")

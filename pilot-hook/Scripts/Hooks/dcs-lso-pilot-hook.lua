@@ -6,6 +6,8 @@
 --   recognises you by your DCS account and address, so no token is needed there);
 -- - with "send to all hubs" (the default), also every other hub set with your pilot token (from your settings
 --   page there). A hub without a token is skipped then: it only takes traps from players on its own servers.
+-- - a hub that didn't answer while the approach was flown (e.g. it was down) might be the server's: it gets the
+--   approach too, and decides (it recognises players from its own servers; if it doesn't, that's that).
 -- Uploads use plain HTTP (DCS's Lua has no HTTPS) and never block the game: the socket is driven a little
 -- each frame, in missions and in the menus (DCS's UpdateManager), so what's left when a mission ends is sent
 -- straight away. After a mission, DCS's own grades from debrief.log are added to its approaches and sent again.
@@ -18,7 +20,7 @@ package.cpath = package.cpath .. ';.\\LuaSocket\\?.dll;'
 local socket = require('socket')
 local lfs = require('lfs')
 
-local VERSION = 3
+local VERSION = 4
 local HUB_SLOTS = 3
 local SCAN_EVERY_S = 2          -- look for new approach files
 local HERE_EVERY_S = 60         -- ask the hubs again whether we're on one of their servers
@@ -31,10 +33,10 @@ local DEBRIEF_EVERY_S = 5       -- after a mission: look for its debrief.log
 local GRADE_AFTER_S = 15        -- DCS's grade can come this long after the approach's last sample
 
 local dir = lfs.writedir() .. 'Logs/dcs-lso/'
-local hubs = {}                 -- { url, host, port, path, token, ip, here, here_at, retry_at }
+local hubs = {}                 -- { url, host, port, path, token, ip, here, answered, here_at, retry_at }
 local context = {}              -- ucid, name, server, mission, started (this session)
 local previous = nil            -- the last session's context (files written as it ended), kept in session.txt
-local files = {}                -- name -> { done = { [hub index] = true }, here = { [url] = true } | nil, first_seen }
+local files = {}                -- name -> { done = { [hub index] = true }, here/answered = { [url] = true } | nil, first_seen }
 local request                   -- the one HTTP request in flight
 local last_scan, send_to_all = -SCAN_EVERY_S, false
 local last_debrief_check, debrief_seen = -DEBRIEF_EVERY_S, nil
@@ -72,7 +74,7 @@ local function load_settings()
       local token = option('hub' .. i .. 'Token')
       token = token and token:gsub('%s+', '') or ''
       hubs[#hubs + 1] = { url = url, host = host, port = port, path = path, token = token ~= '' and token or nil,
-                          here = false, here_at = -HERE_EVERY_S, retry_at = 0 }
+                          here = false, answered = false, here_at = -HERE_EVERY_S, retry_at = 0 }
     end
   end
   note(string.format('%d hub(s) set; sending to %s', #hubs, send_to_all and 'all of them' or "the current server's hub"))
@@ -87,7 +89,7 @@ local function json_string(s)
 end
 
 -- An HTTP request driven without blocking: call step() each frame until it returns true.
-local function new_request(hub, method, target, body, on_done)
+local function new_request(hub, method, target, body, on_done, without_token)
   if not hub.ip then
     local ip = socket.dns.toip(hub.host)  -- resolved once per hub (when settings are loaded)
     if not ip then on_done(nil, 'cannot resolve ' .. hub.host) return nil end
@@ -95,7 +97,7 @@ local function new_request(hub, method, target, body, on_done)
   end
   local headers = { method .. ' ' .. hub.path .. target .. ' HTTP/1.1', 'Host: ' .. hub.host,
                     'User-Agent: dcs-lso-pilot-hook/' .. VERSION, 'Connection: close' }
-  if hub.token then headers[#headers + 1] = 'Authorization: Bearer ' .. hub.token end
+  if hub.token and not without_token then headers[#headers + 1] = 'Authorization: Bearer ' .. hub.token end
   if body then
     headers[#headers + 1] = 'Content-Type: application/json'
     headers[#headers + 1] = 'Content-Length: ' .. #body
@@ -150,7 +152,7 @@ end
 -- The session (mission, account, server) saved to a file, so approaches written as a mission ends (the
 -- recorder's last flush comes after the uploader stops) are stamped correctly in the next session, even after
 -- DCS restarts.
-local KEYS = { 'mission', 'ucid', 'name', 'server', 'started', 'here' }
+local KEYS = { 'mission', 'ucid', 'name', 'server', 'started', 'here', 'answered' }
 
 local function save_session(ctx)
   pcall(lfs.mkdir, dir)
@@ -202,6 +204,13 @@ local function here_list()
   return table.concat(urls, '|')
 end
 
+-- The hubs that answered whether we're on one of their servers (yes or no) this session, as "url|url".
+local function answered_list()
+  local urls = {}
+  for _, hub in ipairs(hubs) do if hub.answered then urls[#urls + 1] = hub.url end end
+  return table.concat(urls, '|')
+end
+
 local function here_set(text)
   local set = {}
   for url in (text or ''):gmatch('[^|]+') do set[url] = true end
@@ -233,13 +242,15 @@ local function stamp(name)
   end
   local here = current and here_list() or ctx.here
   if here and here ~= '' then f:write('# here=', here, '\n') end
+  local answered = current and answered_list() or ctx.answered
+  if answered and answered ~= '' then f:write('# answered=', answered, '\n') end
   if elevation then f:write(string.format('# sun_elevation=%.2f\n', elevation)) end
   f:close()
 end
 
 local function upload_body(meta, csv, carrier, calls, here)
   return '{"version":' .. VERSION
-    .. ',"here":' .. tostring(here == true)  -- was this hub the server's when it was flown
+    .. (here ~= nil and (',"here":' .. tostring(here)) or '')  -- was this hub the server's when it was flown (nil: unknown)
     .. ',"pilot":' .. json_string(meta.name or meta.pilot)
     .. ',"aircraft":' .. json_string(meta.aircraft)
     .. ',"mission":' .. json_string(meta.mission)
@@ -268,13 +279,24 @@ local function is_here(state, hub)
   return hub.here
 end
 
+-- Did this hub not answer (down, unreachable) while the file's approach was flown? Then it may be the server's
+-- hub: it gets the file and decides. Files from earlier sessions without the hubs' answers (older versions)
+-- count as unknown everywhere.
+local function is_unknown(state, hub)
+  if is_here(state, hub) then return false end
+  if state.answered then return not state.answered[hub.url] end
+  if state.current then return not hub.answered end
+  return true
+end
+
 -- The hubs this file still has to go to: the hub of the server it was flown on first.
 local function destinations(state)
   local out = {}
   for _, first in ipairs({ true, false }) do
     for i, hub in ipairs(hubs) do
       local here = is_here(state, hub)
-      if not state.done[i] and (here or (send_to_all and hub.token)) and (here == first) then out[#out + 1] = i end
+      local wanted = here or is_unknown(state, hub) or (send_to_all and hub.token)
+      if not state.done[i] and wanted and (here == first) then out[#out + 1] = i end
     end
   end
   return out
@@ -311,8 +333,21 @@ local function start_next()
         return new_request(hub, 'GET', '/api/v1/pilot-hook/here?ucid=' .. context.ucid, nil, function(status, body)
           local here = status == 200 and body:match('"here"%s*:%s*true') ~= nil
           if here ~= hub.here then note(hub.url .. (here and ': you are on one of its servers' or ': not its server')) end
-          hub.here = here
-          if context.started then context.here = here_list(); save_session(context) end
+          hub.here, hub.answered = here, hub.answered or status == 200
+          if context.started then
+            context.here, context.answered = here_list(), answered_list()
+            save_session(context)
+            -- This session's files follow the answers as they come (their stamp was written at first sight, maybe
+            -- before any hub answered): in memory, and in the file (later lines win), for when it's sent later.
+            for name, state in pairs(files) do
+              if state.current and state.stamp ~= context.here .. '/' .. context.answered then
+                state.stamp = context.here .. '/' .. context.answered
+                state.here, state.answered = here_set(context.here), here_set(context.answered)
+                local f = io.open(dir .. name, 'a')
+                if f then f:write('# here=', context.here, '\n# answered=', context.answered, '\n') f:close() end
+              end
+            end
+          end
           if not status then hub.retry_at = now() + RETRY_S end
         end)
       end
@@ -326,7 +361,10 @@ local function start_next()
       elseif t - state.first_seen > GIVE_UP_S then note(name .. ': no hub took it; moved to unsent/') move(name, 'unsent') end
     else
       local here_pending = false
-      for _, i in ipairs(todo) do if is_here(state, hubs[i]) then here_pending = true end end
+      for _, i in ipairs(todo) do
+        -- (a hub we've stopped sending to until the next mission, e.g. a refused token, doesn't hold up the rest)
+        if is_here(state, hubs[i]) and hubs[i].retry_at ~= math.huge then here_pending = true end
+      end
       for _, i in ipairs(todo) do
         local hub = hubs[i]
         local wait = false
@@ -343,7 +381,12 @@ local function start_next()
           if not meta then files[name] = nil return nil end
           if not meta.mission then return nil end  -- not stamped yet (see stamp)
           local calls = not is_here(state, hub) and state.calls or nil
-          return new_request(hub, 'POST', '/api/v1/pilot-hook/approaches', upload_body(meta, csv, carrier, calls, is_here(state, hub)), function(status, body)
+          local here_flag = nil  -- unknown: the hub didn't answer while it was flown
+          if not is_unknown(state, hub) then here_flag = is_here(state, hub) end
+          -- Only there because it didn't answer: let it recognise us from its servers, without the token (sending
+          -- with it is "send to all hubs").
+          local tokenless = here_flag == nil and not (send_to_all and hub.token)
+          return new_request(hub, 'POST', '/api/v1/pilot-hook/approaches', upload_body(meta, csv, carrier, calls, here_flag), function(status, body)
             if status == 200 then
               note(name .. ' -> ' .. hub.url .. ': ' .. (body:match('"text"%s*:%s*"([^"]*)"') or 'sent')
                    .. (calls and ' (with the LSO calls)' or ''))
@@ -363,6 +406,11 @@ local function start_next()
               -- The hub only takes traps flown on its own servers: retrying won't change that.
               note(name .. ' -> ' .. hub.url .. ': not taken (' .. body:sub(1, 200) .. ')')
               state.done[i] = true
+            elseif status == 401 and (tokenless or not hub.token) then
+              -- Sent without a token because the hub didn't answer when it was flown: it doesn't know us from
+              -- its servers, so it wasn't its server. Nothing more to do there.
+              note(name .. ' -> ' .. hub.url .. ': not taken (not flown on its servers, and no pilot token for it)')
+              state.done[i] = true
             elseif status == 401 then
               -- Not accepted (e.g. a wrong pilot token): try again next mission, after the settings are read again.
               note(name .. ' -> ' .. hub.url .. ': refused (' .. status .. ') ' .. body:sub(1, 200)
@@ -375,7 +423,7 @@ local function start_next()
               note(name .. ' -> ' .. hub.url .. ': ' .. tostring(status or body) .. '; retrying later')
               hub.retry_at = now() + RETRY_S
             end
-          end)
+          end, tokenless)
         end
       end
     end
@@ -410,6 +458,8 @@ local function scan()
           stamp(name)
           local meta = read_file(dir .. name) or {}
           files[name] = { done = {}, first_seen = now(), here = meta.here and here_set(meta.here) or nil,
+                          answered = meta.answered and here_set(meta.answered) or nil,
+                          current = context.started ~= nil and (tonumber(meta.written_at) or 0) >= context.started - 60,
                           ucid = meta.ucid }
         end
       end

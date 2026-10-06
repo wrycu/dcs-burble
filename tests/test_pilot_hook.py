@@ -465,3 +465,18 @@ def test_the_rebuilt_carrier_is_close_to_the_real_one():
         assert math.hypot(a.u - b.u, a.v - b.v) < within_m
     assert abs((rebuilt.heading - real.at(rebuilt.stop_time).heading + 180) % 360 - 180) < 0.5
     assert abs(rebuilt.speed_ms - 13.9) < 1.0
+
+
+def test_a_player_who_left_hours_ago_is_still_recognised(tmp_path, hub):
+    """The pilot hook sends again after the mission (DCS's grade), or in the next DCS session: without a token,
+    the hub still knows the player from its server (same address), up to a day later."""
+    from datetime import timedelta
+    from dcs_lso.hub.db import PlayerSeen
+    with hub.sessions.begin() as s:
+        for row in s.query(PlayerSeen):
+            row.connected, row.last_seen = False, row.last_seen - timedelta(hours=2)  # left two hours ago
+    assert post(client_at(hub, HOME), hook_upload(), None).status_code == 200
+    with hub.sessions.begin() as s:
+        for row in s.query(PlayerSeen):
+            row.last_seen = row.last_seen - timedelta(days=2)
+    assert post(client_at(hub, HOME), hook_upload(), None).status_code == 401  # too long ago
