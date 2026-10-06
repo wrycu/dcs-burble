@@ -503,7 +503,8 @@ KIND_LABELS = {"fault": "Fault", "bias": "Leaning", "speed": "Speed", "outcome":
                "trend": "Trend"}
 
 
-def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, overlay_src: str = "") -> str:
+def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, overlay_src: str = "",
+               servers: str = "all") -> str:
     """Meta grading: themes across the pilot's recent passes (`summary`: the hub's PilotSummary)."""
     result, rows = summary.trends, summary.rows
     first = summary.first_seen.strftime("%Y-%m-%d") if summary.first_seen else "?"
@@ -518,9 +519,12 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
     options = "".join(f'<option value="{n}"{" selected" if n == passes else ""}>last {n}</option>'
                       for n in sorted({8, 12, 15, 20, passes}))
     picker = (f'<form class="filters" method="get"><label>Look at <select name="passes" onchange="this.form.submit()">'
-              f"{options}</select> passes</label></form>")
+              f"{options}</select> passes</label><label>Servers <select name=\"servers\" onchange=\"this.form.submit()\">"
+              + "".join(f'<option value="{v}"{" selected" if v == servers else ""}>{label}</option>'
+                        for v, label in (("ours", "This hub&#x27;s servers"), ("all", "All servers")))
+              + "</select></label></form>")
     if not result.passes:
-        body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}'
+        body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}{picker}'
                 '<p class="empty-state">No graded passes yet.</p>')
         return _page(name, body)
     grades = " · ".join(f"{escape(grade_short(g))} ×{n}" for g, n in sorted(result.grades.items(), key=lambda kv: -kv[1]))

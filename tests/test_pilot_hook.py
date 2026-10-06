@@ -419,6 +419,13 @@ def test_landings_from_other_servers_can_be_hidden(tmp_path, default):
     assert ('value="ours" selected' in board) == (default == "hidden") and "This hub&#x27;s servers" in board
     assert ("Wrycu" in client.get("/?days=0&servers=ours").text.split("</form>")[1]) is False
     assert "Wrycu" in client.get("/?days=0&servers=all").text.split("</form>")[1]
+    # The pilot's page and trends follow the same default, with the same filter.
+    def landings(query: str = "") -> int:
+        return client.get(f"/api/v1/pilots/Wrycu/trends{query}").json()["landings"]
+
+    assert (landings(), landings("?servers=all"), landings("?servers=ours")) == ((1 if default == "shown" else 0), 1, 0)
+    page = client.get("/pilots/Wrycu").text
+    assert ('value="ours" selected' in page) == (default == "hidden") and 'name="servers"' in page
     from dcs_lso.hub.discord import Discord
     import httpx
     discord = Discord(hub, client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))), start=False)

@@ -428,9 +428,11 @@ def create_app(hub: Hub) -> FastAPI:
         return out
 
     @app.get("/api/v1/pilots/{name}/trends")
-    def pilot_trends_api(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES) -> dict:
-        """Themes across a pilot's recent passes: what keeps going wrong, biases, speed, outcomes, wires."""
-        found = hub.pilot_trends(name, passes)
+    def pilot_trends_api(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
+                         servers: str | None = None) -> dict:
+        """Themes across a pilot's recent passes: what keeps going wrong, biases, speed, outcomes, wires.
+        `servers`: "ours" or "all"; default per `--other-servers`."""
+        found = hub.pilot_trends(name, passes, _servers(servers))
         if found is None:
             raise HTTPException(404, "no such pilot")
         return {"pilot": name, "modex": found.modex, "last_livery": found.last_livery, "landings": found.landings,
@@ -439,20 +441,23 @@ def create_app(hub: Hub) -> FastAPI:
                 **found.trends.to_dict(), "pass_ids": [p.id for p in found.rows]}
 
     @app.get("/pilots/{name}", response_class=HTMLResponse)
-    def pilot_page(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES) -> str:
-        found = hub.pilot_trends(name, passes)
+    def pilot_page(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
+                   servers: str | None = None) -> str:
+        servers = _servers(servers)
+        found = hub.pilot_trends(name, passes, servers)
         if found is None:
             raise HTTPException(404, "no such pilot")
         items = hub.overlay(found.rows)
         svg = render_overlay(items, uid="ov", title=f"{name}: last {len(items)} passes overlaid") if items else None
-        return pages.pilot_page(name, found, passes, svg, overlay_src=f"/pilots/{quote(name, safe='')}/overlay.svg?passes={passes}")
+        return pages.pilot_page(name, found, passes, svg, servers=servers,
+                                overlay_src=f"/pilots/{quote(name, safe='')}/overlay.svg?passes={passes}&servers={servers}")
 
     @app.get("/pilots/{name}/overlay.svg")
     def pilot_overlay(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
-                      near: float | None = None, far: float | None = None) -> Response:
+                      near: float | None = None, far: float | None = None, servers: str | None = None) -> Response:
         """The pilot's passes overlaid; with `near`/`far` (meters short of the aim point), zoomed to that
         stretch of the approach."""
-        found = hub.pilot_trends(name, passes)
+        found = hub.pilot_trends(name, passes, _servers(servers))
         if found is None:
             raise HTTPException(404, "no such pilot")
         svg = render_overlay(hub.overlay(found.rows), uid="ov", title=f"{name}: passes overlaid", view=_view(near, far))

@@ -29,7 +29,7 @@ from ..cards.overlay import OverlayPass
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.grade import POINTS, dcs_only_grade, dcs_only_outcome
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
-from .accuracy import landing_accuracy
+from .accuracy import flown_elsewhere, landing_accuracy
 from .db import Grade, Pass, Pilot, PilotAlias, PlayerSeen, Slice, Source, Upload, make_engine, make_sessionmaker
 from .pilothook import HookUploadError, hook_reports, parse_upload
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
@@ -1052,9 +1052,10 @@ class Hub:
 
     # -- meta grading ---------------------------------------------------------------------------
 
-    def pilot_trends(self, name: str, passes: int = DEFAULT_PASSES) -> PilotSummary | None:
+    def pilot_trends(self, name: str, passes: int = DEFAULT_PASSES, servers: str = "all") -> PilotSummary | None:
         """Themes across a pilot's last `passes` graded landings, those landings (newest first), and when
-        the pilot was first and last seen; None for an unknown pilot."""
+        the pilot was first and last seen; None for an unknown pilot. `servers`: "ours" leaves out landings flown
+        on other servers (as the board's filter)."""
         with self.sessions() as s:
             pilot = s.scalar(select(Pilot).where(Pilot.name == name))
             if pilot is None:
@@ -1065,6 +1066,8 @@ class Hub:
                  .options(selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.source),
                           selectinload(Pass.slice)))
             landings = list(s.scalars(q))
+            if servers == "ours":
+                landings = [p for p in landings if not flown_elsewhere(p)]
             rows = [p for p in landings if p.grade is not None][:passes]
         seen = [p.occurred_at or p.created_at for p in landings]
         items = []
