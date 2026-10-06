@@ -23,6 +23,7 @@ from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M
 from ..grading import grade_pass
 from ..grading.trends import DEFAULT_PASSES
 from . import pages
+from .accuracy import landing_accuracy
 from .db import Pass, Pilot, Source, Upload
 from .pilothook import PILOT_HOOK_VERSION
 from .service import Hub, IngestError
@@ -381,7 +382,8 @@ def create_app(hub: Hub) -> FastAPI:
         with hub.sessions() as s:
             # Landings only: reports merged into another (same landing) and lone track reports are hidden.
             q = (select(Pass).where(Pass.merged_into_id.is_(None), or_(Pass.kind.is_(None), Pass.kind != "track"))
-                 .options(selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.source)))
+                 .options(selectinload(Pass.grades), selectinload(Pass.pilot), selectinload(Pass.source),
+                          selectinload(Pass.slice)))
             if days:
                 q = q.where(Pass.occurred_at >= datetime.now(UTC) - timedelta(days=days))
             if pilot:
@@ -412,7 +414,8 @@ def create_app(hub: Hub) -> FastAPI:
                         # DCS's wire (above) takes priority; this is estimated from where the jet stopped.
                         "wire_estimated": ((g.detail or {}).get("wire_estimate") if g else None),
                         "grade": g.grade if g else None, "text": g.text if g else None,
-                        "points": g.points if g else None, "grading_version": g.version if g else None})
+                        "points": g.points if g else None, "grading_version": g.version if g else None,
+                        "accuracy": landing_accuracy(p, reports).to_dict()})
         return out
 
     @app.get("/api/v1/pilots/{name}/trends")
@@ -472,13 +475,14 @@ def create_app(hub: Hub) -> FastAPI:
         if p.merged_into_id is not None:
             return RedirectResponse(f"/passes/{p.merged_into_id}", status_code=307)
         reports = hub.reports(p)
+        accuracy = landing_accuracy(p, reports)
         try:
             result = hub.load_pass(p, reports)
             svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls,
                               night=bool(p.night), zoom_hint=True)
-            return pages.pass_page(p, svg, reports=reports, track_source=result.track_source)
+            return pages.pass_page(p, svg, reports=reports, track_source=result.track_source, accuracy=accuracy)
         except (IngestError, OSError) as exc:
-            return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports)
+            return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports, accuracy=accuracy)
 
     @app.get("/passes/{pass_id}/card.svg")
     def pass_card(pass_id: int, request: Request, near: float | None = None, far: float | None = None,

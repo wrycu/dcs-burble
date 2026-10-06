@@ -326,3 +326,31 @@ def test_a_report_with_the_carrier_takes_over_from_dcss_grade(tmp_path):
     # Graded by us now (DCS's grade and wire are kept with it), with a trap card.
     assert landing["wire"] == 3 and landing["dcs_grade"] == DCS_GRADE and landing["text"] != "(OK) : _LULX_ 3PTSIW"
     assert client.get(f"/passes/{landing['id']}/card.svg").status_code == 200
+
+
+def accuracy_of(client, pass_id=None):
+    (landing,) = [p for p in client.get("/api/v1/passes?days=0").json() if pass_id in (None, p["id"])]
+    a = landing["accuracy"]
+    return a["parts"], {k: a[k]["level"] for k in ("overall", "approach", "wire", "comms")}
+
+
+def test_accuracy_rows(tmp_path, hub):
+    client = client_at(hub)
+    hub.ingest(1, *server_report())  # the server report alone: its copy of the jet
+    parts, scores = accuracy_of(client)
+    assert parts == {"Server report": True, "Pilot hook": False, "DCS comms": False}
+    assert scores == {"overall": "High", "approach": "High", "wire": "None", "comms": "None"}
+    post(client, hook_upload(), hub.token)  # plus the pilot hook's own track: our wire estimate
+    parts, scores = accuracy_of(client)
+    assert parts == {"Server report": True, "Pilot hook": True, "DCS comms": False}
+    assert scores == {"overall": "Full", "approach": "Full", "wire": "High", "comms": "None"}
+    page = client.get(f"/passes/{client.get('/api/v1/passes?days=0').json()[0]['id']}").text
+    assert "<h2>Accuracy</h2>" in page and "level-Full" in page and "estimated from where the jet stopped" in page
+
+
+def test_accuracy_of_a_landing_graded_by_dcs_alone(tmp_path):
+    hub, client, token = other_communitys_hub(tmp_path)
+    post(client, hook_upload(dcs_grade=DCS_GRADE), token)
+    parts, scores = accuracy_of(client)
+    assert parts == {"Server report": False, "Pilot hook": True, "DCS comms": True}
+    assert scores == {"overall": "Low", "approach": "None", "wire": "Full", "comms": "None"}

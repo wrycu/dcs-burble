@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from ..cards.overlay import GRADE_COLORS
 from ..grading import grade_name, grade_short
+from .accuracy import Accuracy
 from .db import Pass, Upload
 
 # Greenie board colours per grade (light, dark), shared with the overlay card.
@@ -76,6 +77,16 @@ h1 .modex { color: var(--muted); font-weight: 600; margin-left: 6px; }
 #tc-pop svg { display: block; width: 100%; height: auto; }
 #tc-pop .loading { color: var(--muted); padding: 24px; text-align: center; }
 .zoomable { position: relative; cursor: crosshair; user-select: none; }
+.scroll-x { overflow-x: auto; }
+.accuracy { width: 100%; border-collapse: collapse; margin: 4px 0 18px; font-size: 13px; }
+.accuracy th { text-align: left; font-weight: 700; color: var(--muted); padding: 4px 10px 6px 0; }
+.accuracy td { vertical-align: top; padding: 2px 10px 6px 0; }
+.accuracy .split { border-left: 2px solid var(--border, #8c959f); padding-left: 10px; }
+.accuracy .note { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
+.accuracy .yes { color: #1a7f37; font-weight: 700; } .accuracy .no { color: #cf222e; font-weight: 700; }
+.level { display: inline-block; border-radius: 10px; padding: 1px 9px; color: #fff; font-size: 12px; font-weight: 700; }
+.level-Full { background: #1a7f37; } .level-High { background: #0969da; } .level-Medium { background: #bf8700; }
+.level-Low { background: #cf4d1a; } .level-None { background: #8c959f; } .level-na { background: #d0d7de; color: #57606a; }
 .zoomable.loading svg { opacity: 0.5; }
 .zoom-sel { position: absolute; top: 0; bottom: 0; background: rgba(9, 105, 218, 0.12);
   border-left: 1px solid #0969da; border-right: 1px solid #0969da; pointer-events: none; }
@@ -198,8 +209,25 @@ def _report(r: Pass, used: bool) -> str:
             + (" <strong>track used</strong>" if used else ""))
 
 
+def _accuracy(a: Accuracy) -> str:
+    """The landing's row of the accuracy table (docs/accuracy-scores.png): which parts reported it, and the scores."""
+    def level(s) -> str:
+        cls = "na" if s.level == "n/a" else s.level
+        note = f'<span class="note">{escape(s.note)}</span>' if s.note else ""
+        return f'<span class="level level-{cls}">{escape(s.level)}</span>{note}'
+
+    heads = [p.name for p in a.parts] + ["Overall", "Approach", "Wire", "Comms"]
+    cells = [f'<span class="{"yes" if p.present else "no"}">{"✓" if p.present else "✗"}</span>'
+             + (f'<span class="note">{escape(p.note)}</span>' if p.note else "") for p in a.parts]
+    cells += [level(s) for s in a.scores().values()]
+    split = len(a.parts)
+    th = "".join(f'<th{" class=split" if i == split else ""}>{escape(h)}</th>' for i, h in enumerate(heads))
+    td = "".join(f'<td{" class=split" if i == split else ""}>{c}</td>' for i, c in enumerate(cells))
+    return (f'<h2>Accuracy</h2><div class="scroll-x"><table class="accuracy"><tr>{th}</tr><tr>{td}</tr></table></div>')
+
+
 def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: list[Pass] | None = None,
-              track_source: str | None = None) -> str:
+              track_source: str | None = None, accuracy: Accuracy | None = None) -> str:
     g = p.grade
     facts = [
         ("Pilot", p.pilot.name),
@@ -229,7 +257,7 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
         card = f'<p class="empty-state">{escape(error or "")}</p>'
     body = (f'<p class="sub"><a href="/">← Greenie board</a> · <a href="/passes/{p.id}/acmi">Download ACMI</a></p>'
             f"<h1>{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}</h1>"
-            f'<dl class="facts">{dl}</dl>{card}')
+            f'<dl class="facts">{dl}</dl>{_accuracy(accuracy) if accuracy else ""}{card}')
     return _page(f"{p.pilot.name} {g.grade if g else ''}", body)
 
 
