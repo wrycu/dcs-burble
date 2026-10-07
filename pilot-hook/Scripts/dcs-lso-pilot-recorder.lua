@@ -12,7 +12,7 @@
 -- logged and switches the recorder off rather than affecting them.
 
 do
-  local VERSION = 1
+  local VERSION = 2
   local RATE_S = 0.02                -- sample interval (50 Hz)
   local LEAD_S, TAIL_S = 45, 10      -- seconds kept before an approach starts, and recorded after it ends
   -- Approaches, as the hub finds them (dcs_lso.detect.approaches): from above pattern altitude to below
@@ -22,7 +22,7 @@ do
   -- ground speed below what an aircraft flies at.
   local STOPPED_SPEED_MS, STOPPED_DURATION_S = 25, 5
   local MAX_APPROACH_S = 600
-  local AIRCRAFT = { ['FA-18C_hornet'] = true }  -- aircraft the hubs grade
+  local AIRCRAFT = { ['FA-18C_hornet'] = true, ['F-14A-135-GR'] = true, ['F-14B'] = true, ['F-14BU'] = true }  -- graded
   local HEADER = 't,x,y,z,heading,pitch,bank,aoa,lat,lon'
   local CARRIER_HEADER = 't,x,y,z,heading,lat,lon'
   local CARRIER_RATE_S = 0.1

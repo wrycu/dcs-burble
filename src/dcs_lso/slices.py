@@ -9,6 +9,7 @@ rebuilt from them.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from dataclasses import asdict
@@ -20,6 +21,8 @@ from .acmi.writer import write_slice
 from .detect import CarrierTimeline, PassResult
 from .detect.approaches import Approach
 from .dcslog import Debrief
+
+log = logging.getLogger(__name__)
 
 NM = 1852.0
 LEAD_S = 30.0
@@ -145,6 +148,29 @@ def slice_name(recording: Recording, p: PassResult) -> str:
     return f"{stamp or 'recording'}_{pilot}_{p.start_time:.0f}s"
 
 
+def apply_hooks(hooks, recording: Recording, p: PassResult, end: float, check_pilot: bool = True) -> dict:
+    """What the dcs-lso server hook adds to a pass (`hooks`: an agent.service.HookFeed): the pilot, checked
+    (Tacview can name the wrong one, see HookFeed.pilot_for); DCS's LSO grade and wire; the wire from the
+    carrier's wire animation, which wins. Returns the sidecar's extra fields: where the wire came from, and
+    the livery and side number of the pilot's slot. `end`: the end of the pass's slice (mission time)."""
+    from .dcslog import attach_dcs_grades
+
+    if check_pilot and (pilot_for := getattr(hooks, "pilot_for", None)) is not None:
+        p.pilot = pilot_for(p.pilot, p.aircraft_type, p.aircraft_id, p.start_time, p.end_time)
+    attach_dcs_grades([p], recording, hooks.debrief())
+    wire_source = "dcs-lso" if p.wire is not None else None
+    animated = hooks.wire_for(p.aircraft_id, p.start_time, end)
+    if animated is not None:
+        if p.wire is not None and p.wire != animated:
+            log.warning("wire disagreement: carrier animation says #%d, DCS's LSO says #%d (using #%d)",
+                        animated, p.wire, animated)
+        p.wire, wire_source = animated, "carrier-animation"
+    extra: dict = {"wire_source": wire_source}
+    if (aircraft := hooks.slot_for(p.pilot, p.start_time)) is not None:
+        extra["aircraft"] = aircraft
+    return extra
+
+
 def write_pass_slice(source: str | Path, recording: Recording, p: PassResult,
                      out_dir: str | Path) -> tuple[Path, Path]:
     """Write `<name>.zip.acmi` and `<name>.json` for one pass; returns both paths."""
@@ -187,13 +213,15 @@ def own_pilots(recording: Recording) -> list[str]:
 
 def slice_recording(source: str | Path, out_dir: str | Path, debrief: Debrief | None = None,
                     recording: Recording | None = None, pilot: str | None = None,
-                    own_only: bool = False) -> list[tuple[Path, dict]]:
+                    own_only: bool = False, hooks=None) -> list[tuple[Path, dict]]:
     """Everything uploadable in a whole recording (backfill): a slice + sidecar for every carrier pass,
     and a track report around every approach of the recording PC's own jet (the aircraft with
     recorded AOA) that isn't already a pass, e.g. a multiplayer client's recording without the carrier.
-    With `debrief` (that session's debrief.log), DCS's grades and wires are attached. With `pilot`, only
-    that pilot's passes and approaches; with `own_only`, only those of aircraft flown on the PC that
-    made the recording (see `own_pilots`)."""
+    With `debrief` (that session's debrief.log), DCS's grades and wires are attached. With `hooks` (the
+    dcs-lso server hook's events of the recording's mission, an agent.service.HookFeed), as the server agent
+    does live: the pilots checked, DCS's grades and wires, liveries, and when each pass was flown. With
+    `pilot`, only that pilot's passes and approaches; with `own_only`, only those of aircraft flown on the PC
+    that made the recording (see `own_pilots`)."""
     from .dcslog import attach_dcs_grades, track_dcs_grades
     from .detect import find_passes
     from .detect.approaches import find_approaches
@@ -202,14 +230,26 @@ def slice_recording(source: str | Path, out_dir: str | Path, debrief: Debrief | 
     source, out_dir = Path(source), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     recording = recording or load_recording(source)
-    passes = [p for p in find_passes(recording) if (pilot is None or _same_pilot(p.pilot, pilot))
+    passes = list(find_passes(recording))
+    extras: dict[int, dict] = {}
+    if hooks is not None:
+        for p in passes:
+            extras[id(p)] = apply_hooks(hooks, recording, p, window(p)[1])
+            if (at := hooks.wall_clock(p.start_time)) is not None:
+                extras[id(p)]["occurred_at"] = at.isoformat()
+    passes = [p for p in passes if (pilot is None or _same_pilot(p.pilot, pilot))
               and (not own_only or _own(recording.objects[p.aircraft_id]))]
     if debrief is not None:
         attach_dcs_grades(passes, recording, debrief)
     out: list[tuple[Path, dict]] = []
     for p in passes:
-        acmi, meta = write_pass_slice(source, recording, p, out_dir)
-        out.append((acmi, json.loads(meta.read_text(encoding="utf-8"))))
+        acmi, meta_path = write_pass_slice(source, recording, p, out_dir)
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        extra = extras.get(id(p), {})
+        if "occurred_at" in extra:
+            meta["pass"]["occurred_at"] = extra.pop("occurred_at")
+        meta.update(extra)
+        out.append((acmi, meta))
     approaches = []
     for track in recording.objects.values():
         if track.name not in AIRCRAFT or not any(s.aoa is not None for s in track.samples):

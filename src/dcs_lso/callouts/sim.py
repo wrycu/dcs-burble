@@ -62,7 +62,8 @@ def _inputs(recording: Recording, p: PassResult, hz: float | None, strip_aoa: bo
     return out
 
 
-def _hindsight(inputs: list[LiveInput], glideslope: float, window_s: float) -> list[GrooveState]:
+def _hindsight(inputs: list[LiveInput], glideslope: float, window_s: float,
+               aoa_offset: float = 0.0) -> list[GrooveState]:
     """Centered-window estimate at each sample (uses the future; not possible live)."""
     states = []
     half = window_s / 2
@@ -77,7 +78,7 @@ def _hindsight(inputs: list[LiveInput], glideslope: float, window_s: float) -> l
         if recorded:
             aoa = sum(recorded) / len(recorded)
         elif 0 < i < len(inputs) - 1:
-            aoa = derived_aoa(inputs[i - 1], x, inputs[i + 1])
+            aoa = derived_aoa(inputs[i - 1], x, inputs[i + 1], offset=aoa_offset)
         else:
             aoa = None
         states.append(GrooveState(x.time, x.along, gs, 0.0, lu, 0.0, x.lateral, aoa, not recorded,
@@ -93,10 +94,11 @@ def _rms_max(errors: list[float]) -> tuple[float, float]:
 
 def replay(recording: Recording, p: PassResult, hz: float | None = None, strip_aoa: bool = False,
            thresholds: Thresholds | None = None, window_s: float = DEFAULT_WINDOW_S) -> PassReplay:
-    glideslope = AIRCRAFT[p.aircraft_type].glideslope
+    aircraft = AIRCRAFT[p.aircraft_type]
+    glideslope = aircraft.glideslope
     inputs = _inputs(recording, p, hz, strip_aoa)
-    estimator = LiveEstimator(glideslope, window_s=window_s)
-    engine = CalloutEngine(thresholds or Thresholds())
+    estimator = LiveEstimator(glideslope, window_s=window_s, aoa_offset=aircraft.derived_aoa_offset)
+    engine = CalloutEngine((thresholds or Thresholds()).for_aircraft(aircraft.on_speed_aoa))
     live: list[GrooveState] = []
     calls = []
     for x in inputs:
@@ -110,7 +112,8 @@ def replay(recording: Recording, p: PassResult, hz: float | None = None, strip_a
 
     # Compare with hindsight at full resolution (and with recorded AOA when available).
     truth_inputs = _inputs(recording, p, None, False)
-    truth = {round(s.time, 3): s for s in _hindsight(truth_inputs, glideslope, window_s)}
+    hindsight = _hindsight(truth_inputs, glideslope, window_s, aircraft.derived_aoa_offset)
+    truth = {round(s.time, 3): s for s in hindsight}
     errs: dict[str, list[float]] = {"glideslope_deg": [], "lineup_deg": [], "aoa": []}
     for s in live:
         h = truth.get(round(s.time, 3))

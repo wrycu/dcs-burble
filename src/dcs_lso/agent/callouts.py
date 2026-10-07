@@ -274,8 +274,10 @@ class LiveCallouts:
         key = (carrier.id, plane.id)
         entry = self._engines.get(key)
         if entry is None:
-            entry = self._engines[key] = (LiveEstimator(frame.aircraft.glideslope),
-                                          CalloutEngine(self.settings.thresholds, self.clips.durations()))
+            aircraft = frame.aircraft
+            entry = self._engines[key] = (
+                LiveEstimator(aircraft.glideslope, aoa_offset=aircraft.derived_aoa_offset),
+                CalloutEngine(self.settings.thresholds.for_aircraft(aircraft.on_speed_aoa), self.clips.durations()))
         estimator, engine = entry
         t = sample.transform
         pos = frame.position(pose, t)

@@ -8,7 +8,7 @@ measure (e.g. "high" at 5 degrees above the glidepath).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from .estimator import GrooveState
@@ -113,7 +113,8 @@ class Thresholds:
     # Attitude (DCS: pitch changing > 5 deg/s, roll > 20 deg).
     easy_nose_deg_s: float = 5.0
     easy_wings_deg: float = 20.0
-    # AOA: outside the aircraft's on-speed band (DCS: 7.4 / 8.8 for the FA-18C).
+    # AOA: outside the aircraft's on-speed band (DCS: 7.4 / 8.8 for the FA-18C; set per aircraft by
+    # `for_aircraft`).
     aoa_fast: float = 7.4
     aoa_slow: float = 8.8
     # Hysteresis: an active call stays active until the value is this far back inside.
@@ -150,6 +151,10 @@ class Thresholds:
     rough_dig_chance: float = 0.33
     # Assumed length of a spoken call when the real clip length isn't known (e.g. replays).
     default_call_s: float = 0.8
+
+    def for_aircraft(self, on_speed_aoa: tuple[float, float]) -> Thresholds:
+        """These thresholds with the aircraft's on-speed band (AircraftInfo.on_speed_aoa)."""
+        return replace(self, aoa_fast=on_speed_aoa[0], aoa_slow=on_speed_aoa[1])
 
     def hold_for(self, call: Call) -> float:
         if call in (Call.RIGHT_FOR_LINEUP, Call.COME_LEFT):

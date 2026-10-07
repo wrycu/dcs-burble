@@ -352,15 +352,20 @@ def test_hook_feed_reads_the_wire_from_dcs_grade(tmp_path):
     assert feed.live_wire(0x203, since=340.0) is None  # someone else's
 
 
-@pytest.mark.parametrize(("path", "grade", "praised"), [
-    (FIXTURES / "wires" / "server-dcs-wire-2.zip.acmi", "OK", True),
-    (FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi", "---", False),
+@pytest.mark.parametrize(("path", "glideslope", "grade", "praised"), [
+    # OK when graded against a 3.6 deg glideslope (as until grading v7); Fair against 3.5.
+    (FIXTURES / "wires" / "server-dcs-wire-2.zip.acmi", 3.6, "OK", True),
+    (FIXTURES / "live" / "trap-server.zip.acmi", None, "---", False),
 ])
-def test_only_good_passes_get_a_nice_trap(tmp_path, clips, monkeypatch, path, grade, praised):
+def test_only_good_passes_get_a_nice_trap(tmp_path, clips, monkeypatch, path, glideslope, grade, praised):
     """Welcomes that compliment the landing only for passes we grade OK or better."""
+    from dataclasses import replace
     import dcs_lso.callouts.voice as voice
     from dcs_lso.detect import find_passes
+    from dcs_lso.geometry import AIRCRAFT
     from dcs_lso.grading import grade_pass
+    if glideslope is not None:
+        monkeypatch.setitem(AIRCRAFT, "FA-18C_hornet", replace(AIRCRAFT["FA-18C_hornet"], glideslope=glideslope))
     (p,) = find_passes(__import__("dcs_lso.acmi", fromlist=["load_recording"]).load_recording(path))
     assert grade_pass(p).grade.value == grade
     # Always pick a complimenting welcome when one is allowed.
@@ -573,8 +578,7 @@ def test_rough_landings_get_a_dig_now_and_then(tmp_path, clips, monkeypatch, rol
     import dcs_lso.agent.callouts as callouts_mod
     from dcs_lso.callouts.voice import PHRASES
     monkeypatch.setattr(callouts_mod.random, "random", lambda: roll)
-    _, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi",
-                                           tmp_path / "edge", clips))
+    _, _, sink = asyncio.run(run_collector(FIXTURES / "live" / "trap-server.zip.acmi", tmp_path / "edge", clips))
     assert sink.said[-1][0] is Call.TRAPPED
     assert any(sink.texts[-1].endswith(d) for d in PHRASES[Call.ROUGH_LANDING]) is dig
 

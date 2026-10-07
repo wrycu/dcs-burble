@@ -35,7 +35,7 @@ from ..detect import Outcome, PassResult, find_passes
 from ..detect.approaches import Approach, ApproachSegmenter
 from ..geometry import AIRCRAFT, WindProfile
 from ..grading import Grade, grade_pass
-from ..slices import (LEAD_S, TAIL_S, approach_window, sidecar, slice_name, slice_objects, track_sidecar,
+from ..slices import (LEAD_S, TAIL_S, apply_hooks, approach_window, sidecar, slice_name, slice_objects, track_sidecar,
                       track_slice_name)
 from ..callouts.voice import ClipLibrary, choose_clip_set
 from ..srs import Modulation, Radio
@@ -49,6 +49,7 @@ RECONNECT_MIN_S, RECONNECT_MAX_S = 2.0, 30.0
 UPLOAD_INTERVAL_S = 5.0
 DEBRIEF_WAIT_S = 60.0
 MATCH_START_TOLERANCE_S = 5.0
+MARK_AFTER_PASS_S = 30.0  # DCS's LSO grade comes this soon after a pass ends, at most
 # Warn when a connection delivers no frames for this long (Tacview's exporter isn't
 # getting data from DCS, e.g. Export.lua lost its Tacview line, or the sim is paused).
 NO_FRAMES_WARNING_S = 30.0
@@ -88,13 +89,20 @@ class AgentConfig:
 
 
 class HookFeed:
-    """Follows dcs.log in a background thread and keeps the dcs-lso hook's events."""
+    """Follows dcs.log in a background thread and keeps the dcs-lso hook's events (or, with `follow=False`,
+    reads what's in it now: for a backfill, the events of the log's last mission)."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, follow: bool = True) -> None:
         self.path = path
         self._events: list[HookEvent] = []
         self._lock = threading.Lock()
-        threading.Thread(target=self._run, name="dcs-log-follower", daemon=True).start()
+        if follow:
+            threading.Thread(target=self._run, name="dcs-log-follower", daemon=True).start()
+        else:
+            with Path(path).open(encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if (event := parse_hook_line(line)) is not None:
+                        self.add(event)
 
     def _run(self) -> None:
         for line in follow(self.path):
@@ -195,6 +203,46 @@ class HookFeed:
             if e.event == "players":
                 names |= {str(x.get("name")) for x in e.raw.get("players") or [] if isinstance(x, dict) and x.get("name")}
         return names
+
+    def pilot_for(self, pilot: str, aircraft_type: str, tacview_id: int, start: float, end: float) -> str:
+        """Who flew an aircraft's pass (`start`-`end`, mission time): Tacview's pilot name, unless the hook says
+        otherwise. Tacview can keep the name from an earlier object with the same id (seen: a player's
+        Tomcat named after the player whose Hornet had the id before), so: the player DCS's LSO graded for this
+        aircraft; else, when Tacview's pilot was in another type of aircraft then, the one player who was in
+        this type."""
+        with self._lock:
+            events = [e for e in self._events if e.event in ("slot", "landing_quality_mark")]
+        for e in events:
+            who = e.initiator or {}
+            if (e.event == "landing_quality_mark" and who.get("object_id") is not None and who.get("player")
+                    and tacview_id_hint(int(who["object_id"])) == tacview_id
+                    and start <= (e.time or 0.0) <= end + MARK_AFTER_PASS_S):
+                return self._corrected(pilot, str(who["player"]), "DCS's LSO grade")
+        latest: dict[str, dict] = {}  # each player's latest slot by `start`
+        for e in sorted((e for e in events if e.event == "slot"), key=lambda e: e.time or 0.0):
+            if (e.time or 0.0) <= start and e.raw.get("player"):
+                latest[str(e.raw["player"])] = e.raw
+        mine = latest.get(pilot)
+        if mine is None or mine.get("type") == aircraft_type:
+            return pilot
+        others = [name for name, raw in latest.items() if name != pilot and raw.get("type") == aircraft_type]
+        return self._corrected(pilot, others[0], "the hook's slot changes") if len(others) == 1 else pilot
+
+    @staticmethod
+    def _corrected(pilot: str, player: str, how: str) -> str:
+        if player != pilot:
+            log.info("pass flown by %s (says %s), not %s as Tacview names it", player, how, pilot or "-")
+        return player
+
+    def wall_clock(self, mission_time: float) -> datetime | None:
+        """When (UTC) the mission clock read `mission_time`, from the hook event logged nearest to it (the
+        mission clock stops while DCS pauses an empty server, so it can't be counted from the mission start)."""
+        with self._lock:
+            timed = [e for e in self._events if e.time is not None and e.logged_at is not None]
+        if not timed:
+            return None
+        e = min(timed, key=lambda e: abs(e.time - mission_time))
+        return e.logged_at + timedelta(seconds=mission_time - e.time)
 
     def slot_for(self, pilot: str | None, before: float) -> dict | None:
         """The aircraft a player was in (livery, side number, unit) at mission time `before`: their latest
@@ -629,6 +677,9 @@ class Agent:
                      approach.start_time, approach.end_time, TAIL_S)
 
     def _queue(self, session: Session, result: PassResult) -> None:
+        if self.config.mode == "server" and (pilot_for := getattr(self.hooks, "pilot_for", None)) is not None:
+            result.pilot = pilot_for(result.pilot, result.aircraft_type, result.aircraft_id, result.start_time,
+                                     result.end_time)
         players = getattr(self.hooks, "player_names", lambda: None)() if self.hooks is not None else None
         if self.config.mode == "server" and players is not None and result.pilot not in players:
             # AI: the LSO still talks it down (live calls don't come through here), but it isn't graded or
@@ -713,21 +764,13 @@ class Agent:
                 log.warning("pass at %.1fs not found again in its slice; skipped", live.start_time)
                 return None
             p = min(candidates, key=lambda c: abs(c.start_time - live.start_time))
-            wire_source = None
+            extra: dict = {"wire_source": None}
             if self.hooks is not None:
-                attach_dcs_grades([p], recording, self.hooks.debrief())
-                if p.wire is not None:
-                    wire_source = "dcs-lso"
-                animated = self.hooks.wire_for(p.aircraft_id, p.start_time, end)
-                if animated is not None:
-                    if p.wire is not None and p.wire != animated:
-                        log.warning("wire disagreement: carrier animation says #%d, DCS's LSO says #%d (using #%d)",
-                                    animated, p.wire, animated)
-                    p.wire, wire_source = animated, "carrier-animation"
+                p.pilot = live.pilot  # as checked against the hook when detected (_queue)
+                # Again: DCS's LSO grade (naming the player) has likely arrived by now.
+                extra = apply_hooks(self.hooks, recording, p, end, check_pilot=self.config.mode == "server")
             meta = sidecar(recording, p, session.archive.path.name, item.objects)
-            meta["wire_source"] = wire_source
-            if self.hooks is not None and (aircraft := self.hooks.slot_for(p.pilot, p.start_time)):
-                meta["aircraft"] = aircraft  # livery and side number of the pilot's slot
+            meta.update(extra)
             meta["recording"]["first_frame_time"] = session.first_frame
             meta["window"] = {"start": start, "end": end}
             if calls is not None:

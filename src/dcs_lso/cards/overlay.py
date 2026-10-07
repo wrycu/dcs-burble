@@ -69,7 +69,7 @@ def render_overlay(items: list[OverlayPass], uid: str = "ov", title: str = "",
     aircraft = AIRCRAFT.get(first.aircraft_type) if first else None
     frame = DeckFrame(CARRIERS.get(first.carrier_type, next(iter(CARRIERS.values()))), aircraft) if aircraft else None
     ramp = frame.carrier.ramp_along_m if frame else next(iter(CARRIERS.values())).ramp_along_m
-    glide = aircraft.glideslope if aircraft else 3.6
+    glide = aircraft.glideslope if aircraft else 3.5
     near, far = view if view else (X_MIN_M, X_MAX_M)
     margin = (far - near) * 0.05  # keep the lines running to the plot edges
     shown = [(item, [s for s in item.result.samples if near - margin <= s.along <= far + margin]) for item in items]

@@ -38,6 +38,10 @@ class ObjectTrack:
     props: dict[str, str] = field(default_factory=dict)
     samples: list[Sample] = field(default_factory=list)
     removed_at: float | None = None
+    # Tacview reuses an object's id once the object is gone (a player's respawn often gets the id of their
+    # last jet): each earlier object with this id, as (index of its last sample + 1, its props, removed at).
+    # `samples` holds them all; the current object's start after the last of these.
+    earlier: list[tuple[int, dict[str, str], float | None]] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -50,6 +54,17 @@ class ObjectTrack:
     @property
     def tags(self) -> set[str]:
         return set(filter(None, self.props.get("Type", "").split("+")))
+
+    def lives(self) -> list[ObjectTrack]:
+        """Each object that had this id, oldest first (just this track if the id wasn't reused)."""
+        if not self.earlier:
+            return [self]
+        out, start = [], 0
+        for end, props, removed_at in self.earlier:
+            out.append(ObjectTrack(self.id, props, self.samples[start:end], removed_at))
+            start = end
+        out.append(ObjectTrack(self.id, self.props, self.samples[start:], self.removed_at))
+        return out
 
 
 @dataclass(slots=True)
@@ -74,6 +89,9 @@ def load_recording(path: str | Path) -> Recording:
                 track = tracks.get(record.id)
                 if track is None:
                     track = tracks[record.id] = ObjectTrack(record.id)
+                elif track.removed_at is not None:  # the id reused by a new object
+                    track.earlier.append((len(track.samples), track.props, track.removed_at))
+                    track.removed_at = None
                 track.props = record.props
                 if record.moved:
                     aoa = record.props.get("AOA")

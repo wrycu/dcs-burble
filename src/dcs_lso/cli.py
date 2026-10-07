@@ -394,19 +394,31 @@ def _upload(args: argparse.Namespace) -> int:
     from .slices import slice_recording
 
     token = args.token or os.environ.get("DCS_LSO_TOKEN")
-    if not token:
+    if not token and not args.dry_run:
         print("error: no token (use --token or DCS_LSO_TOKEN)", file=sys.stderr)
         return 2
+    hooks = None
+    if args.dcs_log:
+        from .agent.service import HookFeed
+        hooks = HookFeed(Path(args.dcs_log), follow=False)
     failures = 0
     with httpx.Client(base_url=args.url, headers={"Authorization": f"Bearer {token}"}, timeout=60) as client, \
             tempfile.TemporaryDirectory() as tmp:
         for path in args.recordings:
-            debrief = args.debrief or _sibling_debrief(path)
+            debrief = args.debrief or (None if hooks else _sibling_debrief(path))
             # Every pass, plus own-jet approaches without a carrier (merged on the hub with the
             # server's report of each landing).
-            for acmi, meta in slice_recording(path, Path(tmp) / Path(path).name, load_debrief(debrief) if debrief else None):
+            for acmi, meta in slice_recording(path, Path(tmp) / Path(path).name,
+                                              load_debrief(debrief) if debrief else None, pilot=args.pilot,
+                                              hooks=hooks):
                 info = meta["pass"]
                 label = f"{info['start_time']:8.2f}s  {info.get('pilot') or hex(info['aircraft_id']):<16}"
+                if args.dry_run:
+                    dcs = (meta.get("dcs") or {}).get("grade") or {}
+                    wire = (meta.get("dcs") or {}).get("wire")
+                    print(f"{label} {info.get('aircraft_type') or '':<14} {info.get('outcome') or 'own track':<9} "
+                          f"{info.get('occurred_at') or '':<32} {f'wire {wire}' if wire else '':<7} {dcs.get('raw') or ''}")
+                    continue
                 try:
                     r = client.post("/api/v1/passes", files={"slice": (acmi.name, acmi.read_bytes(), "application/zip")},
                                     data={"sidecar": json.dumps(meta)})
@@ -628,6 +640,12 @@ def main(argv: list[str] | None = None) -> int:
     upload.add_argument("--token", help="upload token [$DCS_LSO_TOKEN]")
     upload.add_argument("--debrief", metavar="PATH",
                         help="DCS debrief.log for all recordings (default: <name>.debrief.log next to each one)")
+    upload.add_argument("--dcs-log", metavar="PATH",
+                        help="the DCS server's dcs.log with the dcs-lso server hook's events of the recordings' mission "
+                             "(e.g. a server agent's session archive): pilots checked, DCS's grades and wires, "
+                             "liveries and when each pass was flown, as the agent does live")
+    upload.add_argument("--pilot", help="only this pilot's passes")
+    upload.add_argument("--dry-run", action="store_true", help="list the passes, don't upload")
     upload.set_defaults(func=_upload)
 
     from .acmi.stream import DEFAULT_PORT as TACVIEW_PORT

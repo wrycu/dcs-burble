@@ -20,7 +20,7 @@ from enum import IntEnum, StrEnum
 from ..detect import Outcome, PassResult
 from ..geometry import AIRCRAFT
 
-GRADING_VERSION = "6"  # 6: accuracy scores and where it was flown stored with the grade (hub); 5: crashes on deck are their own outcome, graded Cut (not bolters); 4: speed on deck measured over 0.5 s (high-rate tracks stop, so traps aren't bolters); 3: wire estimated from the stop point; 2: 3.6 deg glideslope (as DCS); AOA derived from motion in the aircraft frame, with wind, not graded at AR
+GRADING_VERSION = "7"  # 7: 3.5 deg glideslope (the carrier's lens), the F-14; 6: accuracy scores and where it was flown stored with the grade (hub); 5: crashes on deck are their own outcome, graded Cut (not bolters); 4: speed on deck measured over 0.5 s (high-rate tracks stop, so traps aren't bolters); 3: wire estimated from the stop point; 2: 3.6 deg glideslope (as DCS); AOA derived from motion in the aircraft frame, with wind, not graded at AR
 NM = 1852.0
 
 

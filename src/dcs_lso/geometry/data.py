@@ -43,6 +43,9 @@ class AircraftInfo:
     # How far past the caught wire DCS's arresting gear stops this aircraft (hook point, meters), for
     # estimating the wire; None where unmeasured. See detect.wire.
     arrest_runout_m: float | None = None
+    # Added to AOA derived from motion (geometry.aoa: the angle of the airflow to the model's nose axis) to
+    # give the AOA the on-speed band is in; 0 where the two agree (the FA-18C).
+    derived_aoa_offset: float = 0.0
 
 
 NIMITZ = CarrierInfo(
@@ -85,12 +88,31 @@ FORRESTAL = CarrierInfo(
 FA18C = AircraftInfo(
     name="FA-18C",
     hook=(-2.240897, -7.237348),
-    # DCS's own LSO directs to a 3.6 deg glidepath (DCS Supercarrier Operations Guide, "Inside 3/4 Mile").
-    glideslope=3.6,
+    # The carrier's lens: 3.5 deg for every aircraft (DCS's carrier data, GlideslopeBasicAngle and the ICLS;
+    # the Supercarrier Operations Guide's IFLOLS section). The guide's LSO says 3.6 for Case I but 3.5 for
+    # Case III ("Inside 3/4 Mile"); 3.6 until grading v7. Under review (PLAN #35).
+    glideslope=3.5,
     # lso's "on speed" band: 7.4 < aoa < 8.8.
     on_speed_aoa=(7.4, 8.8),
     # Measured on six DCS 2.9 traps with DCS's own wire known (wires 1-3, 61-70 m/s): 89.3-90.2 m.
     arrest_runout_m=90.1,
+)
+
+# F-14A/B (Heatblur; "F-14BU" is the F-14B(U)): hook and on-speed band from lso (AOA band in degrees, from
+# the manual's 15 units on speed). Glideslope: the carrier's lens, as for the FA-18C. Measured on one player's six traps on CVN-75 (server's copy,
+# 4.6 Hz, no wind), four with DCS's wire:
+# - derived AOA: 8.9-9.2 deg through the groove on the passes where DCS's LSO made no AOA remark, so about
+#   1.6 deg below the band's middle (10.65);
+# - stop point: 104.4-106.1 m past the caught wire (wires 2, 3, 3, 4) on the server's copy; less the
+#   server-copy overshoot measured on the FA-18C (12.7 m, detect.wire), 92.6 m. Not yet confirmed on a
+#   Tomcat's own track (recorded AOA too, to check the offset).
+F14 = AircraftInfo(
+    name="F-14",
+    hook=(-1.978941, -6.563727),
+    glideslope=3.5,
+    on_speed_aoa=(10.2, 11.1),
+    arrest_runout_m=92.6,
+    derived_aoa_offset=1.6,
 )
 
 CARRIERS: dict[str, CarrierInfo] = {
@@ -104,4 +126,7 @@ CARRIERS: dict[str, CarrierInfo] = {
 
 AIRCRAFT: dict[str, AircraftInfo] = {
     "FA-18C_hornet": FA18C,
+    "F-14A-135-GR": F14,
+    "F-14B": F14,
+    "F-14BU": F14,
 }

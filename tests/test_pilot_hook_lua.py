@@ -110,7 +110,7 @@ def test_recorder_writes_the_approach(recorded):
     path, chained = recorded
     assert chained > 100  # the export function defined before ours still ran every frame
     lines = path.read_text().splitlines()
-    assert lines[0] == "# dcs-lso pilot hook 1" and "# aircraft=FA-18C_hornet" in lines and "# pilot=Wrycu" in lines
+    assert lines[0] == "# dcs-lso pilot hook 2" and "# aircraft=FA-18C_hornet" in lines and "# pilot=Wrycu" in lines
     header, carrier = lines.index("t,x,y,z,heading,pitch,bank,aoa,lat,lon"), lines.index("## carrier")
     assert "# carrier_type=CVN_75" in lines and "# carrier_unit=CVN-75 Harry S. Truman" in lines
     carrier_csv = [line for line in lines[carrier:] if not line.startswith("#")]

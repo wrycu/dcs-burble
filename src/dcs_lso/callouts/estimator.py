@@ -71,14 +71,16 @@ def _fit(points: list[tuple[float, float]], at: float) -> tuple[float, float]:
     return my + slope * (at - mt), slope
 
 
-def derived_aoa(before: LiveInput, at: LiveInput, after: LiveInput) -> float | None:
-    """AOA at `at` from its motion (see `geometry.aoa`), using the samples either side of it.
+def derived_aoa(before: LiveInput, at: LiveInput, after: LiveInput, offset: float = 0.0) -> float | None:
+    """AOA at `at` from its motion (see `geometry.aoa`), using the samples either side of it, plus the
+    aircraft's `offset` (AircraftInfo.derived_aoa_offset).
     Live, that means a sample's AOA is known when the next one arrives (0.2 s late at 4.8 Hz)."""
     ground = centred_velocity(before.time, (before.u, before.v, before.alt), at.time, (at.u, at.v, at.alt),
                               after.time, (after.u, after.v, after.alt))
     if ground is None:
         return None
-    return body_aoa(air_velocity(ground, at.wind), at.heading, at.pitch, at.roll)
+    aoa = body_aoa(air_velocity(ground, at.wind), at.heading, at.pitch, at.roll)
+    return aoa + offset if aoa is not None else None
 
 
 def angle_deg(value: float, along: float, min_along_m: float = 30.0) -> float:
@@ -87,8 +89,10 @@ def angle_deg(value: float, along: float, min_along_m: float = 30.0) -> float:
 
 
 class LiveEstimator:
-    def __init__(self, glideslope_deg: float, window_s: float = DEFAULT_WINDOW_S, min_along_m: float = 30.0) -> None:
+    def __init__(self, glideslope_deg: float, window_s: float = DEFAULT_WINDOW_S, min_along_m: float = 30.0,
+                 aoa_offset: float = 0.0) -> None:
         self.glideslope_deg = glideslope_deg
+        self.aoa_offset = aoa_offset  # AircraftInfo.derived_aoa_offset
         self.window_s = window_s
         # Angles are meaningless right at the aim point; clamp the range used for them.
         self.min_along_m = min_along_m
@@ -103,7 +107,7 @@ class LiveEstimator:
         w = list(self._window)
         self._last3.append(x)
         if len(self._last3) == 3:
-            self._derived_aoa = derived_aoa(*self._last3)
+            self._derived_aoa = derived_aoa(*self._last3, offset=self.aoa_offset)
 
         m = self.min_along_m
         gs, gs_rate = _fit([(s.time, angle_deg(s.hook_height, s.along, m) - self.glideslope_deg) for s in w], x.time)

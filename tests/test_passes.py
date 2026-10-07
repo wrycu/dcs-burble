@@ -38,7 +38,7 @@ def test_parked_hook_sits_on_deck(passes):
 
 
 def test_glideslope_tracking_is_tight(passes):
-    # DCS's AI flies about 3.55 deg (3.4-3.8): within 2.4 m of the 3.6 deg glideslope from 3/4 nm to the ramp.
+    # DCS's AI flies about 3.55 deg (3.4-3.8): within 2.4 m of the 3.5 deg glideslope from 3/4 nm to the ramp.
     groove = [s for s in passes[0].samples if 0 < s.along < 0.75 * NM]
     assert all(abs(s.glideslope_deviation) < 2.5 for s in groove)
 

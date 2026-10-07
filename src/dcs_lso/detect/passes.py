@@ -216,7 +216,8 @@ class PassTracker:
             return None
         plane = at[2]
         wind = self.wind.at(plane.alt or 0.0) if self.wind else (0.0, 0.0)
-        return body_aoa(air_velocity(ground, wind), plane.heading, plane.pitch or 0.0, plane.roll or 0.0)
+        aoa = body_aoa(air_velocity(ground, wind), plane.heading, plane.pitch or 0.0, plane.roll or 0.0)
+        return aoa + self.frame.aircraft.derived_aoa_offset if aoa is not None else None
 
 
 def _on_deck(s: PassSample) -> bool:
@@ -243,7 +244,9 @@ def classify(samples: list[PassSample], stopped: bool, track_ended: bool = False
 def find_passes(recording: Recording, wind: WindProfile | None = None) -> Iterator[PassResult]:
     """Every carrier pass in `recording`. `wind` (at the carrier) refines AOA derived from motion."""
     carriers = [t for t in recording.objects.values() if t.name in CARRIERS and t.samples]
-    aircraft = [t for t in recording.objects.values() if t.name in AIRCRAFT and t.samples]
+    # Each object separately where Tacview reused an id (ObjectTrack.lives).
+    aircraft = [life for t in recording.objects.values() for life in t.lives()
+                if life.name in AIRCRAFT and life.samples]
     for carrier in carriers:
         timeline = CarrierTimeline(carrier.samples)
         for plane in aircraft:
