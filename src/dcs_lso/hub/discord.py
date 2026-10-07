@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from ..cards import render_card
 from ..cards.board import BoardRow, render_board
+from ..geometry import airframe
 from ..grading import grade_name, grade_pass, grade_short
 from ..grading.grade import Grade as GradeValue
 from .accuracy import accuracy_of, flown_elsewhere
@@ -204,20 +205,25 @@ class Discord:
                                     func.coalesce(Pass.occurred_at, Pass.created_at) >= since)
                  .order_by(func.coalesce(Pass.occurred_at, Pass.created_at))
                  .options(selectinload(Pass.grades), selectinload(Pass.pilot)))
-            by_pilot: dict[str, list[Pass]] = defaultdict(list)
+            by_pilot: dict[tuple[str, str], list[Pass]] = defaultdict(list)  # (airframe, pilot)
             for p in s.scalars(q):
                 if self.hub.other_servers == "hidden" and flown_elsewhere(p):
                     continue
-                by_pilot[p.pilot.name].append(p)
+                by_pilot[(airframe(p.aircraft_type), p.pilot.name)].append(p)
+            # The busiest airframe first, as on the website.
+            busy: dict[str, int] = defaultdict(int)
+            for (frame, _), items in by_pilot.items():
+                busy[frame] += len(items)
             rows = []
-            for name in sorted(by_pilot, key=str.lower):
-                items = by_pilot[name]
+            for frame, name in sorted(by_pilot, key=lambda k: (-busy[k[0]], k[0].lower(), k[1].lower())):
+                items = by_pilot[(frame, name)]
                 graded = [p for p in items if p.grade]
                 rows.append(BoardRow(
                     name=name, passes=len(items),
                     average=sum(p.grade.points for p in graded) / len(graded) if graded else None,
                     trap_rate=sum(p.outcome == "trap" for p in items) / len(items),
-                    cells=[(p.grade.grade if p.grade else "?", bool(p.night)) for p in items[-BOARD_PASSES:]]))
+                    cells=[(p.grade.grade if p.grade else "?", bool(p.night)) for p in items[-BOARD_PASSES:]],
+                    airframe=frame))
         return rows
 
     def update_board(self) -> None:

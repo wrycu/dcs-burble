@@ -150,3 +150,22 @@ def test_pass_page_card_zooms(client, token):
     narrow = ET.fromstring(client.get(f"/passes/{pass_id}/card.svg", params={"near": 100, "far": 101}).text)
     assert float(narrow.get("data-far")) - float(narrow.get("data-near")) >= 15  # at least MIN_ZOOM_M
     assert "drag across" not in client.get(f"/passes/{pass_id}/card.svg").text  # hover previews: no hint
+
+
+def test_board_has_a_table_per_airframe(client, token, tmp_path):
+    from dcs_lso.slices import slice_recording
+
+    for acmi in PASS_FILES:
+        upload(client, token, acmi)
+    [(tomcat, meta)] = slice_recording(FIXTURES / "live" / "tomcat-trap-server.zip.acmi", tmp_path / "tomcat")
+    meta["pass"]["pilot"] = "Wrycu"  # flies both: a row in each table
+    assert upload(client, token, tomcat, meta).status_code == 201
+    board = client.get("/", params={"days": 0}).text.split("</form>")[1]
+    hornets, tomcats = board.split('<h2 class="airframe">F-14 Tomcat</h2>')
+    assert '<h2 class="airframe">F/A-18C Hornet</h2>' in hornets  # the busiest airframe first
+    assert tomcats.count('href="/passes/') == 1 and "Wrycu" in tomcats and "Maverick" not in tomcats
+    only = client.get("/", params={"days": 0, "aircraft": "F-14 Tomcat"}).text
+    assert only.count('href="/passes/') == 1 and '<option value="F-14 Tomcat" selected>' in only
+    listed = client.get("/api/v1/passes", params={"days": 0, "aircraft": "F-14 Tomcat"}).json()
+    assert [(p["aircraft"], p["airframe"]) for p in listed] == [("F-14BU", "F-14 Tomcat")]
+    assert len(client.get("/api/v1/passes", params={"days": 0, "aircraft": "F-14BU"}).json()) == 1

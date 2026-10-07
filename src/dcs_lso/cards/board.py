@@ -1,6 +1,6 @@
 """The greenie board as an image (SVG, dark): for Discord, where the board is one message kept up to date.
 
-Laid out like the website's board: each pilot's passes, average and trap rate, then their latest landings as
+Laid out like the website's board (a section per airframe when there's more than one): each pilot's passes, average and trap rate, then their latest landings as
 squares in the grade's colour with its short label, oldest first, night landings dotted, and a legend.
 """
 
@@ -14,6 +14,7 @@ from .overlay import GRADE_COLORS
 
 PAD = 28
 ROW_H = 34
+SECTION_H = 30  # an airframe's heading
 CELL_W, CELL_H, CELL_GAP = 38, 26, 5
 NAME_W, NUM_W = 210, 64
 MAX_ROWS = 40
@@ -30,6 +31,7 @@ class BoardRow:
     average: float | None
     trap_rate: float | None  # 0..1
     cells: list[tuple[str, bool]]  # (grade, night), oldest first
+    airframe: str = ""  # the table it's in (geometry.airframe); rows come grouped by it
 
 
 def _color(grade: str) -> str:
@@ -39,11 +41,21 @@ def _color(grade: str) -> str:
 def render_board(rows: list[BoardRow], columns: int, title: str = "Greenie Board", subtitle: str = "") -> str:
     """`title`: "" to leave it out (e.g. when the message around the image already names it)."""
     shown, more = rows[:MAX_ROWS], len(rows) - MAX_ROWS
+    # Each row's top within the table, with an airframe heading before each airframe's rows (if several).
+    sectioned = len({r.airframe for r in shown}) > 1
+    lines: list[tuple[str, BoardRow | str, float]] = []  # ("heading", airframe, y) or ("row", row, y)
+    y = 0.0
+    for i, row in enumerate(shown):
+        if sectioned and (i == 0 or row.airframe != shown[i - 1].airframe):
+            lines.append(("heading", row.airframe, y))
+            y += SECTION_H
+        lines.append(("row", row, y))
+        y += ROW_H
     cells_x = PAD + NAME_W + 3 * NUM_W + 16
     width = cells_x + columns * (CELL_W + CELL_GAP) - CELL_GAP + PAD
     header_h = (30 if title else 0) + (22 if subtitle else 0)
     table_top = PAD + header_h
-    body_h = max(len(shown), 1) * ROW_H + (24 if more > 0 else 0)
+    body_h = max(y, ROW_H) + (24 if more > 0 else 0)
     legend_y = table_top + 30 + body_h + 34
     height = legend_y + 30
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" {FONT}>',
@@ -68,9 +80,17 @@ def render_board(rows: list[BoardRow], columns: int, title: str = "Greenie Board
     if not shown:
         out.append(f'<text x="{width / 2}" y="{top + ROW_H / 2 + 5}" font-size="14" fill="{MUTED}" '
                    'text-anchor="middle">No passes yet.</text>')
-    for r, row in enumerate(shown):
-        y = top + r * ROW_H
-        if r % 2:
+    r = 0
+    for kind, item, dy in lines:
+        y = top + dy
+        if kind == "heading":
+            out.append(f'<text x="{PAD + 10}" y="{y + SECTION_H / 2 + 6}" font-size="15" font-weight="700" '
+                       f'fill="{TEXT}">{escape(str(item).upper())}</text>')
+            r = 0  # restart the row striping
+            continue
+        row = item
+        r += 1
+        if r % 2 == 0:
             out.append(f'<rect x="{PAD + 1}" y="{y}" width="{width - 2 * PAD - 2}" height="{ROW_H}" fill="{ROW_ALT}"/>')
         mid = y + ROW_H / 2 + 5
         name = row.name if len(row.name) <= 24 else row.name[:23] + "…"
@@ -95,7 +115,7 @@ def render_board(rows: list[BoardRow], columns: int, title: str = "Greenie Board
                 out.append(f'<circle cx="{cx + CELL_W - 6}" cy="{cy + 6}" r="3.5" fill="#000000" stroke="#ffffff" '
                            'stroke-opacity="0.7" stroke-width="1"/>')
     if more > 0:
-        out.append(f'<text x="{PAD + 10}" y="{top + len(shown) * ROW_H + 17}" font-size="12" fill="{MUTED}">'
+        out.append(f'<text x="{PAD + 10}" y="{top + y + 17}" font-size="12" fill="{MUTED}">'
                    f"and {more} more pilots</text>")
     # Legend.
     x = PAD

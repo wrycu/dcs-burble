@@ -46,6 +46,8 @@ class AircraftInfo:
     # Added to AOA derived from motion (geometry.aoa: the angle of the airflow to the model's nose axis) to
     # give the AOA the on-speed band is in; 0 where the two agree (the FA-18C).
     derived_aoa_offset: float = 0.0
+    # The airframe's name on the greenie board, which has a table per airframe (variants share one).
+    board_name: str = ""
 
 
 NIMITZ = CarrierInfo(
@@ -96,6 +98,7 @@ FA18C = AircraftInfo(
     on_speed_aoa=(7.4, 8.8),
     # Measured on six DCS 2.9 traps with DCS's own wire known (wires 1-3, 61-70 m/s): 89.3-90.2 m.
     arrest_runout_m=90.1,
+    board_name="F/A-18C Hornet",
 )
 
 # F-14A/B (Heatblur; "F-14BU" is the F-14B(U)): hook and on-speed band from lso (AOA band in degrees, from
@@ -113,6 +116,7 @@ F14 = AircraftInfo(
     on_speed_aoa=(10.2, 11.1),
     arrest_runout_m=92.6,
     derived_aoa_offset=1.6,
+    board_name="F-14 Tomcat",
 )
 
 CARRIERS: dict[str, CarrierInfo] = {
@@ -130,3 +134,9 @@ AIRCRAFT: dict[str, AircraftInfo] = {
     "F-14B": F14,
     "F-14BU": F14,
 }
+
+
+def airframe(aircraft_type: str) -> str:
+    """The airframe an aircraft type is on the greenie board under (e.g. "F-14 Tomcat" for the F-14A and B)."""
+    info = AIRCRAFT.get(aircraft_type)
+    return (info.board_name or info.name) if info else aircraft_type

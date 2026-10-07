@@ -8,6 +8,7 @@ from html import escape
 from urllib.parse import quote
 
 from ..cards.overlay import GRADE_COLORS
+from ..geometry import airframe
 from ..grading import grade_name, grade_short
 from .accuracy import Accuracy
 from .db import Pass, Upload
@@ -71,6 +72,8 @@ ul.themes li { display: flex; gap: 10px; align-items: baseline; }
 .bar span { display: block; height: 100%; background: var(--muted); }
 .recent { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
 h2 { font-size: 16px; margin: 20px 0 8px; }
+h2.airframe { margin: 4px 0 6px; }
+.panel h2.airframe ~ h2.airframe { margin-top: 18px; }
 h1 .modex { color: var(--muted); font-weight: 600; margin-left: 6px; }
 #tc-pop { position: fixed; z-index: 10; width: min(640px, 92vw); pointer-events: none; background: var(--card);
   border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); }
@@ -116,12 +119,15 @@ def _when(dt: datetime | None) -> str:
 
 
 def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: int, pilot: str | None,
-               source: str | None, columns: int, empty: bool = False, servers: str = "all") -> str:
-    """`empty`: also list pilots with no passes in the filter (e.g. joined, not flown here yet). `servers`: "ours"
-    leaves out landings flown on other servers (the passes are already filtered; this sets the form)."""
-    by_pilot: dict[str, list[Pass]] = defaultdict(list)
+               source: str | None, columns: int, empty: bool = False, servers: str = "all",
+               aircraft: str | None = None, airframes: list[str] | None = None) -> str:
+    """A table per airframe (geometry.airframe: the F-14A and B are one), each pilot's landings in it.
+    `empty`: also list pilots with no passes in the filter (e.g. joined, not flown here yet). `servers`: "ours"
+    leaves out landings flown on other servers; `aircraft`: one airframe only (the passes are already
+    filtered; these set the form). `airframes`: the choices for the Aircraft filter."""
+    sections: dict[str, dict[str, list[Pass]]] = defaultdict(lambda: defaultdict(list))
     for p in sorted(passes, key=lambda p: (p.occurred_at or p.created_at)):
-        by_pilot[p.pilot.name].append(p)
+        sections[airframe(p.aircraft_type)][p.pilot.name].append(p)
 
     def option(value: str, label: str, selected: str | None) -> str:
         sel = " selected" if value == (selected or "") else ""
@@ -134,6 +140,8 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
                                                                     (365, "1 year"), (0, "All time")))
         + '</select></label><label>Pilot <select name="pilot">' + option("", "All", pilot)
         + "".join(option(n, n, pilot) for n in pilots)
+        + '</select></label><label>Aircraft <select name="aircraft">' + option("", "All", aircraft)
+        + "".join(option(n, n, aircraft) for n in (airframes or []))
         + '</select></label><label>Source <select name="source">' + option("", "All", source)
         + "".join(option(n, n, source) for n in sources)
         + '</select></label><label>Servers <select name="servers">'
@@ -143,17 +151,12 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
         + '<button type="submit">Apply</button></form>'
     )
 
-    names = set(by_pilot)
-    if empty:
-        names |= {n for n in pilots if pilot is None or n == pilot}
-    rows = []
-    for name in sorted(names, key=str.lower):
-        items = by_pilot.get(name, [])
-        if not items:
-            rows.append(f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}">{escape(name)}</a></td>'
-                        '<td class="num">0</td><td class="num">–</td><td class="num">–</td>'
-                        + '<td><span class="cell empty"></span></td>' * columns + "</tr>")
-            continue
+    def no_passes_row(name: str) -> str:
+        return (f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}">{escape(name)}</a></td>'
+                '<td class="num">0</td><td class="num">–</td><td class="num">–</td>'
+                + '<td><span class="cell empty"></span></td>' * columns + "</tr>")
+
+    def pilot_row(name: str, items: list[Pass]) -> str:
         graded = [p for p in items if p.grade]
         traps = sum(p.outcome == "trap" for p in items)
         avg = sum(p.grade.points for p in graded) / len(graded) if graded else 0.0
@@ -166,25 +169,35 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
             cells.append(f'<td><a class="cell {GRADE_CLASS.get(g, "")}{" night" if p.night else ""}" href="/passes/{p.id}" '
                          f'title="{escape(title)}">{escape(grade_short(g))}</a></td>')
         cells += ['<td><span class="cell empty"></span></td>'] * (columns - len(shown))
-        rows.append(f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}" title="Themes across recent passes">'
-                    f'{escape(name)}</a></td><td class="num">{len(items)}</td>'
-                    f'<td class="num">{avg:.2f}</td><td class="num">{100 * traps / len(items):.0f}%</td>'
-                    + "".join(cells) + "</tr>")
+        return (f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}" title="Themes across recent passes">'
+                f'{escape(name)}</a></td><td class="num">{len(items)}</td>'
+                f'<td class="num">{avg:.2f}</td><td class="num">{100 * traps / len(items):.0f}%</td>'
+                + "".join(cells) + "</tr>")
+
+    def table(rows: list[str]) -> str:
+        return (f'<div class="scroll"><table class="board"><thead><tr><th>Pilot</th><th>Passes</th><th>Avg</th>'
+                f'<th>Traps</th><th colspan="{columns}">Passes (oldest → newest)</th></tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table></div>')
+
+    # The busiest airframe first.
+    order = sorted(sections, key=lambda a: (-sum(len(v) for v in sections[a].values()), a.lower()))
+    parts = [f'<h2 class="airframe">{escape(a)}</h2>'
+             + table([pilot_row(n, sections[a][n]) for n in sorted(sections[a], key=str.lower)]) for a in order]
+    if empty:
+        flown = {n for by_pilot in sections.values() for n in by_pilot}
+        idle = sorted((n for n in pilots if n not in flown and (pilot is None or n == pilot)), key=str.lower)
+        if idle:
+            parts.append('<h2 class="airframe">No passes yet</h2>' + table([no_passes_row(n) for n in idle]))
+    content = "".join(parts) if parts else '<p class="empty-state">No passes yet for this filter.</p>'
 
     legend = '<div class="legend">' + "".join(
         f'<span><span class="swatch {GRADE_CLASS[g]}"></span>{escape(grade_short(g))} {grade_name(g)}'
         f'{f" ({escape(g)})" if grade_short(g) != g else ""}</span>' for g in GRADE_COLORS
     ) + '<span><span class="night-dot"></span>Night pass</span></div>'
     period = f"last {days} days" if days else "all time"
-    if rows:
-        table = (f'<div class="scroll"><table class="board"><thead><tr><th>Pilot</th><th>Passes</th><th>Avg</th>'
-                 f'<th>Traps</th><th colspan="{columns}">Passes (oldest → newest)</th></tr></thead>'
-                 f'<tbody>{"".join(rows)}</tbody></table></div>')
-    else:
-        table = '<p class="empty-state">No passes yet for this filter.</p>'
     body = (f"<h1>Greenie Board</h1><p class=\"sub\">{len(passes)} passes · {period} · "
             '<a href="/upload">Upload a Tacview recording</a> · <a href="/join">Join this board</a></p>'
-            f'{filters}<div class="panel">{table}{legend}</div>')
+            f'{filters}<div class="panel">{content}{legend}</div>')
     return _page("Greenie Board", body)
 
 

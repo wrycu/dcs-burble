@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from ..cards import render_card
 from ..cards.overlay import render_overlay
 from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M
+from ..geometry import airframe
 from ..grading import grade_pass
 from ..grading.trends import DEFAULT_PASSES
 from . import pages
@@ -384,7 +385,8 @@ def create_app(hub: Hub) -> FastAPI:
             return servers
         return "ours" if hub.other_servers == "hidden" else "all"
 
-    def _passes(days: int, pilot: str | None, source: str | None, servers: str = "all") -> list[Pass]:
+    def _passes(days: int, pilot: str | None, source: str | None, servers: str = "all",
+                aircraft: str | None = None) -> list[Pass]:
         with hub.sessions() as s:
             # Landings only: reports merged into another (same landing) and lone track reports are hidden.
             q = (select(Pass).where(Pass.merged_into_id.is_(None), or_(Pass.kind.is_(None), Pass.kind != "track"))
@@ -399,6 +401,8 @@ def create_app(hub: Hub) -> FastAPI:
                 theirs = select(Pass.merged_into_id).join(Pass.source).where(Source.name == source)
                 q = q.join(Pass.source).where(or_(Source.name == source, Pass.id.in_(theirs)))
             found = list(s.scalars(q))
+            if aircraft:  # an airframe (geometry.airframe) or an aircraft type
+                found = [p for p in found if aircraft in (airframe(p.aircraft_type), p.aircraft_type)]
             return [p for p in found if not flown_elsewhere(p)] if servers == "ours" else found
 
     @app.get("/api/v1/config")
@@ -408,16 +412,18 @@ def create_app(hub: Hub) -> FastAPI:
 
     @app.get("/api/v1/passes")
     def list_passes(days: int = 30, pilot: str | None = None, source: str | None = None,
-                    servers: str | None = None) -> list[dict]:
-        """`servers`: "ours" (flown on this hub's servers, or unknown) or "all"; default per `--other-servers`."""
+                    servers: str | None = None, aircraft: str | None = None) -> list[dict]:
+        """`servers`: "ours" (flown on this hub's servers, or unknown) or "all"; default per `--other-servers`.
+        `aircraft`: one airframe ("F-14 Tomcat": every F-14 variant) or aircraft type ("F-14B")."""
         out = []
-        for p in _passes(days, pilot, source, _servers(servers)):
+        for p in _passes(days, pilot, source, _servers(servers), aircraft or None):
             g = p.grade
             reports = hub.reports(p)
             out.append({"id": p.id, "pilot": p.pilot.name, "source": p.source.name,
                         "reports": [{"id": r.id, "source": r.source.name, "kind": r.kind or "pass"} for r in reports],
                         "occurred_at": p.occurred_at.isoformat() if p.occurred_at else None,
                         "mission": p.mission, "carrier": p.carrier_unit, "aircraft": p.aircraft_type,
+                        "airframe": airframe(p.aircraft_type),
                         "livery": p.livery, "modex": p.pilot.modex,
                         "outcome": p.outcome, "wire": p.wire, "dcs_grade": p.dcs_grade, "calls": p.calls,
                         # DCS's wire (above) takes priority; this is estimated from where the jet stopped.
@@ -465,14 +471,17 @@ def create_app(hub: Hub) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None,
-              empty: bool = False, servers: str | None = None) -> str:
-        pilot, source = pilot or None, source or None  # the form sends "" for All
+              empty: bool = False, servers: str | None = None, aircraft: str | None = None) -> str:
+        pilot, source, aircraft = pilot or None, source or None, aircraft or None  # the form sends "" for All
         servers = _servers(servers)
-        passes = _passes(days, pilot, source, servers)
+        passes = _passes(days, pilot, source, servers, aircraft)
         with hub.sessions() as s:
             pilots = sorted(s.scalars(select(Pilot.name)), key=str.lower)
             sources = sorted(s.scalars(select(Source.name)), key=str.lower)
-        return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS, empty, servers)
+            types = set(s.scalars(select(Pass.aircraft_type).distinct()))
+        airframes = sorted({airframe(t) for t in types}, key=str.lower)
+        return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS, empty, servers,
+                                aircraft, airframes)
 
     def _badges(accuracy) -> dict:
         if accuracy is None:

@@ -134,6 +134,17 @@ def test_board_image():
     assert png(svg).startswith(b"\x89PNG")
 
 
+def test_board_image_has_a_section_per_airframe():
+    from dcs_lso.cards.board import BoardRow, render_board
+    import xml.etree.ElementTree as ET
+    one = [BoardRow("Wrycu", 1, 4.0, 1.0, [("OK", False)], "F/A-18C Hornet")]
+    assert "F/A-18C HORNET" not in render_board(one, 15)  # one airframe: no headings
+    rows = one + [BoardRow("Jive", 2, 2.0, 1.0, [("---", False), ("C", False)], "F-14 Tomcat")]
+    svg = render_board(rows, 15)
+    ET.fromstring(svg)
+    assert svg.index("F/A-18C HORNET") < svg.index("Wrycu") < svg.index("F-14 TOMCAT") < svg.index("Jive")
+
+
 def test_a_regrade_from_the_command_line_reaches_discord(setup):
     hub, discord, fake = setup
     result = hub.ingest(1, *fresh_report())
