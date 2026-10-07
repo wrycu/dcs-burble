@@ -94,3 +94,52 @@ async def say(host: str, port: int, freq_mhz: float, modulation: Modulation, coa
             print(f"  sent {len(frames)} frames; first frame left {1000 * (first[0] - start):.1f} ms after Enter")
     finally:
         await client.close()
+
+
+async def listen(host: str, port: int, freq_mhz: float, modulation: Modulation, coalition: int, name: str,
+                 model: str | None, save_dir: str | None, seconds: float | None = None) -> int:
+    """Print each transmission heard on the frequency: who sent it, how long, and (with a Vosk `model`) what was
+    said and the call it makes. `save_dir`: also keep each as a WAV. `seconds`: stop after this long."""
+    import wave
+    from pathlib import Path
+
+    from ..callouts.heard import Recogniser
+    from .listen import Transmissions
+
+    recogniser = Recogniser(model) if model else None
+    out = Path(save_dir) if save_dir else None
+    if out:
+        out.mkdir(parents=True, exist_ok=True)
+    client = SrsClient(host, port, name=name, coalition=coalition, radios=(Radio(freq_mhz, modulation),))
+    heard = Transmissions(client.clients, client.guid)
+    client.on_voice = heard.add
+    await client.connect()
+    heard.clients = client.clients  # the server's client list (filled in on connecting)
+    print(f"listening on {freq_mhz:g} {modulation.name} at {host}:{port} (SRS {client.server_version}) as {name!r}"
+          + ("" if recogniser else "; no --model: recording only"))
+    loop = asyncio.get_running_loop()
+    started = time.perf_counter()
+    count = 0
+    try:
+        while seconds is None or time.perf_counter() - started < seconds:
+            await asyncio.sleep(0.1)
+            for t in heard.finished(time.perf_counter()):
+                count += 1
+                line = f"{time.strftime('%H:%M:%S')} {t.name or t.client_guid} (unit {t.unit_id}) {t.seconds:.1f} s"
+                if recogniser:
+                    t0 = time.perf_counter()
+                    call = await loop.run_in_executor(None, recogniser.hear, t.pcm)
+                    line += (f": \"{call.text}\" -> {call.call or 'not a call'}"
+                             + "".join(f" {k}={v}" for k, v in (("side", call.side_number), ("aircraft", call.aircraft),
+                                                                 ("fuel", call.fuel)) if v is not None)
+                             + f" ({1000 * (time.perf_counter() - t0):.0f} ms)")
+                if out:
+                    path = out / f"{time.strftime('%Y%m%d-%H%M%S')}-{count}.wav"
+                    with wave.open(str(path), "wb") as w:
+                        w.setnchannels(1), w.setsampwidth(2), w.setframerate(16000)
+                        w.writeframes(t.pcm.tobytes())
+                    line += f" [{path.name}]"
+                print(line, flush=True)
+    finally:
+        await client.close()
+    return 0

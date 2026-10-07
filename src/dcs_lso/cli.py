@@ -134,6 +134,20 @@ def _srs_say(args: argparse.Namespace) -> int:
         return 1
 
 
+def _srs_listen(args: argparse.Namespace) -> int:
+    from .srs.packet import Modulation
+    from .srs.tools import listen
+
+    try:
+        return asyncio.run(listen(args.host, args.port, args.freq, Modulation[args.modulation], args.coalition,
+                                  args.name, args.model, args.save, args.seconds))
+    except KeyboardInterrupt:
+        return 0
+    except (OSError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def _callouts(args: argparse.Namespace) -> int:
     from .callouts.sim import replay
 
@@ -498,6 +512,17 @@ def main(argv: list[str] | None = None) -> int:
     srs_say.add_argument("--interactive", "-i", action="store_true",
                          help="stay connected and transmit each time Enter is pressed")
     srs_say.set_defaults(func=_srs_say)
+
+    srs_listen = sub.add_parser("srs-listen", help="print what's said on an SRS frequency, and the pilot calls "
+                                                   "heard (ball, Clara, Paddles)")
+    srs_args(srs_listen)
+    srs_listen.add_argument("--coalition", type=int, default=2, help="0 spectator, 1 red, 2 blue")
+    srs_listen.add_argument("--name", default="LSO (listening)", help="client name shown in SRS")
+    srs_listen.add_argument("--model", help="Vosk model folder (e.g. vosk-model-small-en-us-0.15; needs "
+                                            "`uv sync --extra listen`); without it, transmissions are only recorded")
+    srs_listen.add_argument("--save", metavar="DIR", help="keep each transmission as a WAV here")
+    srs_listen.add_argument("--seconds", type=float, help="stop after this long (default: until Ctrl-C)")
+    srs_listen.set_defaults(func=_srs_listen)
 
     callouts = sub.add_parser("callouts", help="replay a recording through the live callout engine")
     callouts.add_argument("recording")
