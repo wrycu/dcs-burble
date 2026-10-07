@@ -441,6 +441,7 @@ def _agent(args: argparse.Namespace) -> int:
         tacview_password=args.tacview_password, dcs_log=dcs_log, debrief=debrief,
         url=args.url, token=args.token or os.environ.get("DCS_LSO_TOKEN"),
         mode=args.mode, voice_dir=Path(args.voice_dir) if args.voice_dir else None,
+        listen_model=Path(args.listen_model) if getattr(args, "listen_model", None) else None,
         keep_archives_days=args.keep_archives_days, keep_sent_days=args.keep_sent_days,
         keep_rejected_days=args.keep_rejected_days,
     )
@@ -643,6 +644,8 @@ def main(argv: list[str] | None = None) -> int:
         p.set_defaults(mode=mode)
         p.add_argument("--voice-dir", metavar="DIR", help="LSO voice clips (from `dcs-lso voice build`), or a folder of "
                        "clip sets: the hub's config (callouts.voice) picks one by folder name")
+        p.add_argument("--listen-model", metavar="DIR", help="Vosk model, to hear pilots' calls on the LSO frequencies "
+                       "and answer them, if the hub's config says so (callouts.listen); needs `uv sync --extra listen`")
         for name, default, what in (("archives", 90, "session archives (raw recordings, for re-slicing)"),
                                     ("sent", 14, "local copies of uploaded slices (the hub keeps its own)"),
                                     ("rejected", 30, "slices the hub rejected")):

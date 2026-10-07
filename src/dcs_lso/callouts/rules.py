@@ -57,6 +57,10 @@ class Call(StrEnum):
     KEEP_TURN_IN = "keep your turn in"  # overshooting the turn to final (before the groove)
     KEEP_IT_COMING = "keep it coming"  # reassurance: on glideslope and centerline, nothing to say
     ROUGH_LANDING = "rough landing"  # a dig after the welcome, now and then, for a poor or cut pass (not a call of its own)
+    # Answers to what the pilot says on the LSO frequency (heard on SRS, see agent/listening.py), not CalloutEngine's.
+    ROGER_BALL = "roger ball"
+    ROGER_CLARA = "roger clara"
+    LOUD_AND_CLEAR = "loud and clear"  # to "Paddles" (a radio check)
 
 
 # Lower number = more urgent (declaration order above).

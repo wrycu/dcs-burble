@@ -78,6 +78,7 @@ class AgentConfig:
     # only, never transmit (a pilot uploader would be talking on someone else's server).
     mode: str = "server"
     voice_dir: Path | None = None  # a clip set from `dcs-lso voice build`, or a folder of them (see `_clips`)
+    listen_model: Path | None = None  # a Vosk model, to hear pilots' calls (if the hub's config says listen)
     # Retention, in days (0: keep forever). Session archives allow re-slicing; uploaded slices are kept
     # on the hub, so the local copies only matter for a while (e.g. adding debrief.log grades). None:
     # not set here, so the hub's configuration for this source ("retention") applies, else the default.
@@ -309,6 +310,7 @@ class Agent:
         self.config_path = config.work_dir / "config.json"
         self.remote_config: dict = self._load_cached_config()
         self._clip_sets: dict[Path, ClipLibrary] = {}  # loaded once each
+        self._recogniser = None  # loaded on the first session that listens
         # Overridable for tests; by default calls go to the SRS server named in the config.
         self.sink_factory = lambda settings: SrsSink(settings.srs, _radios(settings))
 
@@ -357,6 +359,27 @@ class Agent:
         if self.hooks is not None:
             callouts.carrier_radio = self.hooks.carrier_radio  # the mission's frequency for each carrier
         return callouts
+
+    def _listener(self, callouts: LiveCallouts):
+        """Listening to pilots' calls, if the hub's config says so and there's a model to recognise them with."""
+        if not callouts.settings.listen:
+            return None
+        if self.config.listen_model is None:
+            log.warning("listening OFF: on in the hub's config, but no --listen-model was given")
+            return None
+        if not hasattr(callouts.sink, "on_voice"):
+            return None  # (a test sink)
+        from ..callouts.heard import Recogniser
+        from .listening import Listener
+        try:
+            if self._recogniser is None:
+                self._recogniser = Recogniser(self.config.listen_model)
+        except Exception as exc:  # e.g. Vosk not installed, or not a model
+            log.warning("listening OFF: %s", exc)
+            return None
+        listener = Listener(self._recogniser, callouts.on_heard)
+        listener.attach(callouts.sink)
+        return listener
 
     def _clips(self, voice: str | None) -> ClipLibrary | None:
         """The voice for this session: `--voice-dir` is one clip set, or a folder of them where the hub's
@@ -498,16 +521,22 @@ class Agent:
             if self.hooks is not None:
                 hooks = self.hooks
                 callouts.side_number_for = lambda pilot, t: (hooks.slot_for(pilot, t) or {}).get("onboard_num")
+        listening = None
         if callouts is not None:
+            listener = self._listener(callouts)
             await callouts.sink.start()
+            if listener is not None:
+                listening = asyncio.create_task(listener.run(), name="listening")
         log.info("connected to Tacview stream from %r; archiving to %s%s", info.name, session.archive.path,
-                 "; live callouts ON" if callouts else "")
+                 "; live callouts ON" + (", listening to pilots" if listening else "") if callouts else "")
         watchdog = asyncio.create_task(self._watch_frames(session))
         try:
             async for line in client.lines():
                 await self._line(session, line)
         finally:
             watchdog.cancel()
+            if listening is not None:
+                listening.cancel()
             await client.close()
             for result in session.detector.flush():
                 self._queue(session, result)

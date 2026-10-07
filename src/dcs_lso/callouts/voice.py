@@ -25,6 +25,9 @@ PHRASES: dict[Call, str | tuple[str, ...]] = {
     Call.WAVE_OFF_FOUL_DECK: "Wave off, wave off, foul deck!",
     Call.WAVE_OFF_GEAR: "Wave off, gear!",
     Call.BOLTER: "Bolter, bolter, bolter!",
+    Call.ROGER_BALL: "Roger ball.",
+    Call.ROGER_CLARA: ("Roger, Clara. Keep it coming.", "Roger, Clara. Continue."),
+    Call.LOUD_AND_CLEAR: ("Paddles, loud and clear.", "Loud and clear."),
     # Welcomes: "home"/"back" variants are for jets returning to the carrier they launched from, "aboard" ones
     # for visitors, and ones saying neither for both (see `welcome_kind`).
     Call.TRAPPED: ("Welcome aboard.", "Welcome home.", "Welcome aboard, nice trap.", "Welcome home, good trap.",

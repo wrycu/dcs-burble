@@ -4,6 +4,8 @@
 #   DCS_LSO_URL=http://127.0.0.1:8000
 #   DCS_LSO_TOKEN=<server agent token from `dcs-lso hub add-agent <name>`>
 #   TACVIEW_PASSWORD=<tacviewRealTimeTelemetryPassword>
+# Listening to pilots' calls (answering "Roger ball"): the Vosk model in ~/dcs-lso-data (see --listen-model below),
+#   then turn it on in the hub's config for this server ("listen": true under "callouts").
 # Enable: systemctl --user enable --now dcs-lso-agent@server1
 # Replaces dcs-lso-collector@.service (same work directory and settings file):
 #   systemctl --user disable --now dcs-lso-collector@server1
@@ -17,10 +19,11 @@ WantedBy=default.target
 [Service]
 WorkingDirectory=%h/dcs-lso
 EnvironmentFile=%h/.config/dcs-lso/%i.env
-ExecStart=%h/.local/bin/uv run --frozen dcs-lso agent \
+ExecStart=%h/.local/bin/uv run --frozen --extra listen dcs-lso agent \
     --work-dir %h/dcs-lso-data/%i/collector \
     --dcs-log %h/.wine/drive_c/DCS_configs/DCS.%i/Logs/dcs.log \
     --tacview-password ${TACVIEW_PASSWORD} \
-    --voice-dir %h/dcs-lso-data/voice/clips-ryan
+    --voice-dir %h/dcs-lso-data/voice/clips-ryan \
+    --listen-model %h/dcs-lso-data/vosk-model-small-en-us-0.15
 Restart=always
 RestartSec=5

@@ -591,3 +591,85 @@ def test_a_visitor_is_welcomed_aboard_not_home(tmp_path, clips, monkeypatch):
                                            tmp_path / "edge", clips))
     welcome_options = picked[-1]
     assert welcome_options and all(voice.welcome_kind(t) != "home" for t in welcome_options)
+
+
+class Said:
+    """A sink that records what would be said, and on which radio."""
+
+    def __init__(self):
+        self.said: list[tuple[Call, float]] = []
+
+    async def start(self): ...
+
+    async def say(self, call, clip, radio, issued_at):
+        self.said.append((call, radio.frequency_mhz))
+
+    async def close(self): ...
+
+
+def test_pilots_calls_are_answered_for_the_jet_that_made_them(clips):
+    from dcs_lso.acmi import ObjectTrack
+    from dcs_lso.agent.callouts import LiveCallouts
+    from dcs_lso.agent.listening import Heard
+    from dcs_lso.callouts.heard import parse
+
+    sink = Said()
+    callouts = LiveCallouts(CalloutSettings.from_config(CONFIG), ClipLibrary.load(clips), sink)
+    callouts.side_number_for = lambda pilot, t: {"Wrycu": "305", "Goose": "214"}.get(pilot)
+    carrier = ObjectTrack(1, {"Name": "CVN_75", "Pilot": "CVN-75 Harry S. Truman"})  # its LSO is on 127.6
+    wrycu = ObjectTrack(2, {"Name": "FA-18C_hornet", "Pilot": "Wrycu"})
+    goose = ObjectTrack(3, {"Name": "FA-18C_hornet", "Pilot": "Goose"})
+
+    def hear(text, speaker, mhz=127.6):
+        callouts.on_heard(Heard(parse(text), speaker, 0, mhz * 1e6, 0.0))
+
+    async def run():
+        callouts._live = {(1, 2): (carrier, wrycu, 100.0, 1200.0), (1, 3): (carrier, goose, 100.0, 3000.0)}
+        hear("three zero five hornet ball five point two", "wrycu")  # by name (case doesn't matter)
+        hear("three zero five hornet ball five point two", "Wrycu")  # said already this pass: not again
+        hear("two one four hornet ball six point zero", "Mav")  # an SRS name we don't know: by side number
+        hear("hornet ball five point five", "Mav")  # nothing to tell two jets apart: not answered
+        hear("three zero five hornet ball five point two", "Wrycu", mhz=251.0)  # not this carrier's frequency
+        hear("paddles three zero five", "Mav", mhz=127.5)  # a radio check: answered whoever it is
+        await asyncio.sleep(0)
+        callouts._live.pop((1, 3))
+        hear("clara", "Mav")  # one jet left in the groove: it's theirs
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert sink.said == [(Call.ROGER_BALL, 127.6), (Call.ROGER_BALL, 127.6), (Call.LOUD_AND_CLEAR, 127.5),
+                         (Call.ROGER_CLARA, 127.6)]
+    assert [(m.aircraft_id, m.call) for m in callouts.made] == [(2, Call.ROGER_BALL), (3, Call.ROGER_BALL),
+                                                                 (2, Call.ROGER_CLARA)]
+
+
+def test_the_listener_hands_recognised_calls_on():
+    from dcs_lso.agent.listening import Listener
+    from dcs_lso.callouts.heard import PilotCall
+    from dcs_lso.srs.listen import END_GAP_S
+    from dcs_lso.srs.opus import encode_pcm
+    from dcs_lso.srs.packet import VoicePacket
+
+    class Recognises:
+        def hear(self, pcm):
+            return PilotCall("ball", "305", "Hornet", 5.2, "three zero five hornet ball five point two")
+
+    class Sink:
+        on_voice = None
+        client = type("C", (), {"clients": {"G" * 22: {"Name": "Wrycu"}}, "guid": "O" * 22})()
+
+    heard = []
+    listener = Listener(Recognises(), heard.append)
+    listener.attach(sink := Sink())
+    import time as _time
+    for n, frame in enumerate(encode_pcm(tone(0.5))):
+        sink.on_voice(VoicePacket(frame, (127.6e6,), (0,), (0,), 42, n, "G" * 22), _time.perf_counter())
+
+    async def run():
+        task = asyncio.create_task(listener.run())
+        await asyncio.sleep(END_GAP_S + 0.3)
+        task.cancel()
+
+    asyncio.run(run())
+    (h,) = heard
+    assert (h.speaker, h.unit_id, h.frequency_hz, h.call.call) == ("Wrycu", 42, 127.6e6, "ball")

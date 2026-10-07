@@ -27,6 +27,9 @@ from ..srs import Modulation, Radio, SrsClient
 log = logging.getLogger(__name__)
 
 MAX_SRS_RADIOS = 10  # radios one SRS client announces
+RECONNECT_S = 30.0  # back on the SRS server this soon after losing it
+MATCH_FRESH_S = 5.0  # a pass the pilot's call can be from: tracked this recently...
+MATCH_MAX_ALONG_M = 4000.0  # ...and no farther out than this (about 2 nm)
 # A call that couldn't be spoken within this long is dropped: late calls are worse than none.
 MAX_CALL_AGE_S = 1.5
 
@@ -76,6 +79,8 @@ class CalloutSettings:
     thresholds: Thresholds = Thresholds()
     # Which clip set to speak with, when the server agent's --voice-dir holds several: its folder name.
     voice: str | None = None
+    # Listen to pilots on the LSO frequencies and answer their calls ("Roger ball"); needs --listen-model.
+    listen: bool = False
 
     @classmethod
     def from_config(cls, config: dict) -> CalloutSettings:
@@ -94,6 +99,7 @@ class CalloutSettings:
             calls=frozenset(Call(x) for x in c["calls"]) if "calls" in c else frozenset(Call),
             thresholds=replace(Thresholds(), **overrides),
             voice=str(c["voice"]) if c.get("voice") else None,
+            listen=bool(c.get("listen", False)),
         )
 
     def radio_for(self, carrier_unit: str, detected: Radio | None = None) -> Radio:
@@ -122,11 +128,19 @@ class SrsSink:
         self._client: SrsClient | None = None
         self._lock = asyncio.Lock()
         self._current: asyncio.Task | None = None
+        self._keepalive: asyncio.Task | None = None
+        # Everything heard on our frequencies (packet, perf_counter time), e.g. for listening to pilots' calls.
+        self.on_voice: Callable | None = None
+
+    @property
+    def client(self) -> SrsClient | None:
+        return self._client
 
     async def _connected(self) -> SrsClient:
         if self._client is None or not self._client.connected:
             s = self.settings
-            client = SrsClient(s.host, s.port, name=s.name, coalition=s.coalition, radios=tuple(self.radios[:10]))
+            client = SrsClient(s.host, s.port, name=s.name, coalition=s.coalition, radios=tuple(self.radios[:10]),
+                               on_voice=lambda packet, at: self.on_voice(packet, at) if self.on_voice else None)
             await client.connect()
             log.info("SRS connected: %s:%d as %r on %s", s.host, s.port, s.name,
                      ", ".join(f"{r.frequency_mhz:.3f} {r.modulation.name}" for r in self.radios))
@@ -141,7 +155,22 @@ class SrsSink:
             async with self._lock:
                 await self._connected()
         except OSError as exc:
-            log.warning("SRS unavailable at session start (%s); will retry on the first call", exc)
+            log.warning("SRS unavailable at session start (%s); retrying every %.0f s", exc, RECONNECT_S)
+        if self._keepalive is None:
+            self._keepalive = asyncio.get_running_loop().create_task(self._keep_connected(), name="srs-keepalive")
+
+    async def _keep_connected(self) -> None:
+        """Back on the SRS server within RECONNECT_S of losing it (e.g. the server restarted mid-mission): to be
+        listed, heard by pilots' clients ahead of the next call, and to hear the pilots."""
+        while True:
+            await asyncio.sleep(RECONNECT_S)
+            if self._client is not None and self._client.connected:
+                continue
+            try:
+                async with self._lock:
+                    await self._connected()
+            except OSError as exc:
+                log.debug("SRS still unavailable: %s", exc)
 
     async def say(self, call: Call, clip: Clip, radio: Radio, issued_at: float) -> None:
         if call in WAVE_OFFS and self._current is not None:
@@ -171,8 +200,16 @@ class SrsSink:
                 self._current = None
 
     async def close(self) -> None:
+        if self._keepalive is not None:
+            self._keepalive.cancel()
+            self._keepalive = None
         if self._client is not None:
             await self._client.close()
+
+
+def _norm(name: str | None) -> str:
+    """A player's name for comparing (SRS's and Tacview's): case and spacing don't matter."""
+    return " ".join((name or "").lower().split())
 
 
 def _gear(plane: ObjectTrack) -> float | None:
@@ -228,6 +265,9 @@ class LiveCallouts:
         self._track: dict[tuple[int, int], list[tuple[float, float, float]]] = {}
         self._touchdown_speed: dict[tuple[int, int], float] = {}
         self._outcome_called: set[tuple[int, int]] = set()  # bolter or trap already called
+        # Passes in progress, for matching what pilots say on the radio: (carrier, plane, sim time, along).
+        self._live: dict[tuple[int, int], tuple[ObjectTrack, ObjectTrack, float, float]] = {}
+        self._answered: set[tuple[int, int, Call]] = set()  # e.g. "Roger ball" once a pass
 
     def on_sample(self, carrier: ObjectTrack, plane: ObjectTrack, pose: CarrierPose, sample: Sample,
                   frame: DeckFrame) -> CallEvent | None:
@@ -239,6 +279,7 @@ class LiveCallouts:
         estimator, engine = entry
         t = sample.transform
         pos = frame.position(pose, t)
+        self._live[key] = (carrier, plane, sample.time, pos.along)
         heading_error = ((t.heading or 0.0) - (pose.heading - frame.carrier.deck_angle) + 180.0) % 360.0 - 180.0
         wind = self.wind_for(carrier.pilot) if self.wind_for else None
         foul = self.deck_foul(carrier.id, pose, frame, plane.id, sample.time) if self.deck_foul else False
@@ -353,6 +394,68 @@ class LiveCallouts:
         self._track.pop(key, None)
         self._touchdown_speed.pop(key, None)
         self._outcome_called.discard(key)
+        self._live.pop(key, None)
+        self._answered = {a for a in self._answered if a[:2] != key}
+
+    # -- what pilots say (heard on SRS: agent/listening.py) ---------------------------------------------------
+
+    def on_heard(self, heard) -> None:
+        """A pilot's call heard on an LSO frequency: answer it ("Roger ball", "Roger, Clara", "loud and clear")
+        on that frequency, for the jet in the groove that made it."""
+        found = self._match(heard)
+        answer = {"ball": Call.ROGER_BALL, "clara": Call.ROGER_CLARA, "paddles": Call.LOUD_AND_CLEAR}[heard.call.call]
+        if answer not in self.settings.calls or answer not in self.clips:
+            return
+        if found is None and answer is not Call.LOUD_AND_CLEAR:
+            log.info("heard %r from %s, but no jet in the groove on %.3f MHz to match it", heard.call.text,
+                     heard.speaker or "?", heard.frequency_hz / 1e6)
+            return
+        if found is not None:
+            key, (carrier, plane, sim_time, along) = found
+            if (*key, answer) in self._answered:
+                return  # said already this pass
+            self._answered.add((*key, answer))
+            self.made.append(MadeCall(plane.id, sim_time, along, answer))
+            radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
+            who = plane.pilot or hex(plane.id)
+        else:
+            radio = next((r for r in self._radios() if abs(r.frequency_hz - heard.frequency_hz) < 1000.0),
+                         Radio(heard.frequency_hz / 1e6))
+            who = heard.speaker or "?"
+        clip = self.clips.pick(answer)
+        log.info("ANSWER %s -> %s (%.3f %s): %r", answer.value, who, radio.frequency_mhz, radio.modulation.name, clip.text)
+        task = asyncio.get_running_loop().create_task(self.sink.say(answer, clip, radio, time.monotonic()))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def _radios(self) -> list[Radio]:
+        radios = [Radio(self.settings.frequency_mhz, self.settings.modulation)]
+        radios += [Radio(*v) for v in self.settings.carriers.values()]
+        return radios
+
+    def _match(self, heard):
+        """The pass in progress the call is from: on that frequency, by the speaker's name (their SRS name is
+        their DCS name), else the side number they said, else the only jet in a groove there."""
+        if not self._live:
+            return None
+        latest = max(t for _, _, t, _ in self._live.values())
+        here = []
+        for key, entry in self._live.items():
+            carrier, plane, sim_time, along = entry
+            radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
+            if latest - sim_time <= MATCH_FRESH_S and abs(radio.frequency_hz - heard.frequency_hz) < 1000.0 \
+                    and -50.0 <= along <= MATCH_MAX_ALONG_M:
+                here.append((key, entry))
+        name = _norm(heard.speaker)
+        by_name = [x for x in here if name and _norm(x[1][1].pilot) == name]
+        if by_name:
+            return by_name[0]
+        side = heard.call.side_number
+        if side and self.side_number_for is not None:
+            by_side = [x for x in here if self.side_number_for(x[1][1].pilot, x[1][2]) == side]
+            if len(by_side) == 1:
+                return by_side[0]
+        return here[0] if len(here) == 1 else None
 
     def calls_for(self, aircraft_id: int, start: float, end: float) -> list[dict]:
         if self.made:
