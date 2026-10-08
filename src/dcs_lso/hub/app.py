@@ -632,35 +632,40 @@ def create_app(hub: Hub) -> FastAPI:
 
     @app.get("/api/v1/pilots/{name}/trends")
     def pilot_trends_api(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
-                         servers: str | None = None) -> dict:
+                         servers: str | None = None, aircraft: str | None = None) -> dict:
         """Themes across a pilot's recent passes: what keeps going wrong, biases, speed, outcomes, wires.
-        `servers`: "ours" or "all"; default per `--other-servers`."""
-        found = hub.pilot_trends(name, passes, _servers(servers))
+        `servers`: "ours" or "all"; default per `--other-servers`. `aircraft`: one airframe ("F-14 Tomcat") or
+        aircraft type; by default the airframe of their newest landing."""
+        found = hub.pilot_trends(name, passes, _servers(servers), aircraft or None)
         if found is None:
             raise HTTPException(404, "no such pilot")
         return {"pilot": name, "modex": found.modex, "last_livery": found.last_livery, "landings": found.landings,
                 "first_seen": found.first_seen.isoformat() if found.first_seen else None,
                 "last_seen": found.last_seen.isoformat() if found.last_seen else None,
+                "airframe": found.airframe, "airframes": [{"airframe": a, "landings": n} for a, n in found.airframes],
                 **found.trends.to_dict(), "pass_ids": [p.id for p in found.rows]}
 
     @app.get("/pilots/{name}", response_class=HTMLResponse)
     def pilot_page(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
-                   servers: str | None = None) -> str:
+                   servers: str | None = None, aircraft: str | None = None) -> str:
         servers = _servers(servers)
-        found = hub.pilot_trends(name, passes, servers)
+        found = hub.pilot_trends(name, passes, servers, aircraft or None)
         if found is None:
             raise HTTPException(404, "no such pilot")
         items = hub.overlay(found.rows)
-        svg = render_overlay(items, uid="ov", title=f"{name}: last {len(items)} passes overlaid") if items else None
-        return pages.pilot_page(name, found, passes, svg, servers=servers,
-                                overlay_src=f"/pilots/{quote(name, safe='')}/overlay.svg?passes={passes}&servers={servers}")
+        title = f"{name}: last {len(items)} {found.airframe or ''} passes overlaid".replace("  ", " ")
+        svg = render_overlay(items, uid="ov", title=title) if items else None
+        src = (f"/pilots/{quote(name, safe='')}/overlay.svg?passes={passes}&servers={servers}"
+               f"&aircraft={quote(found.airframe or '', safe='')}")
+        return pages.pilot_page(name, found, passes, svg, servers=servers, overlay_src=src)
 
     @app.get("/pilots/{name}/overlay.svg")
     def pilot_overlay(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
-                      near: float | None = None, far: float | None = None, servers: str | None = None) -> Response:
-        """The pilot's passes overlaid; with `near`/`far` (meters short of the aim point), zoomed to that
-        stretch of the approach."""
-        found = hub.pilot_trends(name, passes, _servers(servers))
+                      near: float | None = None, far: float | None = None, servers: str | None = None,
+                      aircraft: str | None = None) -> Response:
+        """The pilot's passes (in one airframe) overlaid; with `near`/`far` (meters short of the aim point), zoomed
+        to that stretch of the approach."""
+        found = hub.pilot_trends(name, passes, _servers(servers), aircraft or None)
         if found is None:
             raise HTTPException(404, "no such pilot")
         svg = render_overlay(hub.overlay(found.rows), uid="ov", title=f"{name}: passes overlaid", view=_view(near, far))

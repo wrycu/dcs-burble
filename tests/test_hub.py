@@ -169,3 +169,24 @@ def test_board_has_a_table_per_airframe(client, token, tmp_path):
     listed = client.get("/api/v1/passes", params={"days": 0, "aircraft": "F-14 Tomcat"}).json()
     assert [(p["aircraft"], p["airframe"]) for p in listed] == [("F-14BU", "F-14 Tomcat")]
     assert len(client.get("/api/v1/passes", params={"days": 0, "aircraft": "F-14BU"}).json()) == 1
+
+
+def test_pilot_page_has_a_tab_per_airframe(client, token, tmp_path):
+    from dcs_lso.slices import slice_recording
+
+    for acmi in PASS_FILES:
+        upload(client, token, acmi)
+    [(tomcat, meta)] = slice_recording(FIXTURES / "live" / "tomcat-trap-server.zip.acmi", tmp_path / "tomcat")
+    meta["pass"]["pilot"] = "Wrycu"
+    meta["pass"]["occurred_at"] = "2020-01-01T00:00:00+00:00"  # the oldest: the Hornet is shown first
+    assert upload(client, token, tomcat, meta).status_code == 201
+    hornets = client.get("/api/v1/pilots/Wrycu/trends").json()
+    assert hornets["airframe"] == "F/A-18C Hornet" and hornets["airframes"][-1] == {"airframe": "F-14 Tomcat",
+                                                                                   "landings": 1}
+    tomcats = client.get("/api/v1/pilots/Wrycu/trends", params={"aircraft": "F-14 Tomcat"}).json()
+    assert tomcats["airframe"] == "F-14 Tomcat" and tomcats["passes"] == 1
+    assert set(hornets["pass_ids"]).isdisjoint(tomcats["pass_ids"])
+    page = client.get("/pilots/Wrycu", params={"aircraft": "F-14 Tomcat"}).text
+    assert '<nav class="airframes">' in page and 'class="current" aria-current="page">F-14 Tomcat' in page
+    assert "Last 1 F-14 Tomcat pass ·" in page and "aircraft=F-14%20Tomcat" in page
+    assert '<nav class="airframes">' not in client.get("/pilots/Maverick").text  # one airframe: no tabs

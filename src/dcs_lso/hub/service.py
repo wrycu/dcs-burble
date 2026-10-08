@@ -9,7 +9,7 @@ import secrets
 import statistics
 import tempfile
 import ipaddress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -22,7 +22,7 @@ from ..detect import PassResult, find_passes
 from ..detect.passes import Outcome
 from ..detect.rebuild import rebuild_carrier
 from ..detect.wire import WireSignals, wire_signals
-from ..geometry import AIRCRAFT, CARRIERS, DeckFrame, WindProfile
+from ..geometry import AIRCRAFT, CARRIERS, DeckFrame, WindProfile, airframe
 from ..slices import is_default_pilot, own_pilots, slice_recording
 from ..sun import NIGHT_BELOW_DEG, is_night
 from ..cards.overlay import OverlayPass
@@ -131,6 +131,8 @@ class PilotSummary:
     modex: str | None = None  # the pilot's side number (the first one seen)
     last_livery: str | None = None  # the livery of their newest landing that has one
     protected: bool = False  # they've set an upload password
+    airframe: str | None = None  # the airframe `trends` and `rows` are for (trends don't mix airframes)
+    airframes: list[tuple[str, int]] = field(default_factory=list)  # each airframe flown, with its landings, busiest first
 
 
 @dataclass(frozen=True, slots=True)
@@ -1230,10 +1232,12 @@ class Hub:
 
     # -- meta grading ---------------------------------------------------------------------------
 
-    def pilot_trends(self, name: str, passes: int = DEFAULT_PASSES, servers: str = "all") -> PilotSummary | None:
-        """Themes across a pilot's last `passes` graded landings, those landings (newest first), and when
-        the pilot was first and last seen; None for an unknown pilot. `servers`: "ours" leaves out landings flown
-        on other servers (as the board's filter)."""
+    def pilot_trends(self, name: str, passes: int = DEFAULT_PASSES, servers: str = "all",
+                     aircraft: str | None = None) -> PilotSummary | None:
+        """Themes across a pilot's last `passes` graded landings in one airframe, those landings (newest first),
+        and when the pilot was first and last seen; None for an unknown pilot. `servers`: "ours" leaves out
+        landings flown on other servers (as the board's filter). `aircraft`: the airframe (geometry.airframe) or
+        an aircraft type; by default the airframe of their newest landing."""
         with self.sessions() as s:
             pilot = s.scalar(select(Pilot).where(Pilot.name == name))
             if pilot is None:
@@ -1246,7 +1250,12 @@ class Hub:
             landings = list(s.scalars(q))
             if servers == "ours":
                 landings = [p for p in landings if not flown_elsewhere(p)]
-            rows = [p for p in landings if p.grade is not None][:passes]
+            counts: dict[str, int] = {}
+            for p in landings:
+                counts[airframe(p.aircraft_type)] = counts.get(airframe(p.aircraft_type), 0) + 1
+            chosen = aircraft or (airframe(landings[0].aircraft_type) if landings else None)
+            rows = [p for p in landings if p.grade is not None
+                    and chosen in (airframe(p.aircraft_type), p.aircraft_type)][:passes]
         seen = [p.occurred_at or p.created_at for p in landings]
         items = []
         for p in rows:
@@ -1255,7 +1264,8 @@ class Hub:
             items.append(TrendPass.from_detail(p.grade.detail or {}, p.outcome, on_speed, wire=p.wire))
         return PilotSummary(trends(items), rows, len(landings), min(seen) if seen else None,
                             max(seen) if seen else None, pilot.modex,
-                            next((p.livery for p in landings if p.livery), None), pilot.password_hash is not None)
+                            next((p.livery for p in landings if p.livery), None), pilot.password_hash is not None,
+                            chosen, sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower())))
 
     def overlay(self, rows: list[Pass]) -> list[OverlayPass]:
         """The landings' tracks for an overlay card (newest first); ones whose slice can't be read are left out."""

@@ -103,6 +103,12 @@ nav.top strong a { color: var(--text); }
 nav.top form { display: inline; margin: 0; }
 nav.top button { font: inherit; background: none; border: none; padding: 0; color: var(--muted); cursor: pointer; }
 nav.top button:hover { color: var(--text); text-decoration: underline; }
+nav.airframes { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin: 8px 0 12px; }
+nav.airframes a { padding: 6px 12px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; font-weight: 600; }
+nav.airframes a:hover { color: var(--text); }
+nav.airframes a.current { color: var(--text); border-bottom-color: var(--text); }
+nav.airframes .n { font-weight: 400; font-size: 12px; color: var(--muted); }
 .admin .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .admin .actions form { display: flex; gap: 6px; margin: 0; }
 .admin button, .admin input, .admin textarea { font: inherit; font-size: 13px; padding: 3px 8px; border-radius: 6px;
@@ -578,14 +584,23 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
             f"{'uploads password-protected' if summary.protected else 'no upload password'} · {settings}</p>")
     options = "".join(f'<option value="{n}"{" selected" if n == passes else ""}>last {n}</option>'
                       for n in sorted({8, 12, 15, 20, passes}))
-    picker = (f'<form class="filters" method="get"><label>Look at <select name="passes" onchange="this.form.submit()">'
+    chosen = summary.airframe or ""
+    tabs = ""
+    if len(summary.airframes) > 1:  # trends don't mix airframes: one at a time
+        def tab(a: str, n: int) -> str:
+            href = f"?passes={passes}&servers={servers}&aircraft={quote(a, safe='')}"
+            current = ' class="current" aria-current="page"' if a == chosen else ""
+            return f'<a href="{escape(href)}"{current}>{escape(a)} <span class="n">{n}</span></a>'
+        tabs = '<nav class="airframes">' + "".join(tab(a, n) for a, n in summary.airframes) + "</nav>"
+    picker = (f'<form class="filters" method="get"><input type="hidden" name="aircraft" value="{escape(chosen)}">'
+              f'<label>Look at <select name="passes" onchange="this.form.submit()">'
               f"{options}</select> passes</label><label>Servers <select name=\"servers\" onchange=\"this.form.submit()\">"
               + "".join(f'<option value="{v}"{" selected" if v == servers else ""}>{label}</option>'
                         for v, label in (("ours", "This hub&#x27;s servers"), ("all", "All servers")))
               + "</select></label></form>")
     if not result.passes:
-        body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}{picker}'
-                '<p class="empty-state">No graded passes yet.</p>')
+        body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}{tabs}{picker}'
+                f'<p class="empty-state">No graded {escape(chosen + " " if chosen else "")}passes yet.</p>')
         return _page(name, body)
     grades = " · ".join(f"{escape(grade_short(g))} ×{n}" for g, n in sorted(result.grades.items(), key=lambda kv: -kv[1]))
     def items(themes, empty: str) -> str:
@@ -602,8 +617,9 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
         f'<a class="cell {GRADE_CLASS.get(p.grade.grade, "")}" href="/passes/{p.id}" data-pass="{p.id}" '
         f'title="{escape(grade_name(p.grade.grade))}: {escape(p.grade.text)} · {_when(p.occurred_at)}">'
         f"{escape(grade_short(p.grade.grade))}</a>" for p in reversed(rows))
-    body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}'
-            f'<p class="sub">Last {result.passes} passes · {result.average_points:.2f} points on average · {grades}</p>'
+    body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}{tabs}'
+            f'<p class="sub">Last {result.passes} {escape(chosen + " " if chosen else "")}pass{"es" if result.passes != 1 else ""} · '
+            f'{result.average_points:.2f} points on average · {grades}</p>'
             f"{picker}<div class=\"panel\"><h2 style=\"margin-top:0\">Analysis</h2>"
             f'<ul class="themes">{analysis}</ul>{strengths}'
             f'<h2>Results</h2><ul class="themes">{results}</ul>'

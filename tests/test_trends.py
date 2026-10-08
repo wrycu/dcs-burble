@@ -133,7 +133,7 @@ def test_overlay_zoom(tmp_path):
         hub.ingest(1, f.read_bytes(), sidecar(r, p, f.name, slice_objects(r, p)))
     client = TestClient(create_app(hub))
     page = client.get("/pilots/Wrycu").text
-    assert 'data-src="/pilots/Wrycu/overlay.svg?passes=12&amp;servers=all"' in page and "zoom-reset" in page
+    assert 'data-src="/pilots/Wrycu/overlay.svg?passes=12&amp;servers=all&amp;aircraft=F%2FA-18C%20Hornet"' in page and "zoom-reset" in page
     full = ET.fromstring(client.get("/pilots/Wrycu/overlay.svg").text)
     assert (float(full.get("data-near")), float(full.get("data-far"))) == (-40.0, 1481.6)
     # The last 0.25 nm: the view the page asks for after a drag, with distances in round feet.
