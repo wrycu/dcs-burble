@@ -97,11 +97,13 @@ def create_app(hub: Hub) -> FastAPI:
             return PlainTextResponse("forms from other sites aren't accepted here", status_code=403)
         pilot = await run_in_threadpool(hub.session_pilot, token) if token else None
         request.state.pilot = pilot
-        reset = pages.CURRENT_PILOT.set(pilot)
+        request.state.admin = await run_in_threadpool(hub.is_admin, pilot) if pilot else False
+        reset = pages.CURRENT_PILOT.set(pilot), pages.CURRENT_ADMIN.set(request.state.admin)
         try:
             response = await call_next(request)
         finally:
-            pages.CURRENT_PILOT.reset(reset)
+            pages.CURRENT_PILOT.reset(reset[0])
+            pages.CURRENT_ADMIN.reset(reset[1])
         if token and pilot is None and not getattr(request.state, "session_set", False):
             response.delete_cookie(SESSION_COOKIE, path="/")  # ended (signed out elsewhere, expired)
         return response
@@ -449,6 +451,106 @@ def create_app(hub: Hub) -> FastAPI:
                          password: Annotated[str | None, Form()] = None):
         credential = _credential(request, name, password)
         return _settings_redirect(name, lambda: hub.set_pilot_modex(name, credential, modex), "Side number saved.")
+
+    # -- admins (pilots with the role, signed in) -------------------------------------------------
+
+    class NotAdmin(Exception):
+        pass
+
+    @app.exception_handler(NotAdmin)
+    def not_admin(request: Request, _exc: NotAdmin) -> HTMLResponse:
+        return HTMLResponse(pages.not_admin_page(getattr(request.state, "pilot", None)), status_code=403)
+
+    def _admin(request: Request) -> str:
+        if not getattr(request.state, "admin", False):
+            raise NotAdmin()
+        return request.state.pilot
+
+    def _admin_page(request: Request, done: str | None = None, error: str | None = None, q: str = "",
+                    new_token: tuple[str, str] | None = None, status: int = 200) -> HTMLResponse:
+        _admin(request)
+        return HTMLResponse(pages.admin_page(hub.admin_pilots(q), hub.server_agents(), q, done, error, new_token),
+                            status_code=status)
+
+    def _admin_step(request: Request, step, done: str, q: str = ""):
+        _admin(request)
+        try:
+            step()
+        except (LookupError, PermissionError, ValueError) as exc:
+            message = str(exc.args[0]) if isinstance(exc, LookupError) and exc.args else str(exc)
+            return RedirectResponse(f"/admin?error={quote(message)}&q={quote(q)}", status_code=303)
+        return RedirectResponse(f"/admin?done={quote(done)}&q={quote(q)}", status_code=303)
+
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin(request: Request, done: str | None = None, error: str | None = None, q: str = ""):
+        if getattr(request.state, "pilot", None) is None:
+            return RedirectResponse(f"/signin?next={quote('/admin', safe='')}", status_code=303)
+        return _admin_page(request, done, error, q)
+
+    @app.post("/admin/pilots/{name}/admin")
+    def admin_set_admin(request: Request, name: str, admin: Annotated[str, Form()], q: Annotated[str, Form()] = ""):
+        on = admin == "1"
+        me = _admin(request)
+        return _admin_step(request, lambda: hub.set_admin(name, on, by=me),
+                           f"{name} is now an admin." if on else f"{name} is no longer an admin.", q)
+
+    @app.post("/admin/pilots/{name}/reset-password")
+    def admin_reset_password(request: Request, name: str, q: Annotated[str, Form()] = ""):
+        if name == _admin(request):
+            return RedirectResponse(f"/admin?error={quote('change your own password on your settings page')}",
+                                    status_code=303)
+        return _admin_step(request, lambda: hub.reset_pilot_password(name),
+                           f"{name}'s password is cleared; they (or anyone) can set a new one on their settings page.",
+                           q)
+
+    @app.post("/admin/pilots/{name}/remove")
+    def admin_remove_pilot(request: Request, name: str, q: Annotated[str, Form()] = ""):
+        if name == _admin(request):
+            return RedirectResponse("/admin?error=" + quote("you can't remove yourself"), status_code=303)
+        return _admin_step(request, lambda: hub.remove_pilot(name), f"{name} removed; their pilot tokens are revoked.", q)
+
+    @app.post("/admin/aliases/remove")  # (the alias in the form: names like "VF-1/Goose" don't fit in a path)
+    def admin_remove_alias(request: Request, alias: Annotated[str, Form()], q: Annotated[str, Form()] = ""):
+        moved: list[int] = []
+        redirect = _admin_step(request, lambda: moved.append(hub.remove_alias(alias)), "", q)
+        if moved:
+            done = f"{alias} is no longer an alias; {moved[0]} passes moved back to a pilot of that name."
+            return RedirectResponse(f"/admin?done={quote(done)}&q={quote(q)}", status_code=303)
+        return redirect
+
+    @app.post("/admin/pilots/{name}/tokens", response_class=HTMLResponse)
+    def admin_pilot_token(request: Request, name: str, label: Annotated[str, Form()] = "",
+                          q: Annotated[str, Form()] = ""):
+        _admin(request)
+        try:  # rendered directly (not redirected), so the token is never in a URL
+            token = hub.add_pilot_token(name, label)
+        except (LookupError, ValueError) as exc:
+            return _admin_page(request, error=str(exc), q=q, status=400)
+        return _admin_page(request, f"Pilot token created for {name}.", q=q,
+                           new_token=(f"pilot token for {name}", token))
+
+    @app.post("/admin/agents", response_class=HTMLResponse)
+    def admin_add_agent(request: Request, name: Annotated[str, Form()]):
+        _admin(request)
+        try:
+            token = hub.add_source(name)
+        except ValueError as exc:
+            return _admin_page(request, error=str(exc), status=400)
+        return _admin_page(request, f"Server agent {name.strip()} added.",
+                           new_token=(f"server agent token for {name.strip()}", token))
+
+    @app.post("/admin/agents/{name}/config")
+    def admin_agent_config(request: Request, name: str, config: Annotated[str, Form()]):
+        _admin(request)
+        try:
+            parsed = json.loads(config) if config.strip() else None
+        except json.JSONDecodeError as exc:
+            return RedirectResponse(f"/admin?error={quote(f'{name}: that is not valid JSON ({exc})')}", status_code=303)
+        if parsed is not None and not isinstance(parsed, dict):
+            return RedirectResponse(f"/admin?error={quote(f'{name}: the configuration is a JSON object')}",
+                                    status_code=303)
+        return _admin_step(request, lambda: hub.set_config(name, parsed, kind="server"),
+                           f"Configuration for {name} saved; its agent applies it when the next mission starts.")
 
     def _upload(upload_id: int) -> Upload:
         with hub.sessions() as s:

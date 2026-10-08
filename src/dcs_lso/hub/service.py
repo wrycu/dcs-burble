@@ -80,6 +80,15 @@ def _aware(dt: datetime) -> datetime:
 
 
 @dataclass(frozen=True, slots=True)
+class AdminPilot:
+    name: str
+    has_password: bool
+    admin: bool
+    passes: int  # landings shown (reports merged into another aren't counted)
+    aliases: list[str]
+
+
+@dataclass(frozen=True, slots=True)
 class SignedIn:
     """In place of a password: the pilot is signed in on the website as `pilot` (a session, see
     Hub.session_pilot), which stands for their password in everything but changing it."""
@@ -181,8 +190,13 @@ class Hub:
         for token-less uploads); returns its token (only the hash is stored)."""
         if kind not in ("server", "pilot"):
             raise ValueError("kind must be 'server' or 'pilot'")
+        name = (name or "").strip()
+        if not name or len(name) > 100:
+            raise ValueError("enter a name of up to 100 characters")
         token = secrets.token_urlsafe(32)
         with self.sessions.begin() as s:
+            if s.scalar(select(Source).where(Source.name == name)) is not None:
+                raise ValueError(f"there's already a source named {name!r}")
             s.add(Source(name=name, kind=kind, token_hash=_hash_token(token)))
         return token
 
@@ -335,10 +349,10 @@ class Hub:
         s.add(PilotAlias(name=reported[:100], pilot_id=pilot.id, claimed=False))
         s.flush()
 
-    def set_config(self, name: str, config: dict) -> None:
+    def set_config(self, name: str, config: dict | None, kind: str | None = None) -> None:
         with self.sessions.begin() as s:
             source = s.scalar(select(Source).where(Source.name == name))
-            if source is None:
+            if source is None or (kind is not None and source.kind != kind):
                 raise ValueError(f"no source named {name!r}")
             source.config = config
 
@@ -1083,11 +1097,50 @@ class Hub:
             self._end_sessions(s, pilot, keep=keep_session)
 
     def reset_pilot_password(self, name: str) -> None:
-        """Admin: clear a pilot's password (anyone may then set a new one)."""
+        """Admin: clear a pilot's password (anyone may then set a new one, so an admin stops being one)."""
         with self.sessions.begin() as s:
             pilot = self._pilot(s, name)
             pilot.password_hash = None
+            pilot.is_admin = None
             self._end_sessions(s, pilot)
+
+    # -- admins -----------------------------------------------------------------------------------
+
+    def is_admin(self, name: str | None) -> bool:
+        if not name:
+            return False
+        with self.sessions() as s:
+            pilot = s.scalar(select(Pilot).where(Pilot.name == name))
+            return bool(pilot is not None and pilot.is_admin and pilot.password_hash is not None)
+
+    def set_admin(self, name: str, admin: bool, by: str | None = None) -> None:
+        """Make a pilot an admin, or stop them being one. Only a pilot with a password (it's their sign-in that
+        has the role). `by`: the admin doing it on the website, who can't remove their own role there."""
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            if admin and pilot.password_hash is None:
+                raise ValueError(f"{pilot.name!r} has no password yet; they set one first (it's how they sign in)")
+            if not admin and by is not None and by == pilot.name:
+                raise ValueError("you can't remove your own admin role; another admin can")
+            pilot.is_admin = True if admin else None
+
+    def admin_pilots(self, search: str = "") -> list[AdminPilot]:
+        """Every pilot (or those whose name, or one of their other names, contains `search`), for the admin page."""
+        with self.sessions() as s:
+            counts = dict(s.execute(select(Pass.pilot_id, func.count()).where(Pass.merged_into_id.is_(None))
+                                    .group_by(Pass.pilot_id)).all())
+            aliases: dict[int, list[str]] = {}
+            for a in s.scalars(select(PilotAlias).order_by(PilotAlias.name)):
+                aliases.setdefault(a.pilot_id, []).append(a.name)
+            needle = (search or "").strip().lower()
+            return [AdminPilot(p.name, p.password_hash is not None, bool(p.is_admin), counts.get(p.id, 0),
+                               aliases.get(p.id, []))
+                    for p in s.scalars(select(Pilot).order_by(func.lower(Pilot.name)))
+                    if not needle or needle in p.name.lower() or any(needle in a.lower() for a in aliases.get(p.id, []))]
+
+    def server_agents(self) -> list[Source]:
+        with self.sessions() as s:
+            return list(s.scalars(select(Source).where(Source.kind == "server").order_by(Source.name)))
 
     def set_pilot_modex(self, name: str, password: str | SignedIn | None, modex: str) -> None:
         """A pilot with a password changes their side number."""

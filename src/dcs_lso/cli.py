@@ -286,7 +286,11 @@ def _hub_serve(args: argparse.Namespace) -> int:
 
 
 def _hub_add_agent(args: argparse.Namespace) -> int:
-    token = _hub(args).add_source(args.name)
+    try:
+        token = _hub(args).add_source(args.name)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     print(f"server agent {args.name!r} added. Its server agent token (shown once, keep it secret):")
     print(token)
     return 0
@@ -346,6 +350,17 @@ def _hub_reset_password(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"password for {args.pilot!r} cleared; they (or anyone) can set a new one on their settings page")
+    return 0
+
+
+def _hub_set_admin(args: argparse.Namespace) -> int:
+    try:
+        _hub(args).set_admin(args.pilot, not args.remove)
+    except (LookupError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"{args.pilot!r} is no longer an admin" if args.remove else
+          f"{args.pilot!r} is now an admin: signed in on the website, they can manage the hub at /admin")
     return 0
 
 
@@ -620,6 +635,11 @@ def main(argv: list[str] | None = None) -> int:
     reset = hub_sub.add_parser("reset-password", help="clear a pilot's upload password (e.g. they forgot it)")
     reset.add_argument("pilot", help="the pilot's name, as on the board")
     reset.set_defaults(func=_hub_reset_password)
+    set_admin = hub_sub.add_parser("set-admin", help="make a pilot an admin (they manage the hub on the website, at "
+                                                     "/admin, while signed in)")
+    set_admin.add_argument("pilot", help="the pilot's name, as on the board (they must have set a password)")
+    set_admin.add_argument("--remove", action="store_true", help="stop them being an admin")
+    set_admin.set_defaults(func=_hub_set_admin)
     set_config = hub_sub.add_parser("set-config", help="set a server agent's configuration (JSON file)")
     set_config.add_argument("name")
     set_config.add_argument("file")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from contextvars import ContextVar
 from datetime import datetime
@@ -102,6 +103,16 @@ nav.top strong a { color: var(--text); }
 nav.top form { display: inline; margin: 0; }
 nav.top button { font: inherit; background: none; border: none; padding: 0; color: var(--muted); cursor: pointer; }
 nav.top button:hover { color: var(--text); text-decoration: underline; }
+.admin .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.admin .actions form { display: flex; gap: 6px; margin: 0; }
+.admin button, .admin input, .admin textarea { font: inherit; font-size: 13px; padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text); }
+.admin button { cursor: pointer; } .admin button.danger { color: #cf222e; }
+.admin input.label { width: 8em; }
+.admin textarea { width: 100%; min-height: 8em; font-family: ui-monospace, monospace; box-sizing: border-box; }
+.admin .alias { display: inline-flex; gap: 4px; align-items: center; margin: 0 8px 2px 0; }
+.admin .alias button { padding: 0 6px; font-size: 12px; }
+.admin .tag { font-size: 11px; font-weight: 700; border-radius: 8px; padding: 1px 7px; background: #0969da; color: #fff; }
 .zoom-reset { font: inherit; font-size: 12px; font-weight: 400; margin-left: 8px; padding: 2px 8px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; vertical-align: 2px; }
 """
@@ -115,6 +126,7 @@ GRADE_CLASS = {g: f"g-{i}" for i, g in enumerate(GRADE_COLORS)}
 
 # Who the request is signed in as (set per request by the app), for the bar at the top of every page.
 CURRENT_PILOT: ContextVar[str | None] = ContextVar("current_pilot", default=None)
+CURRENT_ADMIN: ContextVar[bool] = ContextVar("current_admin", default=False)
 
 
 def _nav() -> str:
@@ -123,6 +135,7 @@ def _nav() -> str:
         quoted = quote(me, safe="")
         right = (f'<span class="me">Signed in as <strong><a href="/pilots/{quoted}">{escape(me)}</a></strong>'
                  f'<a href="/pilots/{quoted}/settings">Settings</a>'
+                 + ('<a href="/admin">Admin</a>' if CURRENT_ADMIN.get() else "") +
                  '<form method="post" action="/signout"><button type="submit">Sign out</button></form></span>')
     else:
         right = '<span class="me"><a href="/signin">Sign in</a><a href="/join">Join</a></span>'
@@ -709,3 +722,95 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
             f'<div class="panel" style="margin-top:12px">{tokens_form}</div>'
             f'<div class="panel" style="margin-top:12px">{aliases_form}</div>')
     return _page(f"{name}: settings", body)
+
+
+def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None, error: str | None = None,
+               new_token: tuple[str, str] | None = None) -> str:
+    """For admins (pilots with the role, signed in): pilots (admin role, password reset, removal, other names,
+    pilot tokens) and server agents (adding one, their configuration). `new_token`: (what, token), shown once."""
+    me = CURRENT_PILOT.get()
+    note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
+        f'<p class="error">{escape(error)}</p>' if error else "")
+    if new_token:
+        note += (f'<div class="token-once"><p><strong>The {escape(new_token[0])}</strong> (copy it now: it won\'t be '
+                 f'shown again)</p><code>{escape(new_token[1])}</code></div>')
+    keep = f'<input type="hidden" name="q" value="{escape(q)}">'
+
+    def post(action: str, label: str, confirm: str = "", danger: bool = False, extra: str = "") -> str:
+        ask = f' onsubmit="return confirm(\'{confirm}\')"' if confirm else ""
+        cls = ' class="danger"' if danger else ""
+        return (f'<form method="post" action="{escape(action)}"{ask}>{keep}{extra}'
+                f'<button type="submit"{cls}>{label}</button></form>')
+
+    rows = []
+    for p in pilots:
+        quoted = quote(p.name, safe="")
+        base = f"/admin/pilots/{quoted}"
+        acts = []
+        if p.admin:
+            if p.name != me:
+                acts.append(post(f"{base}/admin", "Remove admin", extra='<input type="hidden" name="admin" value="0">'))
+        elif p.has_password:
+            acts.append(post(f"{base}/admin", "Make admin", "Make this pilot an admin?",
+                             extra='<input type="hidden" name="admin" value="1">'))
+        if p.has_password and p.name != me:
+            acts.append(post(f"{base}/reset-password", "Reset password",
+                             "Clear this pilot\\'s password? They (or anyone) can then set a new one.", danger=True))
+        if not p.passes and p.name != me:
+            acts.append(post(f"{base}/remove", "Remove", "Remove this pilot? Their pilot tokens are revoked.",
+                             danger=True))
+        acts.append(post(f"{base}/tokens", "New pilot token",
+                         extra='<input class="label" name="label" maxlength="100" placeholder="for (e.g. PC)">'))
+        names = "".join(
+            f'<span class="alias">{escape(a)}'
+            + post("/admin/aliases/remove", "×", "Remove this alias? Its passes go back to a pilot of that name.",
+                   extra=f'<input type="hidden" name="alias" value="{escape(a)}">') + "</span>" for a in p.aliases)
+        rows.append(
+            f'<tr><td><a href="/pilots/{quoted}">{escape(p.name)}</a>'
+            + (' <span class="tag">admin</span>' if p.admin else "") + "</td>"
+            f"<td>{p.passes}</td><td>{'set' if p.has_password else 'none'}</td>"
+            f'<td>{names or "<span class=sub>none</span>"}</td><td><div class="actions">{"".join(acts)}</div></td></tr>')
+    pilots_table = (
+        '<div class="scroll"><table class="results"><thead><tr><th>Pilot</th><th>Passes</th><th>Password</th>'
+        f'<th>Other names</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+        if rows else '<p class="sub">No pilots' + (" match." if q else " yet.") + "</p>")
+    search = ('<form method="get" action="/admin" class="actions" style="margin-bottom:8px">'
+              f'<input name="q" value="{escape(q)}" placeholder="Pilot or other name"><button type="submit">Find</button>'
+              + ('<a href="/admin">Show all</a>' if q else "") + "</form>")
+    agent_rows = "".join(
+        f'<tr><td>{escape(a.name)}</td><td>{_when(a.created_at)}</td>'
+        f'<td>{_when(a.last_used_at) if a.last_used_at else "never"}</td><td>'
+        f'<details><summary>Configuration</summary>'
+        f'<form method="post" action="/admin/agents/{quote(a.name, safe="")}/config">'
+        f'<textarea name="config" spellcheck="false">{escape(json.dumps(a.config, indent=2) if a.config else "")}'
+        '</textarea><button type="submit">Save configuration</button></form></details></td></tr>'
+        for a in agents)
+    agents_table = (
+        '<div class="scroll"><table class="results"><thead><tr><th>Server agent</th><th>Added</th><th>Last used</th>'
+        f'<th></th></tr></thead><tbody>{agent_rows}</tbody></table></div>' if agent_rows
+        else '<p class="sub">None yet.</p>')
+    add_agent = ('<form method="post" action="/admin/agents" class="actions" style="margin-top:8px">'
+                 '<input name="name" required maxlength="100" placeholder="e.g. server1">'
+                 '<button type="submit">Add a server agent</button></form>'
+                 '<p class="sub">Its server agent token is shown once, here.</p>')
+    body = ('<h1>Admin</h1><p class="sub">Regrading and the wire check are run on the hub\'s machine '
+            "(<code>dcs-lso hub regrade</code>, <code>dcs-lso hub wire-check</code>).</p>"
+            f'{note}<div class="admin"><div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}'
+            '<p class="sub">Only a pilot with a password can be an admin; resetting an admin\'s password removes the '
+            'role. A pilot with passes can\'t be removed.</p></div>'
+            f'<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Server agents</h2>{agents_table}'
+            f"{add_agent}</div></div>")
+    return _page("Admin", body)
+
+
+def not_admin_page(pilot: str | None) -> str:
+    """/admin for someone who isn't an admin (or isn't signed in)."""
+    if pilot:
+        text = (f"You're signed in as <strong>{escape(pilot)}</strong>, who isn't an admin on this board. "
+                "If you should be, ask one of its admins to give you the role.")
+        action = f'<a href="/pilots/{quote(pilot, safe="")}">Your passes</a> · <a href="/">Greenie board</a>'
+    else:
+        text = "This page is for the board's admins. Sign in as a pilot who's an admin to use it."
+        action = f'<a href="/signin?next={quote("/admin", safe="")}">Sign in</a> · <a href="/">Greenie board</a>'
+    body = f'<h1>Admins only</h1><div class="panel"><p>{text}</p><p>{action}</p></div>'
+    return _page("Admins only", body)

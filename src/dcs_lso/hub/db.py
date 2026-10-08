@@ -54,6 +54,9 @@ class Pilot(Base):
     # Set by the pilot (first come, first served; an admin can reset it): then uploads without a token
     # need it to import this pilot's passes. A salted scrypt hash (hub.passwords).
     password_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # May manage the hub on the website (/admin), signed in. Granted with `hub set-admin` or by another admin;
+    # only to a pilot with a password, and lost if their password is reset.
+    is_admin: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class WebSession(Base):
