@@ -120,26 +120,33 @@ def test_settings_page_tokens_and_names(hub):
     hub.set_pilot_password("Wrycu", "first password")
     client = TestClient(create_app(hub))
     page = client.get("/pilots/Wrycu/settings").text
-    assert "Create a pilot token" in page and "Claim name" in page
-    r = client.post("/pilots/Wrycu/settings/tokens", data={"password": "wrong", "label": "x"})
+    assert "Sign in as Wrycu" in page and "Create a pilot token" not in page  # not signed in
+    r = client.post("/pilots/Wrycu/settings/tokens", data={"label": "x"})
     assert r.status_code == 403 and "<code>" not in r.text
-    r = client.post("/pilots/Wrycu/settings/tokens", data={"password": "first password", "label": "my PC"})
+    r = client.post("/signin", data={"name": "Wrycu", "password": "wrong"})
+    assert r.status_code == 403 and "don&#x27;t match" in r.text
+    r = client.post("/signin", data={"name": "Wrycu", "password": "first password",
+                                     "next": "/pilots/Wrycu/settings"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/pilots/Wrycu/settings"
+    page = client.get("/pilots/Wrycu/settings").text
+    assert "Create a pilot token" in page and "Claim name" in page and 'name="password"' not in page
+    r = client.post("/pilots/Wrycu/settings/tokens", data={"label": "my PC"})  # signed in: no password
     assert r.status_code == 200 and "copy it now" in r.text
     token = r.text.split("<code>")[1].split("</code>")[0]
     assert hub.authenticate(token) is not None
     page = client.get("/pilots/Wrycu/settings").text
     assert "my PC" in page and token not in page  # listed, never shown again
     (t,) = hub.pilot_tokens("Wrycu")
-    r = client.post(f"/pilots/Wrycu/settings/tokens/{t.id}/revoke", data={"password": "first password"},
-                    follow_redirects=False)
+    r = client.post(f"/pilots/Wrycu/settings/tokens/{t.id}/revoke", follow_redirects=False)
     assert r.status_code == 303 and hub.authenticate(token) is None
-    r = client.post("/pilots/Wrycu/settings/aliases", data={"password": "first password", "alias": "Wrycu 2"},
-                    follow_redirects=False)
+    r = client.post("/pilots/Wrycu/settings/aliases", data={"alias": "Wrycu 2"}, follow_redirects=False)
     assert "now%20one%20of%20your%20names" in r.headers["location"]
     assert "Wrycu 2" in client.get("/pilots/Wrycu/settings").text
-    # The API, for tools that set up the pilot hook.
-    r = client.post("/api/v1/pilots/Wrycu/tokens", data={"password": "first password", "label": "hook"})
+    # The API, for tools that set up the pilot hook: with the password, no sign-in.
+    api = TestClient(create_app(hub))
+    r = api.post("/api/v1/pilots/Wrycu/tokens", data={"password": "first password", "label": "hook"})
     assert r.status_code == 201 and hub.authenticate(r.json()["token"]) is not None
+    assert api.post("/api/v1/pilots/Wrycu/tokens", data={"label": "hook"}).status_code == 403
 
 
 def test_pilot_uploader_sends_only_its_own_jet(tmp_path):

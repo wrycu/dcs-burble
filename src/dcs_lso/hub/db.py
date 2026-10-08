@@ -56,6 +56,19 @@ class Pilot(Base):
     password_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
+class WebSession(Base):
+    """A pilot signed in on the website (a browser): the cookie holds the token, this its hash. Ends when the
+    pilot signs out, after SESSION_DAYS unused, or when their password changes or is reset."""
+
+    __tablename__ = "web_sessions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pilot_id: Mapped[int] = mapped_column(ForeignKey("pilots.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class PilotAlias(Base):
     """Another in-game name of a pilot (e.g. "CVW-17 | Wrycu" for Wrycu): passes reported under it are
     credited to the pilot. Seen on an upload with the pilot's token (`claimed` False), or claimed by the

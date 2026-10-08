@@ -3,7 +3,7 @@
 # No `from __future__ import annotations` here: FastAPI must see the real annotation
 # objects to resolve dependencies defined inside create_app().
 import json
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import secrets
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
@@ -27,7 +27,7 @@ from . import pages
 from .accuracy import accuracy_of, flown_elsewhere
 from .db import Pass, Pilot, Source, Upload
 from .pilothook import PILOT_HOOK_VERSION
-from .service import Hub, IngestError
+from .service import SESSION_DAYS, Hub, IngestError, SignedIn
 
 MAX_SLICE_BYTES = 20 * 1024 * 1024
 MAX_RECORDING_BYTES = 1024 * 1024 * 1024  # a whole session's Tacview recording (backfill)
@@ -53,6 +53,27 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+SESSION_COOKIE = "lso_session"
+
+
+def _cross_site(request: Request) -> bool:
+    """A form posted from another site (the session cookie would go with it in older browsers): the browser's
+    Sec-Fetch-Site says so, or else the Origin isn't this host."""
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site == "cross-site"
+    origin = request.headers.get("origin")
+    if not origin or origin == "null":
+        return origin == "null"
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    return urlsplit(origin).netloc.lower() != host.split(",")[0].strip().lower()
+
+
+def _safe_next(url: str | None) -> str | None:
+    """Only a path on this site to go back to after signing in."""
+    return url if url and url.startswith("/") and not url.startswith("//") and "\\" not in url else None
+
+
 def create_app(hub: Hub) -> FastAPI:
     app = FastAPI(title="dcs-lso hub", docs_url="/api/docs", redoc_url=None)
     # Uploaded recordings are processed one at a time, off the request threads.
@@ -65,6 +86,61 @@ def create_app(hub: Hub) -> FastAPI:
         if source is None:
             raise HTTPException(401, "invalid token")
         return source
+
+    # -- signing in on the website ------------------------------------------------------------
+
+    @app.middleware("http")
+    async def signed_in(request: Request, call_next):
+        """Who the browser is signed in as (`request.state.pilot`, and the bar on every page)."""
+        token = request.cookies.get(SESSION_COOKIE)
+        if token and request.method == "POST" and _cross_site(request):
+            return PlainTextResponse("forms from other sites aren't accepted here", status_code=403)
+        pilot = await run_in_threadpool(hub.session_pilot, token) if token else None
+        request.state.pilot = pilot
+        reset = pages.CURRENT_PILOT.set(pilot)
+        try:
+            response = await call_next(request)
+        finally:
+            pages.CURRENT_PILOT.reset(reset)
+        if token and pilot is None and not getattr(request.state, "session_set", False):
+            response.delete_cookie(SESSION_COOKIE, path="/")  # ended (signed out elsewhere, expired)
+        return response
+
+    def _start_session(request: Request, response: Response, token: str) -> Response:
+        request.state.session_set = True
+        response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_DAYS * 86400, path="/", httponly=True,
+                            samesite="lax", secure=request.url.scheme == "https")
+        return response
+
+    def _credential(request: Request, name: str, password: str | None):
+        """The password if given, else the sign-in if the browser is signed in as this pilot."""
+        if password:
+            return password
+        if getattr(request.state, "pilot", None) == name:
+            return SignedIn(name)
+        return None
+
+    @app.get("/signin", response_class=HTMLResponse)
+    def signin(next: str | None = None) -> str:
+        return pages.signin_page(next_url=_safe_next(next) or "")
+
+    @app.post("/signin")
+    def signin_form(request: Request, name: Annotated[str, Form()], password: Annotated[str, Form()],
+                    next: Annotated[str, Form()] = ""):
+        try:
+            pilot, token = hub.sign_in(name, password)
+        except PermissionError as exc:
+            return HTMLResponse(pages.signin_page(str(exc), name, _safe_next(next) or ""), status_code=403)
+        target = _safe_next(next) or f"/pilots/{quote(pilot, safe='')}"
+        return _start_session(request, RedirectResponse(target, status_code=303), token)
+
+    @app.post("/signout")
+    def signout(request: Request):
+        hub.sign_out(request.cookies.get(SESSION_COOKIE))
+        request.state.session_set = True
+        response = RedirectResponse("/", status_code=303)
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return response
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -161,7 +237,8 @@ def create_app(hub: Hub) -> FastAPI:
         return {"players": len(listed)}
 
     @app.post("/api/v1/recordings", status_code=202)
-    async def upload_recording(recording: Annotated[UploadFile, File(description="a whole .zip.acmi or .txt.acmi recording")],
+    async def upload_recording(request: Request,
+                               recording: Annotated[UploadFile, File(description="a whole .zip.acmi or .txt.acmi recording")],
                                debrief: Annotated[UploadFile | None, File(description="that session's debrief.log")] = None,
                                password: Annotated[str | None, Form(description="without a token: the pilot's password, "
                                                                                 "if they've set one")] = None,
@@ -186,7 +263,8 @@ def create_app(hub: Hub) -> FastAPI:
         if debrief is not None and debrief.filename:
             await _save(debrief, hub.debrief_path(upload_id), MAX_DEBRIEF_BYTES)
         if choose:
-            hub.remember_upload_password(upload_id, password)
+            me = getattr(request.state, "pilot", None)
+            hub.remember_upload_password(upload_id, password or (SignedIn(me) if me else None))
         uploads.submit(_inspect_then_process if choose else hub.process_upload, upload_id)
         return JSONResponse({"upload_id": upload_id, "key": key, "status_url": f"/api/v1/recordings/{upload_id}",
                              "choose_url": f"/api/v1/recordings/{upload_id}/pilot",
@@ -207,18 +285,18 @@ def create_app(hub: Hub) -> FastAPI:
         return ready
 
     @app.post("/api/v1/recordings/{upload_id}/pilot", status_code=202)
-    def choose_pilot(upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()],
+    def choose_pilot(request: Request, upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()],
                      password: Annotated[str | None, Form()] = None) -> dict:
         """Pick whose passes to import from a token-less upload with several own pilots (with their
-        password, if they've set one)."""
-        if _queue_if(lambda: hub.choose_pilot(upload_id, key, pilot, password)):
+        password, if they've set one, unless signed in as them)."""
+        if _queue_if(lambda: hub.choose_pilot(upload_id, key, pilot, _credential(request, pilot, password))):
             uploads.submit(hub.process_upload, upload_id)
         return {"upload_id": upload_id, "status_url": f"/api/v1/recordings/{upload_id}"}
 
     @app.post("/uploads/{upload_id}/pilot")
-    def choose_pilot_form(upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()],
+    def choose_pilot_form(request: Request, upload_id: int, key: Annotated[str, Form()], pilot: Annotated[str, Form()],
                           password: Annotated[str | None, Form()] = None):
-        if _queue_if(lambda: hub.choose_pilot(upload_id, key, pilot, password)):
+        if _queue_if(lambda: hub.choose_pilot(upload_id, key, pilot, _credential(request, pilot, password))):
             uploads.submit(hub.process_upload, upload_id)
         return RedirectResponse(f"/uploads/{upload_id}?key={key}", status_code=303)
 
@@ -252,7 +330,8 @@ def create_app(hub: Hub) -> FastAPI:
         return pages.join_page()
 
     @app.post("/join", response_class=HTMLResponse)
-    def join_form(name: Annotated[str, Form()], password: Annotated[str, Form()], confirm: Annotated[str, Form()]):
+    def join_form(request: Request, name: Annotated[str, Form()], password: Annotated[str, Form()],
+                  confirm: Annotated[str, Form()]):
         if password != confirm:
             return HTMLResponse(pages.join_page("the two passwords differ", name), status_code=400)
         try:
@@ -261,8 +340,9 @@ def create_app(hub: Hub) -> FastAPI:
             return HTMLResponse(pages.join_page(name=name, existing=str(exc)), status_code=409)
         except (PermissionError, ValueError) as exc:
             return HTMLResponse(pages.join_page(str(exc), name), status_code=400)
-        done = quote("Welcome aboard! You can now create pilot tokens and claim other names.")
-        return RedirectResponse(f"/pilots/{quote(stored, safe='')}/settings?done={done}", status_code=303)
+        done = quote("Welcome aboard! You're signed in, and can now create pilot tokens and claim other names.")
+        response = RedirectResponse(f"/pilots/{quote(stored, safe='')}/settings?done={done}", status_code=303)
+        return _start_session(request, response, hub.start_session(stored))
 
     @app.post("/api/v1/pilots", status_code=201)
     def register_api(name: Annotated[str, Form()], password: Annotated[str, Form()]) -> dict:
@@ -284,49 +364,57 @@ def create_app(hub: Hub) -> FastAPI:
         return {"pilot": name, "password": "set"}
 
     @app.post("/api/v1/pilots/{name}/modex")
-    def pilot_modex(name: str, password: Annotated[str, Form()], modex: Annotated[str, Form()]) -> dict:
-        """A pilot with a password changes their side number."""
-        _pilot_step(lambda: hub.set_pilot_modex(name, password, modex))
+    def pilot_modex(request: Request, name: str, modex: Annotated[str, Form()],
+                    password: Annotated[str | None, Form()] = None) -> dict:
+        """A pilot with a password changes their side number (with it, or signed in)."""
+        _pilot_step(lambda: hub.set_pilot_modex(name, _credential(request, name, password), modex))
         return {"pilot": name, "modex": modex.strip()}
 
-    def _settings_page(name: str, done: str | None = None, error: str | None = None,
+    def _settings_page(request: Request, name: str, done: str | None = None, error: str | None = None,
                        new_token: str | None = None) -> str:
         with hub.sessions() as s:
             pilot = s.scalar(select(Pilot).where(Pilot.name == name))
         if pilot is None:
             raise HTTPException(404, "no such pilot")
-        return pages.pilot_settings_page(pilot, done, error, hub.pilot_tokens(name), hub.pilot_aliases(name), new_token)
+        mine = getattr(request.state, "pilot", None) == name
+        return pages.pilot_settings_page(pilot, done, error, hub.pilot_tokens(name) if mine else [],
+                                         hub.pilot_aliases(name) if mine else [], new_token, signed_in=mine)
 
     @app.get("/pilots/{name}/settings", response_class=HTMLResponse)
-    def pilot_settings(name: str, done: str | None = None, error: str | None = None) -> str:
-        return _settings_page(name, done, error)
+    def pilot_settings(request: Request, name: str, done: str | None = None, error: str | None = None) -> str:
+        return _settings_page(request, name, done, error)
 
     @app.post("/api/v1/pilots/{name}/tokens", status_code=201)
-    def pilot_token_api(name: str, password: Annotated[str, Form()], label: Annotated[str, Form()] = "") -> dict:
-        """A pilot creates a pilot token with their password (e.g. for the pilot hook's settings)."""
+    def pilot_token_api(request: Request, name: str, password: Annotated[str | None, Form()] = None,
+                        label: Annotated[str, Form()] = "") -> dict:
+        """A pilot creates a pilot token with their password, or signed in (e.g. for the pilot hook's settings)."""
         token: list[str] = []
-        _pilot_step(lambda: token.append(hub.create_pilot_token(name, password, label)))
+        _pilot_step(lambda: token.append(hub.create_pilot_token(name, _credential(request, name, password), label)))
         return {"pilot": name, "token": token[0]}
 
     @app.post("/pilots/{name}/settings/tokens", response_class=HTMLResponse)
-    def pilot_token_form(name: str, password: Annotated[str, Form()], label: Annotated[str, Form()] = ""):
+    def pilot_token_form(request: Request, name: str, password: Annotated[str | None, Form()] = None,
+                         label: Annotated[str, Form()] = ""):
         # Rendered directly (not redirected), so the new token is never in a URL.
         try:
-            token = hub.create_pilot_token(name, password, label)
+            token = hub.create_pilot_token(name, _credential(request, name, password), label)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
         except (PermissionError, ValueError) as exc:
-            return HTMLResponse(_settings_page(name, error=str(exc)), status_code=403)
-        return _settings_page(name, done="Pilot token created.", new_token=token)
+            return HTMLResponse(_settings_page(request, name, error=str(exc)), status_code=403)
+        return _settings_page(request, name, done="Pilot token created.", new_token=token)
 
     @app.post("/pilots/{name}/settings/tokens/{token_id}/revoke")
-    def pilot_token_revoke(name: str, token_id: int, password: Annotated[str, Form()]):
-        return _settings_redirect(name, lambda: hub.revoke_pilot_token(name, password, token_id), "Token revoked.")
+    def pilot_token_revoke(request: Request, name: str, token_id: int, password: Annotated[str | None, Form()] = None):
+        credential = _credential(request, name, password)
+        return _settings_redirect(name, lambda: hub.revoke_pilot_token(name, credential, token_id), "Token revoked.")
 
     @app.post("/pilots/{name}/settings/aliases")
-    def pilot_alias_form(name: str, password: Annotated[str, Form()], alias: Annotated[str, Form()]):
+    def pilot_alias_form(request: Request, name: str, alias: Annotated[str, Form()],
+                         password: Annotated[str | None, Form()] = None):
         moved: list[int] = []
-        step = lambda: moved.append(hub.claim_alias(name, password, alias))  # noqa: E731
+        credential = _credential(request, name, password)
+        step = lambda: moved.append(hub.claim_alias(name, credential, alias))  # noqa: E731
         quoted = quote(name, safe="")
         try:
             _pilot_step(step)
@@ -344,16 +432,23 @@ def create_app(hub: Hub) -> FastAPI:
         return RedirectResponse(f"/pilots/{quoted}/settings?done={quote(done)}", status_code=303)
 
     @app.post("/pilots/{name}/settings/password")
-    def pilot_password_form(name: str, new: Annotated[str, Form()], confirm: Annotated[str, Form()],
+    def pilot_password_form(request: Request, name: str, new: Annotated[str, Form()], confirm: Annotated[str, Form()],
                             current: Annotated[str | None, Form()] = None):
         if new != confirm:
             return RedirectResponse(f"/pilots/{quote(name, safe='')}/settings?error={quote('the two new passwords differ')}",
                                     status_code=303)
-        return _settings_redirect(name, lambda: hub.set_pilot_password(name, new, current), "Password saved.")
+        token = request.cookies.get(SESSION_COOKIE) if getattr(request.state, "pilot", None) == name else None
+        response = _settings_redirect(name, lambda: hub.set_pilot_password(name, new, current, keep_session=token),
+                                      "Password saved.")
+        if token is None and "error=" not in response.headers.get("location", ""):
+            return _start_session(request, response, hub.start_session(name))  # proved it's them: signed in
+        return response
 
     @app.post("/pilots/{name}/settings/modex")
-    def pilot_modex_form(name: str, password: Annotated[str, Form()], modex: Annotated[str, Form()]):
-        return _settings_redirect(name, lambda: hub.set_pilot_modex(name, password, modex), "Side number saved.")
+    def pilot_modex_form(request: Request, name: str, modex: Annotated[str, Form()],
+                         password: Annotated[str | None, Form()] = None):
+        credential = _credential(request, name, password)
+        return _settings_redirect(name, lambda: hub.set_pilot_modex(name, credential, modex), "Side number saved.")
 
     def _upload(upload_id: int) -> Upload:
         with hub.sessions() as s:

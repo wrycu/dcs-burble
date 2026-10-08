@@ -30,7 +30,8 @@ from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.grade import POINTS, dcs_only_grade, dcs_only_outcome
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
 from .accuracy import flown_elsewhere, landing_accuracy
-from .db import Grade, Pass, Pilot, PilotAlias, PlayerSeen, Slice, Source, Upload, make_engine, make_sessionmaker
+from .db import (Grade, Pass, Pilot, PilotAlias, PlayerSeen, Slice, Source, Upload, WebSession, make_engine,
+                 make_sessionmaker)
 from .pilothook import HookUploadError, hook_reports, parse_upload
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
 from .storage import SliceStore
@@ -57,6 +58,8 @@ UPLOAD_PILOT_WAIT = timedelta(days=1)  # how long an upload waits for its upload
 DEFAULT_PILOT_REFUSED = ("passes flown under DCS's default pilot name aren't recorded, since they can't be "
                          "credited to a pilot")
 UPLOAD_PASSWORD_ATTEMPTS = 5  # wrong pilot passwords before an upload is given up
+SESSION_DAYS = 30  # a website sign-in lasts this long unused (each use extends it)
+SESSION_TOUCH = timedelta(hours=1)  # record a session's use at most this often
 # Merging reports of one landing (see `Hub.ingest`).
 MERGED_START_TOLERANCE_S = 15.0
 SAME_POSITION_M = 30.0  # median distance between the two tracks of the aircraft
@@ -69,6 +72,18 @@ class IngestError(ValueError):
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _aware(dt: datetime) -> datetime:
+    """SQLite gives back naive datetimes (stored in UTC)."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class SignedIn:
+    """In place of a password: the pilot is signed in on the website as `pilot` (a session, see
+    Hub.session_pilot), which stands for their password in everything but changing it."""
+    pilot: str
 
 
 def _parse_time(text: str | None) -> datetime | None:
@@ -173,7 +188,7 @@ class Hub:
 
     # -- pilot tokens -----------------------------------------------------------------------
 
-    def create_pilot_token(self, name: str, password: str | None, label: str = "") -> str:
+    def create_pilot_token(self, name: str, password: str | SignedIn | None, label: str = "") -> str:
         """A pilot creates a pilot token with their password (they must have set one). Everything
         uploaded with it is credited to them. Returns the token, which is shown only once."""
         with self.sessions.begin() as s:
@@ -204,7 +219,7 @@ class Hub:
             pilot = self._pilot(s, name)
             return list(s.scalars(select(Source).where(Source.pilot_id == pilot.id).order_by(Source.id.desc())))
 
-    def revoke_pilot_token(self, name: str, password: str | None, token_id: int) -> None:
+    def revoke_pilot_token(self, name: str, password: str | SignedIn | None, token_id: int) -> None:
         with self.sessions.begin() as s:
             pilot = self._pilot(s, name)
             self._check_password(pilot, password)
@@ -220,7 +235,7 @@ class Hub:
             pilot = self._pilot(s, name)
             return list(s.scalars(select(PilotAlias).where(PilotAlias.pilot_id == pilot.id).order_by(PilotAlias.name)))
 
-    def claim_alias(self, name: str, password: str | None, alias: str) -> int:
+    def claim_alias(self, name: str, password: str | SignedIn | None, alias: str) -> int:
         """A pilot claims another in-game name with their password: passes reported under it are credited to
         them from now on, and existing ones move over. Only a name nobody owns can be claimed: not another
         pilot's alias, and not a pilot who has set a password. Returns how many passes moved."""
@@ -240,6 +255,8 @@ class Hub:
             other = s.scalar(select(Pilot).where(Pilot.name == alias))
             if other is not None and other.password_hash is not None:
                 raise PermissionError(f"{alias!r} is a pilot who has set a password")
+            if (clash := self._name_clash(s, alias, pilot)) is not None:  # names sign in in any case
+                raise PermissionError(f"{alias!r} would sign in as {clash!r}, another pilot")
             if existing is None:
                 s.add(PilotAlias(name=alias, pilot_id=pilot.id, claimed=True))
             else:
@@ -288,6 +305,7 @@ class Hub:
                 s.delete(alias)
             for source in s.scalars(select(Source).where(Source.pilot_id == pilot.id)):
                 source.pilot_id, source.revoked_at = None, source.revoked_at or datetime.now(UTC)
+            self._end_sessions(s, pilot)
             s.flush()
             s.delete(pilot)
 
@@ -876,18 +894,24 @@ class Hub:
             upload.status = "choose_pilot"
             return False
 
-    def remember_upload_password(self, upload_id: int, password: str | None) -> None:
-        """A password given with an upload, used once its pilot is known (kept in memory, never stored)."""
+    def remember_upload_password(self, upload_id: int, password: str | SignedIn | None) -> None:
+        """A password given with an upload (or the uploader's sign-in), used once its pilot is known (kept in
+        memory, never stored)."""
         if password:
             self._upload_passwords[upload_id] = password
 
-    def _authorize(self, s: Session, upload: Upload, password: str | None) -> bool:
-        """Queue the upload if its pilot has no password or `password` is theirs; otherwise it waits for the
-        password (`needs_password`). Returns whether it was queued."""
+    def _authorize(self, s: Session, upload: Upload, password: str | SignedIn | None) -> bool:
+        """Queue the upload if its pilot has no password, or `password` is theirs, or the uploader is signed in
+        as them; otherwise it waits for the password (`needs_password`). Returns whether it was queued."""
         pilot = s.scalar(select(Pilot).where(Pilot.name == upload.pilot))
         if pilot is None or pilot.password_hash is None:
             upload.status, upload.message = "queued", None
             return True
+        if isinstance(password, SignedIn):
+            if password.pilot == pilot.name:
+                upload.status, upload.message = "queued", None
+                return True
+            password = None  # signed in as someone else: their password is needed
         if password and not self.password_failures.blocked(pilot.name) and verify_password(password, pilot.password_hash):
             upload.status, upload.message = "queued", None
             return True
@@ -903,7 +927,7 @@ class Hub:
         upload.status = "needs_password"
         return False
 
-    def choose_pilot(self, upload_id: int, key: str, pilot: str, password: str | None = None) -> bool:
+    def choose_pilot(self, upload_id: int, key: str, pilot: str, password: str | SignedIn | None = None) -> bool:
         """The uploader picks whose passes to import; returns whether it's ready to process (the pilot may
         need their password first)."""
         with self.sessions.begin() as s:
@@ -915,7 +939,7 @@ class Hub:
             upload.pilot = pilot
             return self._authorize(s, upload, password)
 
-    def give_upload_password(self, upload_id: int, key: str, password: str) -> bool:
+    def give_upload_password(self, upload_id: int, key: str, password: str | SignedIn) -> bool:
         """The uploader gives the pilot's password; returns whether the upload is ready to process."""
         with self.sessions.begin() as s:
             upload = self._own_upload(s, upload_id, key)
@@ -930,6 +954,96 @@ class Hub:
             raise PermissionError("this isn't your upload (the link you were given has its key)")
         return upload
 
+    # -- signing in on the website ---------------------------------------------------------------
+
+    def sign_in(self, name: str, password: str) -> tuple[str, str]:
+        """A pilot signs in with their name (or one of their other names) and password. Returns their name and a
+        new session token (for the browser's cookie; only its hash is stored)."""
+        with self.sessions.begin() as s:
+            pilot = self._signin_pilot(s, (name or "").strip())
+            if pilot is None or pilot.password_hash is None:
+                # The same answer as a wrong password, so names can't be probed (a pilot without a password
+                # sets one on their settings page).
+                raise PermissionError("that name and password don't match")
+            try:
+                self._check_password(pilot, password if isinstance(password, str) else None)
+            except PermissionError as exc:
+                raise PermissionError("that name and password don't match" if "isn't right" in str(exc) else str(exc))
+            return pilot.name, self._new_session(s, pilot)
+
+    @staticmethod
+    def _signin_pilot(s: Session, name: str) -> Pilot | None:
+        """The pilot a sign-in name means, in any case ("goose" signs in Goose): their name or one of their other
+        names, the exact spelling first; otherwise the one pilot with a password it matches."""
+        alias = s.scalar(select(PilotAlias).where(PilotAlias.name == name))
+        pilot = s.get(Pilot, alias.pilot_id) if alias else s.scalar(select(Pilot).where(Pilot.name == name))
+        if pilot is not None and pilot.password_hash is not None:
+            return pilot
+        folded = {p.id: p for p in s.scalars(select(Pilot).where(func.lower(Pilot.name) == func.lower(name)))}
+        for a in s.scalars(select(PilotAlias).where(func.lower(PilotAlias.name) == func.lower(name))):
+            if (owner := s.get(Pilot, a.pilot_id)) is not None:
+                folded[owner.id] = owner
+        with_password = [p for p in folded.values() if p.password_hash is not None]
+        return with_password[0] if len(with_password) == 1 else pilot
+
+    @staticmethod
+    def _name_clash(s: Session, name: str, pilot: Pilot | None = None) -> str | None:
+        """Another pilot who owns `name` in another case (a pilot with a password, or another pilot's claimed
+        name): it would sign in as either of them. Returns their spelling."""
+        for other in s.scalars(select(Pilot).where(func.lower(Pilot.name) == func.lower(name))):
+            if other is not pilot and other.password_hash is not None:
+                return other.name
+        for a in s.scalars(select(PilotAlias).where(func.lower(PilotAlias.name) == func.lower(name))):
+            if pilot is None or a.pilot_id != pilot.id:
+                return a.name
+        return None
+
+    def start_session(self, name: str) -> str:
+        """A session for a pilot who just proved who they are (joined, or set their first password)."""
+        with self.sessions.begin() as s:
+            return self._new_session(s, self._pilot(s, name))
+
+    @staticmethod
+    def _new_session(s: Session, pilot: Pilot) -> str:
+        token = secrets.token_urlsafe(32)
+        now = datetime.now(UTC)
+        s.add(WebSession(pilot_id=pilot.id, token_hash=_hash_token(token), created_at=now, last_used_at=now,
+                         expires_at=now + timedelta(days=SESSION_DAYS)))
+        return token
+
+    def session_pilot(self, token: str | None) -> str | None:
+        """Who a session token is signed in as (None: no such session, or it has ended). Using it keeps it going
+        SESSION_DAYS more."""
+        if not token:
+            return None
+        now = datetime.now(UTC)
+        with self.sessions.begin() as s:
+            row = s.scalar(select(WebSession).where(WebSession.token_hash == _hash_token(token)))
+            if row is None:
+                return None
+            if _aware(row.expires_at) <= now:
+                s.delete(row)
+                return None
+            if now - _aware(row.last_used_at) >= SESSION_TOUCH:
+                row.last_used_at, row.expires_at = now, now + timedelta(days=SESSION_DAYS)
+            pilot = s.get(Pilot, row.pilot_id)
+            return pilot.name if pilot is not None else None
+
+    def sign_out(self, token: str | None) -> None:
+        if not token:
+            return
+        with self.sessions.begin() as s:
+            row = s.scalar(select(WebSession).where(WebSession.token_hash == _hash_token(token)))
+            if row is not None:
+                s.delete(row)
+
+    @staticmethod
+    def _end_sessions(s: Session, pilot: Pilot, keep: str | None = None) -> None:
+        kept = _hash_token(keep) if keep else None
+        for row in s.scalars(select(WebSession).where(WebSession.pilot_id == pilot.id)):
+            if row.token_hash != kept:
+                s.delete(row)
+
     # -- pilot settings ---------------------------------------------------------------------------
 
     def register_pilot(self, name: str, password: str) -> str:
@@ -943,32 +1057,39 @@ class Hub:
         if len(password or "") < MIN_PASSWORD_LENGTH:
             raise ValueError(f"use a password of at least {MIN_PASSWORD_LENGTH} characters")
         with self.sessions.begin() as s:
-            if s.scalar(select(PilotAlias).where(PilotAlias.name == name)) is not None:
-                raise PermissionError(f"{name!r} is already another pilot's name")
-            existing = s.scalar(select(Pilot).where(Pilot.name == name))
-            if existing is not None:
-                if existing.password_hash is not None:
-                    raise PermissionError(f"{name!r} is already taken")
-                raise FileExistsError(name)  # on the board, unclaimed: set the password on their settings page
+            if (clash := self._name_clash(s, name)) is not None:
+                raise PermissionError(f"{clash!r} is already taken")
+            unclaimed = list(s.scalars(select(Pilot).where(func.lower(Pilot.name) == func.lower(name))))
+            if unclaimed:  # on the board, unclaimed: set the password on their settings page
+                exact = [p for p in unclaimed if p.name == name]
+                raise FileExistsError((exact or unclaimed)[0].name)
             s.add(Pilot(name=name, password_hash=hash_password(password)))
         return name
 
-    def set_pilot_password(self, name: str, new: str, current: str | None = None) -> None:
-        """Set (first time: claims the name) or change a pilot's password."""
+    def set_pilot_password(self, name: str, new: str, current: str | None = None,
+                           keep_session: str | None = None) -> None:
+        """Set (first time: claims the name) or change a pilot's password (the current one is needed even when
+        signed in). Their website sign-ins end, except `keep_session` (the browser that changed it)."""
         if len(new or "") < MIN_PASSWORD_LENGTH:
             raise ValueError(f"use at least {MIN_PASSWORD_LENGTH} characters")
         with self.sessions.begin() as s:
             pilot = self._pilot(s, name)
             if pilot.password_hash is not None:
-                self._check_password(pilot, current)
+                self._check_password(pilot, current if isinstance(current, str) else None)
+            elif (clash := self._name_clash(s, pilot.name, pilot)) is not None:
+                raise PermissionError(f"{clash!r} has already been claimed; {pilot.name!r} would sign in as the same "
+                                      "pilot (ask an admin to merge them)")
             pilot.password_hash = hash_password(new)
+            self._end_sessions(s, pilot, keep=keep_session)
 
     def reset_pilot_password(self, name: str) -> None:
         """Admin: clear a pilot's password (anyone may then set a new one)."""
         with self.sessions.begin() as s:
-            self._pilot(s, name).password_hash = None
+            pilot = self._pilot(s, name)
+            pilot.password_hash = None
+            self._end_sessions(s, pilot)
 
-    def set_pilot_modex(self, name: str, password: str, modex: str) -> None:
+    def set_pilot_modex(self, name: str, password: str | SignedIn | None, modex: str) -> None:
         """A pilot with a password changes their side number."""
         modex = (modex or "").strip()
         if not modex.isdigit() or len(modex) > 4:
@@ -980,7 +1101,11 @@ class Hub:
             self._check_password(pilot, password)
             pilot.modex = modex
 
-    def _check_password(self, pilot: Pilot, password: str | None) -> None:
+    def _check_password(self, pilot: Pilot, password: str | SignedIn | None) -> None:
+        if isinstance(password, SignedIn):
+            if password.pilot != pilot.name:
+                raise PermissionError(f"you're signed in as {password.pilot}, not {pilot.name}")
+            return
         if self.password_failures.blocked(pilot.name):
             raise PermissionError("too many wrong passwords; try again later")
         if not verify_password(password or "", pilot.password_hash):

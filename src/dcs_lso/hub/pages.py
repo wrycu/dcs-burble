@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextvars import ContextVar
 from datetime import datetime
 from html import escape
 from urllib.parse import quote
@@ -93,6 +94,14 @@ h1 .modex { color: var(--muted); font-weight: 600; margin-left: 6px; }
 .zoomable.loading svg { opacity: 0.5; }
 .zoom-sel { position: absolute; top: 0; bottom: 0; background: rgba(9, 105, 218, 0.12);
   border-left: 1px solid #0969da; border-right: 1px solid #0969da; pointer-events: none; }
+nav.top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  font-size: 13px; color: var(--muted); margin: -8px 0 16px; }
+nav.top a { color: var(--muted); text-decoration: none; } nav.top a:hover { color: var(--text); text-decoration: underline; }
+nav.top .me { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+nav.top strong a { color: var(--text); }
+nav.top form { display: inline; margin: 0; }
+nav.top button { font: inherit; background: none; border: none; padding: 0; color: var(--muted); cursor: pointer; }
+nav.top button:hover { color: var(--text); text-decoration: underline; }
 .zoom-reset { font: inherit; font-size: 12px; font-weight: 400; margin-left: 8px; padding: 2px 8px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; vertical-align: 2px; }
 """
@@ -104,12 +113,27 @@ GRADE_CSS = "\n".join(
 ) + "\n}"
 GRADE_CLASS = {g: f"g-{i}" for i, g in enumerate(GRADE_COLORS)}
 
+# Who the request is signed in as (set per request by the app), for the bar at the top of every page.
+CURRENT_PILOT: ContextVar[str | None] = ContextVar("current_pilot", default=None)
+
+
+def _nav() -> str:
+    me = CURRENT_PILOT.get()
+    if me:
+        quoted = quote(me, safe="")
+        right = (f'<span class="me">Signed in as <strong><a href="/pilots/{quoted}">{escape(me)}</a></strong>'
+                 f'<a href="/pilots/{quoted}/settings">Settings</a>'
+                 '<form method="post" action="/signout"><button type="submit">Sign out</button></form></span>')
+    else:
+        right = '<span class="me"><a href="/signin">Sign in</a><a href="/join">Join</a></span>'
+    return f'<nav class="top"><a href="/">Greenie Board</a>{right}</nav>'
+
 
 def _page(title: str, body: str) -> str:
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{escape(title)}</title><style>{STYLE}\n{GRADE_CSS}</style></head>"
-            f"<body><main>{body}</main></body></html>")
+            f"<body><main>{_nav()}{body}</main></body></html>")
 
 
 def _when(dt: datetime | None) -> str:
@@ -313,14 +337,21 @@ form.addEventListener('submit', (event) => {
 
 
 def upload_page(token_required: bool) -> str:
+    me = CURRENT_PILOT.get()
     if token_required:
         token = ('<label>Upload token <input name="token" type="password" required autocomplete="off">'
                  '<span class="hint">The token of a source on this service (kept in this browser).</span></label>')
         intro = "Every carrier pass in it is graded and added to the board."
     else:
-        token = ('<label>Your pilot password (if you\'ve set one) <input name="password" type="password" '
-                 'autocomplete="current-password"><span class="hint">Needed only if you set a password for your '
-                 "pilot name; you can also give it after uploading.</span></label>"
+        if me:
+            password = (f'<p class="sub">Signed in as {escape(me)}: your passes are imported without your '
+                        "password.</p>")
+        else:
+            password = ('<label>Your pilot password (if you\'ve set one) <input name="password" type="password" '
+                        'autocomplete="current-password"><span class="hint">Needed only if you set a password for '
+                        'your pilot name; you can also give it after uploading, or <a href="/signin?next=/upload">'
+                        "sign in</a> first.</span></label>")
+        token = (password +
                  '<label>Upload token (optional) <input name="token" type="password" autocomplete="off">'
                  '<span class="hint">For a source on this service: imports every pilot\'s passes (kept in this '
                  "browser). Without one, only your own passes are imported: those of the pilot flying on the "
@@ -369,9 +400,12 @@ def upload_status_page(upload: Upload, key: str | None) -> str:
                   '<label>This recording has more than one own pilot. Which are you? <select name="pilot" required>'
                   f'<option value="" disabled selected>Choose…</option>{options}</select>'
                   '<span class="hint">Only that pilot\'s passes are imported.</span></label>'
-                  '<label>Password (if that pilot has set one) <input name="password" type="password" '
-                  'autocomplete="current-password"></label>'
-                  '<button type="submit">Import my passes</button></form>')
+                  + ('<label>Password (if that pilot has set one, and isn\'t you) <input name="password" '
+                     'type="password" autocomplete="current-password"><span class="hint">Not needed for your own '
+                     f'name: you\'re signed in as {escape(CURRENT_PILOT.get())}.</span></label>' if CURRENT_PILOT.get() else
+                     '<label>Password (if that pilot has set one) <input name="password" type="password" '
+                     'autocomplete="current-password"></label>')
+                  + '<button type="submit">Import my passes</button></form>')
     elif upload.status == "needs_password" and key:
         wrong = f'<p class="error">{escape(upload.message)}</p>' if upload.message else ""
         detail = (f'<form class="upload" method="post" action="/uploads/{upload.id}/password">{wrong}'
@@ -590,37 +624,60 @@ def join_page(error: str | None = None, name: str = "", existing: str | None = N
     return _page("Join this board", body)
 
 
+def signin_page(error: str | None = None, name: str = "", next_url: str = "") -> str:
+    note = f'<p class="error">{escape(error)}</p>' if error else ""
+    form = (
+        '<form class="upload" method="post" action="/signin">'
+        f'<input type="hidden" name="next" value="{escape(next_url)}">'
+        f'<label>Pilot name <input name="name" required maxlength="100" value="{escape(name)}" autocomplete="username">'
+        '<span class="hint">The name you fly under (or one of your other names).</span></label>'
+        '<label>Password <input name="password" type="password" required autocomplete="current-password"></label>'
+        '<button type="submit">Sign in</button></form>')
+    body = ('<h1>Sign in</h1><p class="sub">Stay signed in on this browser to change your settings and upload '
+            f'your recordings without giving your password each time. New here? <a href="/join">Join this board</a>.</p>'
+            f'{note}<div class="panel">{form}</div>'
+            '<p class="sub" style="margin-top:12px">Forgot your password? Ask the server\'s admin to reset it.</p>')
+    return _page("Sign in", body)
+
+
 def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list | None = None,
-                        aliases: list | None = None, new_token: str | None = None) -> str:
-    """Set or change the pilot's password; with it, change their side number, create and revoke pilot
-    tokens, and claim other in-game names. `new_token`: a token just created, shown this once."""
+                        aliases: list | None = None, new_token: str | None = None, signed_in: bool = False) -> str:
+    """Set or change the pilot's password; signed in as them (`signed_in`), change their side number, create
+    and revoke pilot tokens, and claim other in-game names. `new_token`: a token just created, shown this once."""
     name = pilot.name
     quoted = quote(name, safe="")
     note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
         f'<p class="error">{escape(error)}</p>' if error else "")
     has = pilot.password_hash is not None
+    back = f'<p class="sub"><a href="/pilots/{quoted}">← {escape(name)}</a></p><h1>{escape(name)}: settings</h1>'
+    if has and not signed_in:
+        me = CURRENT_PILOT.get()
+        other = f" You're signed in as {escape(me)}." if me else ""
+        body = (f'{back}{note}<div class="panel"><p>Sign in as {escape(name)} to change these settings.{other}</p>'
+                f'<p><a href="/signin?next={quote(f"/pilots/{quoted}/settings", safe="")}">Sign in</a></p></div>'
+                '<p class="sub" style="margin-top:12px">Forgot your password? Ask the server\'s admin to reset it.</p>')
+        return _page(f"{name}: settings", body)
     password_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/password">'
         "<h2 style=\"margin-top:0\">" + ("Change password" if has else "Set a password") + "</h2>"
-        + ("" if has else '<p class="sub">Nobody has set one for this pilot yet: setting it claims the name. '
-           "Recordings uploaded without a token then need it to import this pilot's passes.</p>")
+        + ("" if has else '<p class="sub">Nobody has set one for this pilot yet: setting it claims the name and signs '
+           "you in. Recordings uploaded without a token then need it to import this pilot's passes.</p>")
         + ('<label>Current password <input name="current" type="password" required autocomplete="current-password">'
-           "</label>" if has else "")
+           '<span class="hint">Changing it signs you out everywhere else.</span></label>' if has else "")
         + '<label>New password <input name="new" type="password" required minlength="8" autocomplete="new-password">'
         '<span class="hint">At least 8 characters.</span></label>'
         '<label>New password again <input name="confirm" type="password" required minlength="8" '
         'autocomplete="new-password"></label><button type="submit">Save password</button></form>')
+    if not has:  # nothing else until the name is claimed
+        body = f'{back}{note}<div class="panel">{password_form}</div>'
+        return _page(f"{name}: settings", body)
     modex_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/modex">'
         '<h2>Side number</h2>'
         f'<p class="sub">Now: {escape(pilot.modex or "not known yet")}. It\'s taken from your first pass that has one; '
         "you can change it here.</p>"
-        + ('<label>Password <input name="password" type="password" required autocomplete="current-password"></label>'
-           '<label>Side number <input name="modex" required pattern="[0-9]{1,4}" inputmode="numeric"></label>'
-           '<button type="submit">Save side number</button>' if has else
-           '<p class="sub">Set a password first to change it.</p>')
-        + "</form>")
-    password_field = '<label>Password <input name="password" type="password" required autocomplete="current-password"></label>'
+        '<label>Side number <input name="modex" required pattern="[0-9]{1,4}" inputmode="numeric"></label>'
+        '<button type="submit">Save side number</button></form>')
     shown = (f'<div class="token-once"><p><strong>Your new pilot token</strong> (copy it now: it won\'t be shown again)</p>'
              f'<code>{escape(new_token)}</code></div>' if new_token else "")
     rows = "".join(
@@ -628,7 +685,6 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
         f'<td>{_when(t.last_used_at) if t.last_used_at else "never"}</td><td>'
         + ("revoked" if t.revoked_at else
            f'<form method="post" action="/pilots/{quoted}/settings/tokens/{t.id}/revoke" class="inline">'
-           '<input name="password" type="password" required placeholder="Password" autocomplete="current-password">'
            '<button type="submit">Revoke</button></form>')
         + "</td></tr>" for t in tokens or [])
     listed = (f'<div class="scroll"><table class="results"><thead><tr><th>Token</th><th>Created</th><th>Last used</th>'
@@ -637,10 +693,8 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/tokens"><h2>Pilot tokens</h2>'
         '<p class="sub">A pilot token lets the pilot hook or pilot uploader send your passes here. Everything sent '
         "with it is credited to you, whatever name you fly under.</p>" + shown + listed
-        + (password_field + '<label>What it\'s for <input name="label" maxlength="100" placeholder="e.g. my PC"></label>'
-           '<button type="submit">Create a pilot token</button>' if has else
-           '<p class="sub">Set a password first to create one.</p>')
-        + "</form>")
+        + '<label>What it\'s for <input name="label" maxlength="100" placeholder="e.g. my PC"></label>'
+        '<button type="submit">Create a pilot token</button></form>')
     names = "".join(f'<li>{escape(a.name)}{"" if a.claimed else " (seen with your pilot token)"}</li>'
                     for a in aliases or [])
     aliases_form = (
@@ -648,13 +702,10 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
         '<p class="sub">Other in-game names you fly under (e.g. with a squadron tag). Passes reported under them '
         "count as yours.</p>"
         + (f'<ul class="themes">{names}</ul>' if names else '<p class="sub">None yet.</p>')
-        + (password_field + '<label>Claim a name <input name="alias" required maxlength="100"></label>'
-           '<span class="hint">Only a name nobody else has claimed. Its passes on this board move to you.</span>'
-           '<button type="submit">Claim name</button>' if has else '<p class="sub">Set a password first to claim one.</p>')
-        + "</form>")
-    body = (f'<p class="sub"><a href="/pilots/{quoted}">← {escape(name)}</a></p><h1>{escape(name)}: settings</h1>'
-            f'{note}<div class="panel">{password_form}</div><div class="panel" style="margin-top:12px">{modex_form}</div>'
+        + '<label>Claim a name <input name="alias" required maxlength="100"></label>'
+        '<span class="hint">Only a name nobody else has claimed. Its passes on this board move to you.</span>'
+        '<button type="submit">Claim name</button></form>')
+    body = (f'{back}{note}<div class="panel">{password_form}</div><div class="panel" style="margin-top:12px">{modex_form}</div>'
             f'<div class="panel" style="margin-top:12px">{tokens_form}</div>'
-            f'<div class="panel" style="margin-top:12px">{aliases_form}</div>'
-            '<p class="sub" style="margin-top:12px">Forgot your password? Ask the server\'s admin to reset it.</p>')
+            f'<div class="panel" style="margin-top:12px">{aliases_form}</div>')
     return _page(f"{name}: settings", body)
