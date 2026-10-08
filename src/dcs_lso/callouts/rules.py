@@ -56,6 +56,10 @@ class Call(StrEnum):
     SLOW = "you're slow"
     KEEP_TURN_IN = "keep your turn in"  # overshooting the turn to final (before the groove)
     KEEP_IT_COMING = "keep it coming"  # reassurance: on glideslope and centerline, nothing to say
+    ON_GLIDESLOPE = "on glideslope"  # the talk-down after "Clara" (no ball): steady and on the glideslope
+    # Case III (night or poor weather): the LSO takes the jet coming down final, then asks for the ball.
+    PADDLES_CONTACT = "paddles contact"
+    CALL_THE_BALL = "call the ball"
     ROUGH_LANDING = "rough landing"  # a dig after the welcome, now and then, for a poor or cut pass (not a call of its own)
     # Answers to what the pilot says on the LSO frequency (heard on SRS, see agent/listening.py), not CalloutEngine's.
     ROGER_BALL = "roger ball"
@@ -89,6 +93,13 @@ class Thresholds:
     groove_settle_s: float = 1.0
     # ...or, regardless, once this close.
     groove_always_inside_m: float = 0.4 * NM
+    # Case III: "Paddles contact" once inside this, inbound (pointing within `groove_heading_deg` * 2 of the
+    # landing area)...
+    paddles_contact_m: float = 1.25 * NM
+    # ...and "call the ball" inside this, if the pilot hasn't called it (or "Clara").
+    call_the_ball_m: float = 0.75 * NM
+    # After "Clara": "on glideslope" when steady, this long after the last call (and again as long as it lasts).
+    clara_talk_s: float = 2.5
     # Inside this the pilot is at the ramp: no calls at all (too late to act on them).
     quiet_inside_m: float = 120.0
     wave_off_inside_m: float = 0.25 * NM
@@ -263,6 +274,8 @@ class CalloutEngine:
     thresholds: Thresholds = field(default_factory=Thresholds)
     # How long each call takes to say (seconds), so gaps are measured from the end of a phrase.
     durations: dict[Call, float] = field(default_factory=dict)
+    # A Case III recovery (night or poor weather): "Paddles contact" coming down final, then "call the ball".
+    case_iii: bool = False
     # Condition flips seen (a measure of chatter, before persistence smooths it out).
     toggles: int = 0
 
@@ -279,6 +292,17 @@ class CalloutEngine:
         self._keep_coming_said = 0
         self._overshoot_since: float | None = None
         self._overshoot_said = False
+        self.ball_called = False  # the pilot called the ball (heard on SRS)
+        self.clara_called = False  # ...or "Clara" (no ball in sight): talked down until the ball is called
+        self._contact_said = False
+        self._call_ball_said = False
+
+    def heard(self, call: str) -> None:
+        """What the pilot said (agent/listening.py): "ball" or "clara"."""
+        if call == "ball":
+            self.ball_called, self.clara_called = True, False
+        elif call == "clara":
+            self.clara_called = True
 
     def _update_groove(self, s: GrooveState) -> None:
         th = self.thresholds
@@ -314,6 +338,8 @@ class CalloutEngine:
             self._since.setdefault(call, s.time)
         if self.waved_off:
             return None
+        if self.case_iii and (event := self._case_iii(s)) is not None:
+            return event
         if not self.in_groove:
             return self._pattern(s)
         ready = []
@@ -325,7 +351,7 @@ class CalloutEngine:
                 continue
             ready.append(c)
         if not ready:
-            return self._keep_coming(s, active)
+            return self._talk_down(s, active) if self.clara_called else self._keep_coming(s, active)
         call = min(ready, key=PRIORITY.__getitem__)
         # A wave-off interrupts anything; other calls wait for the previous one to finish.
         gap = th.urgent_spacing_s if call in URGENT_CALLS else th.spacing_s
@@ -365,6 +391,32 @@ class CalloutEngine:
             return None
         self._overshoot_said = True
         return self._say(s, Call.KEEP_TURN_IN)
+
+    def _case_iii(self, s: GrooveState) -> CallEvent | None:
+        """Case III: "Paddles contact" once coming down final (the LSO has the jet), then "call the ball" at three
+        quarters of a mile unless the pilot has called it (or "Clara")."""
+        th = self.thresholds
+        if s.time - self._busy_until < th.spacing_s or s.along <= th.quiet_inside_m:
+            return None
+        inbound = abs(s.heading_error) <= th.groove_heading_deg * 2
+        if not self._contact_said and inbound and th.call_the_ball_m < s.along <= th.paddles_contact_m:
+            self._contact_said = True
+            return self._say(s, Call.PADDLES_CONTACT)
+        if (not self._call_ball_said and not self.ball_called and not self.clara_called and inbound
+                and th.wave_off_inside_m < s.along <= th.call_the_ball_m):
+            self._call_ball_said = self._contact_said = True
+            return self._say(s, Call.CALL_THE_BALL)
+        return None
+
+    def _talk_down(self, s: GrooveState, active: set[Call]) -> CallEvent | None:
+        """After "Clara" (the pilot can't see the ball): "on glideslope" while they're steady on it, every few
+        seconds, so they know where they are (deviations get their usual calls)."""
+        th = self.thresholds
+        steady = (not active and th.keep_coming_to_m < s.along and abs(s.glideslope_deg) < th.little_deg
+                  and abs(s.glideslope_rate) < th.going_deg_s)
+        if not steady or s.time - self._busy_until < th.clara_talk_s:
+            return None
+        return self._say(s, Call.ON_GLIDESLOPE)
 
     def _keep_coming(self, s: GrooveState, active: set[Call]) -> CallEvent | None:
         """Reassurance when the pass is good and the LSO has been quiet for a while."""

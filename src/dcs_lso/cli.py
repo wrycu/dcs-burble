@@ -339,6 +339,9 @@ def _voice_build(args: argparse.Namespace) -> int:
     for call, clips in lib.clips.items():
         for clip in clips:
             print(f"  {call.value:<17} {clip.seconds:4.2f}s  {clip.text!r}")
+    if lib.wind:
+        print(f"  {'roger ball + wind':<17} {len(lib.wind)} clips ({min(k for k, _ in lib.wind)}-"
+              f"{max(k for k, _ in lib.wind)} knots, plain and axial)" + (", and winds calm" if lib.calm else ""))
     print(f"clips written to {out}")
     return 0
 

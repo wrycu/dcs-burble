@@ -218,6 +218,14 @@ def _text_w(text: str, size: float) -> float:
     return len(text) * size * CHAR_W
 
 
+def call_label(call: dict) -> str:
+    """How a recorded call reads: what was said when known ("Roger ball, 25 knots"), a pilot's in quotes."""
+    text = call.get("text") or call["call"]
+    if call.get("by") == "pilot":
+        return f"\u201c{text}\u201d"
+    return text[:1].upper() + text[1:]
+
+
 def _call_markers(calls: list[dict], samples: list[PassSample], x: Axis, y_of, top: float, height: float,
                   out: list[str]) -> None:
     """Live calls the LSO made: a marker on the track where each was given, with its label on the
@@ -229,7 +237,7 @@ def _call_markers(calls: list[dict], samples: list[PassSample], x: Axis, y_of, t
     for call in calls:
         near = min((s for s in samples if s.along >= 0), key=lambda s: abs(s.along - call["along"]), default=samples[0])
         cx, cy = x(near.along), y_of(near)
-        label = call["call"].capitalize()
+        label = call_label(call)
         half = _text_w(label, size) / 2 + 3
         lx = min(max(cx, PAD_L + half), PAD_L + PLOT_W - half)  # keep the label inside the plot
         candidates = [cy - 14 - i * row for i in range(5)] + [cy + 24 + i * row for i in range(5)]
@@ -458,8 +466,12 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     landing's overall accuracy level (hub/accuracy.py), shown as a badge; `elsewhere`: flown on another
     server than the hub's own, marked beside it."""
     calls = sorted(calls or [], key=lambda c: c["time"])
-    listed = _wrap("LSO calls:", [f"{c['call'].capitalize()} ({c['along'] / NM:.2f} nm)" for c in calls],
-                   12, PLOT_W) if calls else []
+    listed: list[tuple[str, list[str]]] = []  # (heading, items) for each line of the lists below the table
+    for heading, group in (("LSO calls:", [c for c in calls if c.get("by") != "pilot"]),
+                           ("Pilot:", [c for c in calls if c.get("by") == "pilot"])):
+        if group:
+            lines = _wrap(heading, [f"{call_label(c)} ({c['along'] / NM:.2f} nm)" for c in group], 12, PLOT_W)
+            listed += [(heading if i == 0 else "", line) for i, line in enumerate(lines)]
     height = HEIGHT + (len(listed) * CALLS_LINE_H + 8 if listed else 0)
     aircraft = AIRCRAFT[p.aircraft_type]
     frame = DeckFrame(CARRIERS[p.carrier_type], aircraft)
@@ -512,9 +524,10 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     _top_view(samples, x, aircraft.on_speed_aoa, uid, out, calls, frame,
               p.wire if p.wire is not None else p.wire_estimate, view)
     _table(grade, out)
-    for i, line in enumerate(listed):
-        text = escape(", ".join(line)) + ("," if i < len(listed) - 1 else "")
-        lead = '<tspan font-weight="600">LSO calls:</tspan> ' if i == 0 else ""
+    for i, (heading, line) in enumerate(listed):
+        more = i + 1 < len(listed) and not listed[i + 1][0]  # the same list goes on to the next line
+        text = escape(", ".join(line)) + ("," if more else "")
+        lead = f'<tspan font-weight="600">{heading}</tspan> ' if heading else ""
         out.append(f'<text class="tc-text" x="{PAD_L}" y="{HEIGHT + 4 + i * CALLS_LINE_H}" font-size="12">'
                    f'{lead}{text}</text>')
     out.append("</svg>")

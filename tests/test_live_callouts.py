@@ -643,8 +643,12 @@ def test_pilots_calls_are_answered_for_the_jet_that_made_them(clips):
     asyncio.run(run())
     assert sink.said == [(Call.ROGER_BALL, 127.6), (Call.ROGER_BALL, 127.6), (Call.LOUD_AND_CLEAR, 127.5),
                          (Call.ROGER_CLARA, 127.6)]
-    assert [(m.aircraft_id, m.call) for m in callouts.made] == [(2, Call.ROGER_BALL), (3, Call.ROGER_BALL),
-                                                                 (2, Call.ROGER_CLARA)]
+    # The pilots' calls are recorded with their passes too (once), before the answers.
+    assert [(m.aircraft_id, m.call, m.by) for m in callouts.made] == [
+        (2, "ball", "pilot"), (2, Call.ROGER_BALL, "lso"), (3, "ball", "pilot"), (3, Call.ROGER_BALL, "lso"),
+        (2, "clara", "pilot"), (2, Call.ROGER_CLARA, "lso")]
+    assert callouts.made[0].to_dict() == {"time": 100.0, "along": 1200.0, "call": "ball",
+                                          "text": "305, Hornet ball, 5.2", "by": "pilot"}
 
 
 def test_the_listener_hands_recognised_calls_on():

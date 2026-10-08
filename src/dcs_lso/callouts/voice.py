@@ -61,6 +61,9 @@ PHRASES: dict[Call, str | tuple[str, ...]] = {
     Call.SLOW: "You're slow.",
     Call.KEEP_TURN_IN: "Keep your turn in.",
     Call.KEEP_IT_COMING: ("Keep it coming.", "Keep it coming, looking good."),
+    Call.ON_GLIDESLOPE: ("On glideslope.", "On glideslope, keep it coming.", "You're on glideslope."),
+    Call.PADDLES_CONTACT: "Paddles contact.",
+    Call.CALL_THE_BALL: ("Three quarter mile, call the ball.", "Call the ball."),
     Call.ROUGH_LANDING: ("The crew chief wants to talk to you.", "Maintenance would like a word about that landing.",
                          "Go easy on my deck.", "The airframe guys are going to love that one.",
                          "Somebody check that landing gear."),
@@ -69,6 +72,24 @@ PHRASES: dict[Call, str | tuple[str, ...]] = {
 # than one aircraft is in the groove.
 DIGITS = {"0": "Zero", "1": "One", "2": "Two", "3": "Three", "4": "Four", "5": "Five", "6": "Six", "7": "Seven",
           "8": "Eight", "9": "Nine"}
+# "Roger ball" with the wind over the deck, in knots ("Roger ball, 25 knots."), and ", axial." when the wind comes
+# down the axial deck rather than the angled one: rendered whole for each speed, so they sound natural. Under
+# CALM_KNOTS it's "Roger ball, winds calm." (one clip, no axial).
+CALM_KNOTS = 3
+WIND_KNOTS = range(CALM_KNOTS, 61)
+AXIAL_DEG = 6.0  # the deck wind this far or more to starboard of the angled deck's axis is "axial"
+ROGER_BALL_CALM = "Roger ball, winds calm."
+CALM_CLIP = "roger_ball_calm.wav"
+
+
+def roger_ball_wind(knots: int, axial: bool) -> str:
+    return f"Roger ball, {knots} knots" + (", axial." if axial else ".")
+
+
+def wind_clip_name(knots: int, axial: bool) -> str:
+    return f"roger_ball_{knots}_knots{'_axial' if axial else ''}.wav"
+
+
 SIDE_NUMBER_GAP_FRAMES = 2  # a short pause (80 ms) between the side number and the call
 FOLLOW_GAP_FRAMES = 8  # and between a welcome and a remark after it (320 ms)
 SILENCE_LEVEL = 150  # trimmed from the ends of digit clips (16-bit samples)...
@@ -141,6 +162,15 @@ def build_clips(model: str | Path, out_dir: str | Path, speed: float = 1.15) -> 
         with wave.open(str(path), "wb") as wav:
             voice.synthesize_wav(word, wav, syn_config=config)
         manifest["numbers"][digit] = {"file": path.name, "text": word}
+    with wave.open(str(out / CALM_CLIP), "wb") as wav:
+        voice.synthesize_wav(ROGER_BALL_CALM, wav, syn_config=config)
+    manifest["roger_ball_wind"] = {"calm": {"file": CALM_CLIP, "text": ROGER_BALL_CALM}}
+    for knots in WIND_KNOTS:
+        for axial in (False, True):
+            path, text = out / wind_clip_name(knots, axial), roger_ball_wind(knots, axial)
+            with wave.open(str(path), "wb") as wav:
+                voice.synthesize_wav(text, wav, syn_config=config)
+            manifest["roger_ball_wind"][f"{knots}{'a' if axial else ''}"] = {"file": path.name, "text": text}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return out
 
@@ -192,10 +222,22 @@ def choose_clip_set(directory: str | Path, voice: str | None) -> tuple[Path | No
 
 
 class ClipLibrary:
-    def __init__(self, clips: dict[Call, list[Clip]], voice: str, numbers: dict[str, Clip] | None = None) -> None:
+    def __init__(self, clips: dict[Call, list[Clip]], voice: str, numbers: dict[str, Clip] | None = None,
+                 wind: dict[tuple[int, bool], Clip] | None = None, calm: Clip | None = None) -> None:
         self.clips = clips  # every variant of each call
         self.voice = voice
         self.numbers = numbers or {}  # "0".."9", for side numbers (clip sets built before them have none)
+        self.wind = wind or {}  # (knots, axial): "Roger ball, 25 knots." (clip sets built before them have none)
+        self.calm = calm  # "Roger ball, winds calm." (clip sets built before it have none)
+
+    def roger_ball(self, knots: float | None, off_axis: float = 0.0) -> Clip | None:
+        """"Roger ball" with the wind over the deck (knots; `off_axis`: degrees off the angled deck's axis, +
+        starboard), if this clip set has it."""
+        if knots is None:
+            return None
+        if round(knots) < CALM_KNOTS:
+            return self.calm
+        return self.wind.get((min(round(knots), WIND_KNOTS[-1]), off_axis >= AXIAL_DEG))
 
     def with_side_number(self, clip: Clip, side_number: str | None) -> Clip:
         """`clip` preceded by the side number, digit by digit ("301, Power."); unchanged without one or
@@ -221,7 +263,11 @@ class ClipLibrary:
             clips[call] = [Clip(e["text"], encode_pcm(load_wav(directory / e["file"]))) for e in entries]
         numbers = {d: Clip(e["text"], encode_pcm(_trim(load_wav(directory / e["file"]))))
                    for d, e in (manifest.get("numbers") or {}).items()}
-        return cls(clips, manifest.get("voice", "unknown"), numbers)
+        wind = {k: Clip(e["text"], encode_pcm(load_wav(directory / e["file"])))
+                for k, e in (manifest.get("roger_ball_wind") or {}).items()}
+        calm = wind.pop("calm", None)
+        wind = {(int(k.rstrip("a")), k.endswith("a")): clip for k, clip in wind.items()}
+        return cls(clips, manifest.get("voice", "unknown"), numbers, wind, calm)
 
     def __getitem__(self, call: Call) -> Clip:
         return self.clips[call][0]

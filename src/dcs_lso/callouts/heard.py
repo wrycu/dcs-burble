@@ -41,6 +41,16 @@ class PilotCall:
     text: str = ""  # what was recognised
 
 
+def describe(call: PilotCall) -> str:
+    """The call as a pilot would write it: "301, Hornet ball, 5.2", "301, Clara", "Paddles"."""
+    what = {"ball": f"{call.aircraft} ball" if call.aircraft else "Ball", "clara": "Clara",
+            "paddles": "Paddles"}.get(call.call or "", call.text)
+    parts = [p for p in (call.side_number, what) if p]
+    if call.fuel is not None and call.call in ("ball", "clara"):
+        parts.append(f"{call.fuel:.1f}")
+    return ", ".join(parts)
+
+
 def parse(text: str) -> PilotCall:
     """A pilot call from recognised text (words or digits; punctuation and case don't matter)."""
     words = [w.strip(".,!?") for w in re.sub(r"[^a-z0-9.\s]", " ", text.lower().replace("-", " ")).split()]

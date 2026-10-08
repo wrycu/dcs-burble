@@ -18,10 +18,11 @@ from typing import Protocol
 
 from ..acmi import ObjectTrack, Sample
 from ..callouts import CallEvent, CalloutEngine, LiveEstimator, LiveInput, Thresholds
+from ..callouts.heard import describe
 from ..callouts.rules import WAVE_OFFS, WELCOME_WIRE, Call
 from ..callouts.voice import Clip, ClipLibrary
 from ..grading import Grade
-from ..geometry import CarrierPose, DeckFrame, WindProfile
+from ..geometry import CARRIERS, CarrierPose, DeckFrame, DeckWind, WindProfile
 from ..srs import Modulation, Radio, SrsClient
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,9 @@ GROOVE_BUSY_S = 2.0
 PRAISE_GRADES = frozenset({Grade.PERFECT, Grade.OK})
 # ...and now and then (Thresholds.rough_dig_chance) add a dig about the landing for these.
 ROUGH_GRADES = frozenset({Grade.NO_GRADE, Grade.CUT})
+# The carrier's velocity for the wind over the deck: from its movement over about this long.
+SHIP_VELOCITY_S = 10.0
+KT = 1852.0 / 3600.0
 # On a trap, wait this long for DCS's wire (its LSO grade arrives ~0.3 s after we detect the trap)
 # so the welcome can name it; checked every WIRE_POLL_S.
 WIRE_WAIT_S = 0.6
@@ -81,6 +85,9 @@ class CalloutSettings:
     voice: str | None = None
     # Listen to pilots on the LSO frequencies and answer their calls ("Roger ball"); needs --listen-model.
     listen: bool = False
+    # Recovery case: "auto" (Case III at night, or with a low ceiling or poor visibility in the mission's
+    # weather), or always "I" or "III". Case III: "Paddles contact" coming down final, then "call the ball".
+    case: str = "auto"
 
     @classmethod
     def from_config(cls, config: dict) -> CalloutSettings:
@@ -100,6 +107,7 @@ class CalloutSettings:
             thresholds=replace(Thresholds(), **overrides),
             voice=str(c["voice"]) if c.get("voice") else None,
             listen=bool(c.get("listen", False)),
+            case=str(c.get("case", "auto")).upper().replace("AUTO", "auto"),
         )
 
     def radio_for(self, carrier_unit: str, detected: Radio | None = None) -> Radio:
@@ -224,14 +232,22 @@ def _gear(plane: ObjectTrack) -> float | None:
 @dataclass(slots=True)
 class MadeCall:
     """A call made on a pass, recorded when decided (so a pass sliced right after still has it); a welcome's
-    `call` is filled in with the wire once DCS reports it."""
+    `call` is filled in with the wire once DCS reports it. Also what the pilot said (`by` "pilot": `call` is
+    "ball", "clara" or "paddles" and `text` the call as heard)."""
     aircraft_id: int
     time: float  # sim time
     along: float  # meters short of the aim point
-    call: Call
+    call: Call | str
+    text: str | None = None  # what was said, when it says more than the call (e.g. "Roger ball, 25 knots.")
+    by: str = "lso"
 
     def to_dict(self) -> dict:
-        return {"time": self.time, "along": round(self.along, 1), "call": self.call.value}
+        out = {"time": self.time, "along": round(self.along, 1), "call": str(self.call)}
+        if self.text:
+            out["text"] = self.text
+        if self.by != "lso":
+            out["by"] = self.by
+        return out
 
 
 class LiveCallouts:
@@ -254,6 +270,10 @@ class LiveCallouts:
         self.departed_from: Callable[[int, int, float], bool] | None = None
         # A pilot's side number at a mission time (from the hook), to say before calls when the groove is busy.
         self.side_number_for: Callable[[str | None, float], str | None] | None = None
+        # Is it night at this carrier at this mission time? And the mission's weather (the hook's `weather`
+        # event). For deciding Case III (`case_iii`).
+        self.night_at: Callable[[ObjectTrack, float], bool | None] | None = None
+        self.weather: Callable[[], dict | None] | None = None
         self._groove_seen: dict[tuple[int, int], float] = {}  # (carrier, aircraft) -> last time in the groove
         self.clips = clips
         self.sink = sink
@@ -275,9 +295,13 @@ class LiveCallouts:
         entry = self._engines.get(key)
         if entry is None:
             aircraft = frame.aircraft
+            case_iii = self.case_iii(carrier, sample.time)
             entry = self._engines[key] = (
                 LiveEstimator(aircraft.glideslope, aoa_offset=aircraft.derived_aoa_offset),
-                CalloutEngine(self.settings.thresholds.for_aircraft(aircraft.on_speed_aoa), self.clips.durations()))
+                CalloutEngine(self.settings.thresholds.for_aircraft(aircraft.on_speed_aoa), self.clips.durations(),
+                              case_iii=case_iii))
+            if case_iii:
+                log.info("Case III for %s at %s", plane.pilot or hex(plane.id), carrier.pilot or carrier.name)
         estimator, engine = entry
         t = sample.transform
         pos = frame.position(pose, t)
@@ -342,6 +366,29 @@ class LiveCallouts:
         await self._say(carrier, plane, call if call in self.clips else event.call, event,
                         praise=grade in PRAISE_GRADES, home=home, dig=dig)
 
+    def case_iii(self, carrier: ObjectTrack, now: float) -> bool:
+        """A Case III recovery: as the config says, or (auto) at night or in the mission's poor weather."""
+        if self.settings.case in ("I", "III"):
+            return self.settings.case == "III"
+        night = self.night_at(carrier, now) if self.night_at is not None else None
+        return is_case_iii(bool(night), self.weather() if self.weather is not None else None)
+
+    def deck_wind(self, carrier: ObjectTrack) -> DeckWind | None:
+        """The wind over this carrier's angled deck now: the mission's wind (from the hook) less the carrier's
+        own motion. None without the hook's wind."""
+        wind = self.wind_for(carrier.pilot) if self.wind_for else None
+        info = CARRIERS.get(carrier.name)
+        if wind is None or info is None or len(carrier.samples) < 2:
+            return None
+        last = carrier.samples[-1]
+        first = next((s for s in reversed(carrier.samples) if last.time - s.time >= SHIP_VELOCITY_S), carrier.samples[0])
+        span = last.time - first.time
+        if span <= 0:
+            return None
+        a, b = first.transform, last.transform
+        ship = (((b.u or 0.0) - (a.u or 0.0)) / span, ((b.v or 0.0) - (a.v or 0.0)) / span)
+        return DeckWind.at(wind, ship, b.heading or 0.0, info.deck_angle)
+
     def _side_number(self, carrier_id: int, plane: ObjectTrack, now: float) -> str | None:
         """The pilot's side number, if another aircraft is in this carrier's groove too."""
         if self.side_number_for is None or not self._groove_busy(carrier_id, plane.id, now):
@@ -402,9 +449,16 @@ class LiveCallouts:
     # -- what pilots say (heard on SRS: agent/listening.py) ---------------------------------------------------
 
     def on_heard(self, heard) -> None:
-        """A pilot's call heard on an LSO frequency: answer it ("Roger ball", "Roger, Clara", "loud and clear")
-        on that frequency, for the jet in the groove that made it."""
+        """A pilot's call heard on an LSO frequency: recorded with their pass, and answered on that frequency
+        ("Roger ball, 25 knots", "Roger, Clara", "loud and clear"). After "Clara" the LSO talks the jet down
+        until the ball is called; a ball call stops a Case III "call the ball"."""
         found = self._match(heard)
+        if found is not None:
+            key, (carrier, plane, sim_time, along) = found
+            if (entry := self._engines.get(key)) is not None:
+                entry[1].heard(heard.call.call)
+            if (*key, heard.call.call) not in self._answered:  # a call repeated (e.g. no answer yet) once
+                self.made.append(MadeCall(plane.id, sim_time, along, heard.call.call, describe(heard.call), "pilot"))
         answer = {"ball": Call.ROGER_BALL, "clara": Call.ROGER_CLARA, "paddles": Call.LOUD_AND_CLEAR}[heard.call.call]
         if answer not in self.settings.calls or answer not in self.clips:
             return
@@ -417,14 +471,20 @@ class LiveCallouts:
             if (*key, answer) in self._answered:
                 return  # said already this pass
             self._answered.add((*key, answer))
-            self.made.append(MadeCall(plane.id, sim_time, along, answer))
+            self._answered.add((*key, heard.call.call))
+            clip, said = self.clips.pick(answer), None
+            if answer is Call.ROGER_BALL and (wind := self.deck_wind(carrier)) is not None:
+                if (with_wind := self.clips.roger_ball(wind.speed / KT, wind.off_axis)) is not None:
+                    clip = with_wind  # "Roger ball, 25 knots."
+                    said = clip.text.rstrip(".")
+            self.made.append(MadeCall(plane.id, sim_time, along, answer, said))
             radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
             who = plane.pilot or hex(plane.id)
         else:
             radio = next((r for r in self._radios() if abs(r.frequency_hz - heard.frequency_hz) < 1000.0),
                          Radio(heard.frequency_hz / 1e6))
             who = heard.speaker or "?"
-        clip = self.clips.pick(answer)
+            clip = self.clips.pick(answer)
         log.info("ANSWER %s -> %s (%.3f %s): %r", answer.value, who, radio.frequency_mhz, radio.modulation.name, clip.text)
         task = asyncio.get_running_loop().create_task(self.sink.say(answer, clip, radio, time.monotonic()))
         self._tasks.add(task)
@@ -475,3 +535,30 @@ class LiveCallouts:
     async def drain(self) -> None:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
+# Case III by the weather (when it isn't night): a ceiling below this, or visibility below this.
+CASE_III_CEILING_M = 1000 * 0.3048
+CASE_III_VISIBILITY_M = 5 * 1852.0
+# Cloud layers that make a ceiling: legacy clouds this dense (0-10), or these presets (DCS's broken and overcast
+# presets; the lower ones are few or scattered).
+CEILING_DENSITY = 7
+CEILING_PRESETS = frozenset({f"Preset{n}" for n in range(13, 28)} | {"RainyPreset1", "RainyPreset2", "RainyPreset3"})
+
+
+def is_case_iii(night: bool, weather: dict | None) -> bool:
+    """Case III: at night, or (from the mission's weather, the hook's `weather` event) a ceiling under 1,000 ft
+    or visibility under 5 nm (fog or dust included)."""
+    if night:
+        return True
+    if not weather:
+        return False
+    clouds = weather.get("clouds") or {}
+    base = clouds.get("base_m")
+    layer = clouds.get("preset") in CEILING_PRESETS or (not clouds.get("preset") and (clouds.get("density") or 0)
+                                                         >= CEILING_DENSITY)
+    if layer and base is not None and base < CASE_III_CEILING_M:
+        return True
+    seen = [v for v in (weather.get("visibility_m"), (weather.get("fog") or {}).get("visibility_m"),
+                        weather.get("dust_m")) if v]
+    return any(v < CASE_III_VISIBILITY_M for v in seen)

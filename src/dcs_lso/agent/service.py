@@ -578,9 +578,11 @@ class Agent:
             callouts.grade_for = lambda carrier_id, aircraft_id: _provisional_grade(session, carrier_id, aircraft_id)
             callouts.deck_foul = session.detector.landing_area_foul
             callouts.departed_from = session.detector.departed_from
+            callouts.night_at = lambda carrier, t: _night_at(session, carrier, t)
             if self.hooks is not None:
                 hooks = self.hooks
                 callouts.side_number_for = lambda pilot, t: (hooks.slot_for(pilot, t) or {}).get("onboard_num")
+                callouts.weather = getattr(hooks, "weather", None)
         listening = None
         if callouts is not None:
             listener = self._listener(callouts)
@@ -859,6 +861,23 @@ def _track_grade(recording, info: dict, debrief: Debrief) -> LsoGrade | None:
     grades = track_dcs_grades(recording, [approach], debrief,
                               first_seen={aircraft: float(first_seen)} if first_seen is not None else None)
     return grades.get(approach)
+
+
+def _night_at(session: Session, carrier, mission_time: float) -> bool | None:
+    """Is it night at the carrier (its latest position) at this mission time? From the stream's ReferenceTime
+    (the mission's start, UTC); None if that or the position isn't known."""
+    from ..sun import NIGHT_BELOW_DEG, sun_elevation
+    reference = session.parser.globals.get("ReferenceTime")
+    placed = next((s.transform for s in reversed(carrier.samples)
+                   if s.transform.lat is not None and s.transform.lon is not None), None)
+    if not reference or placed is None:
+        return None
+    try:
+        start = datetime.fromisoformat(reference.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    start = start if start.tzinfo else start.replace(tzinfo=UTC)
+    return sun_elevation(placed.lat, placed.lon, start + timedelta(seconds=mission_time)) < NIGHT_BELOW_DEG
 
 
 def _provisional_grade(session: Session, carrier_id: int, aircraft_id: int) -> Grade | None:

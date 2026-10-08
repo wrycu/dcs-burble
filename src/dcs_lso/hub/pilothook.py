@@ -152,7 +152,12 @@ def _calls(value: object) -> list[dict] | None:
         if isinstance(c, dict) and isinstance(c.get("call"), str):
             time, along = _number(c.get("time")), _number(c.get("along"))
             if time is not None and along is not None:
-                calls.append({"time": time, "along": along, "call": c["call"][:60]})
+                call = {"time": time, "along": along, "call": c["call"][:60]}
+                if isinstance(c.get("text"), str) and c["text"]:
+                    call["text"] = c["text"][:80]  # what was said ("Roger ball, 25 knots"; the pilot's call)
+                if c.get("by") == "pilot":
+                    call["by"] = "pilot"
+                calls.append(call)
     return calls or None
 
 
