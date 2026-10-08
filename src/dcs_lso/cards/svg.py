@@ -229,12 +229,13 @@ def call_label(call: dict) -> str:
 def _call_markers(calls: list[dict], samples: list[PassSample], x: Axis, y_of, top: float, height: float,
                   out: list[str]) -> None:
     """Live calls the LSO made: a marker on the track where each was given, with its label on the
-    nearest free row above (or else below) the track, so labels never overlap each other."""
+    nearest free row above (or else below) the track, so labels never overlap each other. Placed latest
+    first, so where labels stack they read in order from the top (a pilot's "ball" above "Roger ball")."""
     if not samples:
         return
     size, row = 11, 14
     placed: list[tuple[float, float, float, float]] = []  # label boxes: x0, y0, x1, y1
-    for call in calls:
+    for call in sorted(calls, key=lambda c: c.get("time", 0.0), reverse=True):
         near = min((s for s in samples if s.along >= 0), key=lambda s: abs(s.along - call["along"]), default=samples[0])
         cx, cy = x(near.along), y_of(near)
         label = call_label(call)
@@ -467,8 +468,8 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     server than the hub's own, marked beside it."""
     calls = sorted(calls or [], key=lambda c: c["time"])
     listed: list[tuple[str, list[str]]] = []  # (heading, items) for each line of the lists below the table
-    for heading, group in (("LSO calls:", [c for c in calls if c.get("by") != "pilot"]),
-                           ("Pilot:", [c for c in calls if c.get("by") == "pilot"])):
+    for heading, group in (("Pilot:", [c for c in calls if c.get("by") == "pilot"]),
+                           ("LSO calls:", [c for c in calls if c.get("by") != "pilot"])):
         if group:
             lines = _wrap(heading, [f"{call_label(c)} ({c['along'] / NM:.2f} nm)" for c in group], 12, PLOT_W)
             listed += [(heading if i == 0 else "", line) for i, line in enumerate(lines)]
