@@ -83,7 +83,7 @@ def test_hook_installs_once_and_logs_injection(lua_output):
 
 def test_hook_events_round_trip(lua_output):
     events = [e for e in map(parse_hook_line, lua_output) if e and e.event not in
-              ("handler_installed", "handler_already_installed")]
+              ("handler_installed", "handler_already_installed", "weather")]
     samples = [e for e in events if e.event == "wire_sample"]
     events = [e for e in events if e.event != "wire_sample"]
     assert [e.event for e in events] == ["runway_touch", "landing_quality_mark"]  # S_EVENT_SHOT ignored

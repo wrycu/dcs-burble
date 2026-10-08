@@ -133,6 +133,7 @@ end
 local TURBULENCE_DISTANCES = { 200, 400, 600, 800, 1000, 1200, 1400, 1600 }
 
 local function turbulence(p, forward)
+  if not atmosphere.getWindWithTurbulence then return nil, 'no atmosphere.getWindWithTurbulence' end
   local sum, n = 0, 0
   for _, d in ipairs(TURBULENCE_DISTANCES) do
     local at = { x = p.x - forward.x * d, y = 20 + d * 0.061, z = p.z - forward.z * d }  -- about 3.5 degrees
@@ -143,7 +144,7 @@ local function turbulence(p, forward)
       sum, n = sum + dx * dx + dy * dy + dz * dz, n + 1
     end
   end
-  if n == 0 then return nil end
+  if n == 0 then return nil, 'no wind samples' end
   return math.sqrt(sum / n)
 end
 
@@ -160,9 +161,14 @@ local function log_wind()
             if w then levels[#levels + 1] = { alt = alt, east = w.z, north = w.x } end
           end
           local pos = try(function() return unit:getPosition() end)
+          local gusts, why = nil, 'no carrier heading'
+          if pos then
+            local ok, value, reason = pcall(turbulence, p, pos.x)
+            gusts, why = ok and value or nil, ok and reason or tostring(value)
+          end
           log_event({ event = 'wind', t = timer.getTime(), carrier = try(function() return unit:getName() end),
-                      type = type_name, levels = levels,
-                      turbulence = pos and try(function() return turbulence(p, pos.x) end) or nil })
+                      type = type_name, levels = levels, turbulence = gusts,
+                      turbulence_error = gusts == nil and why or nil })
         end
       end
     end
@@ -172,7 +178,10 @@ end
 -- The mission's weather settings (once per mission), for the trap card.
 local function log_weather()
   local w = env.mission and env.mission.weather
-  if not w then return end
+  if not w then
+    log_event({ event = 'weather', t = timer.getTime(), error = env.mission and 'no env.mission.weather' or 'no env.mission' })
+    return
+  end
   local clouds, fog = w.clouds or {}, w.fog or {}
   log_event({ event = 'weather', t = timer.getTime(), dynamic = w.atmosphere_type == 1,
               ground_turbulence = w.groundTurbulence, temperature = w.season and w.season.temperature,
@@ -182,7 +191,8 @@ local function log_weather()
               fog = w.enable_fog and { visibility_m = fog.visibility, thickness_m = fog.thickness } or nil,
               dust_m = w.enable_dust and w.dust_density or nil })
 end
-pcall(log_weather)
+local weather_ok, weather_error = pcall(log_weather)
+if not weather_ok then log_event({ event = 'weather', t = timer.getTime(), error = tostring(weather_error) }) end
 
 timer.scheduleFunction(function(_, now)
   pcall(log_wind)

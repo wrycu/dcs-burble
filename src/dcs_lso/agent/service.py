@@ -164,7 +164,7 @@ class HookFeed:
     def weather(self) -> dict | None:
         """The mission's weather settings (the hook's `weather` event) in the current mission."""
         with self._lock:
-            events = [e for e in self._events if e.event == "weather"]
+            events = [e for e in self._events if e.event == "weather" and "error" not in e.raw]
         if not events:
             return None
         return {k: v for k, v in events[-1].raw.items() if k not in ("event", "t")}

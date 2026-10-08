@@ -35,10 +35,10 @@ atmosphere = {
 """
 
 
-def run_handler() -> list[dict]:
+def run_handler(stubs: str = STUBS) -> list[dict]:
     text = HOOK.read_text(encoding="utf-8")
     handler = text.split("local HANDLER = [==[", 1)[1].split("]==]", 1)[0]
-    script = STUBS + handler + "\nfor _, s in ipairs(scheduled) do s[1](s[2], 100) end\n"
+    script = stubs + handler + "\nfor _, s in ipairs(scheduled) do s[1](s[2], 100) end\n"
     out = subprocess.run([luajit(), "-"], input=script, capture_output=True, text=True, check=True).stdout
     return [json.loads(m) for m in re.findall(r"^DCSLSO (\{.*\})$", out, re.M)]
 
@@ -52,3 +52,12 @@ def test_wind_turbulence_and_weather_events():
     weather = events["weather"]
     assert weather["ground_turbulence"] == 12 and weather["clouds"]["base_m"] == 2500
     assert weather["visibility_m"] == 80000 and "fog" not in weather and weather["dynamic"] is False
+
+
+def test_the_hook_says_why_turbulence_or_weather_are_missing():
+    stubs = (STUBS.replace("env = { info = function(s) print(s) end, mission =", "env = { info = function(s) print(s) end, _m =")
+             .replace("  getWindWithTurbulence = function(p)", "  _gusty = function(p)"))
+    events = {e["event"]: e for e in run_handler(stubs)}
+    assert "turbulence" not in events["wind"]
+    assert events["wind"]["turbulence_error"] == "no atmosphere.getWindWithTurbulence"
+    assert events["weather"]["error"] == "no env.mission"
