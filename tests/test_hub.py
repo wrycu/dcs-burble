@@ -189,4 +189,5 @@ def test_pilot_page_has_a_tab_per_airframe(client, token, tmp_path):
     page = client.get("/pilots/Wrycu", params={"aircraft": "F-14 Tomcat"}).text
     assert '<nav class="airframes">' in page and 'class="current" aria-current="page">F-14 Tomcat' in page
     assert "Last 1 F-14 Tomcat pass ·" in page and "aircraft=F-14%20Tomcat" in page
-    assert '<nav class="airframes">' not in client.get("/pilots/Maverick").text  # one airframe: no tabs
+    only = client.get("/pilots/Maverick").text  # one airframe: one tab, saying which
+    assert only.count('<nav class="airframes">') == 1 and only.count("aria-current") == 1 and "F/A-18C Hornet" in only

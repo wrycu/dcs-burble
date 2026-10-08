@@ -586,7 +586,7 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
                       for n in sorted({8, 12, 15, 20, passes}))
     chosen = summary.airframe or ""
     tabs = ""
-    if len(summary.airframes) > 1:  # trends don't mix airframes: one at a time
+    if summary.airframes:  # trends don't mix airframes: one at a time (a single tab says which it is)
         def tab(a: str, n: int) -> str:
             href = f"?passes={passes}&servers={servers}&aircraft={quote(a, safe='')}"
             current = ' class="current" aria-current="page"' if a == chosen else ""
