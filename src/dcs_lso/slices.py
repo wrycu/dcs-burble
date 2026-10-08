@@ -152,7 +152,8 @@ def apply_hooks(hooks, recording: Recording, p: PassResult, end: float, check_pi
     """What the dcs-lso server hook adds to a pass (`hooks`: an agent.service.HookFeed): the pilot, checked
     (Tacview can name the wrong one, see HookFeed.pilot_for); DCS's LSO grade and wire; the wire from the
     carrier's wire animation, which wins. Returns the sidecar's extra fields: where the wire came from, and
-    the livery and side number of the pilot's slot. `end`: the end of the pass's slice (mission time)."""
+    the livery and side number of the pilot's slot, and the mission's weather; the wind at the carrier goes on
+    the pass if it has none. `end`: the end of the pass's slice (mission time)."""
     from .dcslog import attach_dcs_grades
 
     if check_pilot and (pilot_for := getattr(hooks, "pilot_for", None)) is not None:
@@ -168,6 +169,11 @@ def apply_hooks(hooks, recording: Recording, p: PassResult, end: float, check_pi
     extra: dict = {"wire_source": wire_source}
     if (aircraft := hooks.slot_for(p.pilot, p.start_time)) is not None:
         extra["aircraft"] = aircraft
+    carrier = recording.objects.get(p.carrier_id)
+    if p.wind is None and carrier is not None and (wind_for := getattr(hooks, "wind_for", None)) is not None:
+        p.wind = wind_for(carrier.pilot, p.end_time)  # (the sidecar's; the hub grades with it)
+    if (weather := getattr(hooks, "weather", None)) is not None and (settings := weather()) is not None:
+        extra["weather"] = settings
     return extra
 
 

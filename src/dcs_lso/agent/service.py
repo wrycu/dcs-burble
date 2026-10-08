@@ -149,13 +149,25 @@ class HookFeed:
                 counts[caught[0]] = counts.get(caught[0], 0) + 1
         return max(counts, key=counts.get) if counts else None
 
-    def wind_for(self, carrier_unit: str | None) -> WindProfile | None:
-        """The latest wind the hook logged at this carrier (by unit name) in the current mission."""
+    def wind_for(self, carrier_unit: str | None, at: float | None = None) -> WindProfile | None:
+        """The latest wind the hook logged at this carrier (by unit name) in the current mission; with `at`
+        (mission time), the latest logged by then (else the first after it)."""
         if not carrier_unit:
             return None
         with self._lock:
             events = [e for e in self._events if e.event == "wind" and e.raw.get("carrier") == carrier_unit]
+        if at is not None and events:
+            before = [e for e in events if (e.time or 0.0) <= at]
+            events = before or events[:1]
         return wind_profile(events[-1].raw) if events else None
+
+    def weather(self) -> dict | None:
+        """The mission's weather settings (the hook's `weather` event) in the current mission."""
+        with self._lock:
+            events = [e for e in self._events if e.event == "weather"]
+        if not events:
+            return None
+        return {k: v for k, v in events[-1].raw.items() if k not in ("event", "t")}
 
     def live_wire(self, tacview_id: int, since: float) -> int | None:
         """DCS's wire for this aircraft since `since` (mission time), if it has arrived: the carrier's
@@ -270,7 +282,7 @@ def wind_profile(raw: dict) -> WindProfile | None:
     if isinstance(levels, dict):
         levels = [levels[k] for k in sorted(levels, key=lambda k: int(k))]
     try:
-        return WindProfile.from_dict({"levels": levels})
+        return WindProfile.from_dict({"levels": levels, "turbulence": raw.get("turbulence")})
     except (KeyError, TypeError, ValueError):
         return None
 

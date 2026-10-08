@@ -285,8 +285,39 @@ def _accuracy(a: Accuracy) -> str:
     return (f'<h2>Accuracy</h2><div class="scroll-x"><table class="accuracy"><tr>{th}</tr><tr>{td}</tr></table></div>')
 
 
+def weather_text(weather: dict | None) -> str | None:
+    """The mission's weather settings (the server hook's `weather` event) in a line: clouds, visibility, fog,
+    temperature and pressure."""
+    if not weather:
+        return None
+    parts = []
+    if weather.get("dynamic"):
+        parts.append("dynamic weather")
+    clouds = weather.get("clouds") or {}
+    if clouds.get("preset") or clouds.get("density"):
+        base = clouds.get("base_m")
+        parts.append("clouds" + (f" from {base / 0.3048:,.0f} ft" if base is not None else ""))
+    else:
+        parts.append("clear skies")
+    precipitation = {1: "rain", 2: "thunderstorms", 3: "snow", 4: "snowstorms"}.get(clouds.get("precipitation") or 0)
+    if precipitation:
+        parts.append(precipitation)
+    if (fog := weather.get("fog")) and fog.get("visibility_m"):
+        parts.append(f"fog (visibility {fog['visibility_m'] / 1852:.1f} nm)")
+    if (vis := weather.get("visibility_m")) is not None:
+        parts.append(f"visibility {vis / 1852:.0f} nm")
+    if weather.get("dust_m"):
+        parts.append(f"dust (visibility {weather['dust_m'] / 1852:.1f} nm)")
+    if (temp := weather.get("temperature")) is not None:
+        parts.append(f"{temp:g} °C")
+    if (qnh := weather.get("qnh_mmhg")) is not None:
+        parts.append(f"QNH {qnh / 25.4:.2f} inHg")
+    return ", ".join(parts)
+
+
 def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: list[Pass] | None = None,
-              track_source: str | None = None, accuracy: Accuracy | None = None) -> str:
+              track_source: str | None = None, accuracy: Accuracy | None = None, wind: str | None = None,
+              weather: dict | None = None) -> str:
     g = p.grade
     facts = [
         ("Pilot", p.pilot.name),
@@ -301,6 +332,10 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
         ("DCS LSO", p.dcs_grade or "–"),
         ("Wire", _wire(p)),
     ]
+    if wind:
+        facts.append(("Wind", wind.removeprefix("Wind ")))
+    if (settings := weather_text(weather)) is not None:
+        facts.append(("Weather", settings))
     if accuracy is not None:
         facts.append(("Flown on", accuracy.flown_label + (f" ({accuracy.flown.note})" if accuracy.flown.note else "")))
     if relayed := (p.slice.sidecar or {}).get("calls_from"):

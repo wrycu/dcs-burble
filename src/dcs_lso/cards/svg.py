@@ -26,7 +26,8 @@ X_MIN_M = -40.0
 WIDTH = 920
 PAD_L, PAD_R = 64, 24
 PLOT_W = WIDTH - PAD_L - PAD_R
-HEADER_H = 90
+HEADER_H = 104
+KT = 1852.0 / 3600.0  # m/s
 SIDE_TOP, SIDE_H = HEADER_H + 18, 250
 TOP_TOP, TOP_H = SIDE_TOP + SIDE_H + 44, 170
 TABLE_TOP = TOP_TOP + TOP_H + 40
@@ -423,6 +424,27 @@ def _badges(out: list[str], right: float, top: float, badges: list[tuple[str, st
         x -= 6
 
 
+WIND_UNKNOWN = "Wind not recorded (no dcs-lso server hook)"
+
+
+def wind_text(p: PassResult) -> str:
+    """The wind the pass was flown in, for the card and the pass page: over the angled deck, the wind itself, and
+    the turbulence in the groove (WIND_UNKNOWN when the mission's wind isn't known)."""
+    w = p.deck_wind
+    if w is None:
+        return WIND_UNKNOWN
+    off = abs(w.off_axis)
+    side = ("straight down the angled deck" if off < 1.0 else
+            f"{off:.0f}° {'starboard' if w.off_axis > 0 else 'port'} of the angled deck")
+    parts = [f"Wind over deck {w.speed / KT:.0f} kt, {side}"]
+    if off >= 1.0 and abs(w.crosswind) / KT >= 1.0:
+        parts[0] += f" ({abs(w.crosswind) / KT:.0f} kt across)"
+    parts.append(f"wind {w.wind_speed / KT:.0f} kt from {w.wind_from:03.0f}°" if w.wind_speed / KT >= 0.5 else "winds calm")
+    if w.turbulence is not None:
+        parts.append(f"turbulence ±{w.turbulence / KT:.0f} kt" if w.turbulence / KT >= 0.5 else "smooth air, no turbulence")
+    return " · ".join(parts)
+
+
 def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc",
                 calls: list[dict] | None = None, night: bool = False, view: tuple[float, float] | None = None,
                 zoom_hint: bool = False, dark: bool = False, accuracy: str | None = None,
@@ -477,6 +499,9 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
         dcs = p.dcs_grade.raw.removeprefix("LSO:").strip()
         out.append(f'<text class="tc-muted" x="{gx}" y="72" font-size="11" text-anchor="end">'
                    f'DCS LSO: {escape(dcs)}</text>')
+    wind = wind_text(p)
+    out.append(f'<text class="{"tc-muted" if wind == WIND_UNKNOWN else "tc-text"}" x="{PAD_L}" y="{HEADER_H - 14}" '
+               f'font-size="12">{escape(wind)}</text>')
     _legend(aircraft.on_speed_aoa, out)
     if zoom_hint:
         hint = "drag across a chart to zoom" if view is None else "zoomed in · double-click to reset"

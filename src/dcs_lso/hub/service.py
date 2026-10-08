@@ -407,6 +407,8 @@ class Hub:
         result.dcs_grade = LsoGrade.parse(p.dcs_grade) if p.dcs_grade else None
         result.wire = p.wire
         result.track_source = best.source.name if best.source is not None else None
+        result.weather = next(((r.slice.sidecar or {}).get("weather") for r in reports
+                               if (r.slice.sidecar or {}).get("weather")), None)
         return result
 
     def _rebuilt_pass(self, p: Pass) -> PassResult | None:

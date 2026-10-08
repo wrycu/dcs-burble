@@ -14,7 +14,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ..acmi import ObjectTrack, Recording, Sample, Transform
-from ..geometry import AIRCRAFT, CARRIERS, CarrierPose, DeckFrame, WindProfile, air_velocity, body_aoa, centred_velocity
+from ..geometry import AIRCRAFT, CARRIERS, CarrierPose, DeckFrame, DeckWind, WindProfile, air_velocity, body_aoa, centred_velocity
 from .wire import estimate_wire
 
 if TYPE_CHECKING:
@@ -85,6 +85,10 @@ class PassResult:
     dcs_grade: LsoGrade | None = None
     # The mission's wind at the carrier (from the dcs-lso hook), when known; used for derived AOA.
     wind: WindProfile | None = None
+    # The wind over the angled deck as the pass ended, when the mission's wind is known (`wind`).
+    deck_wind: DeckWind | None = None
+    # The mission's weather settings (the dcs-lso hook's `weather` event), when known: clouds, visibility, etc.
+    weather: dict | None = None
     # Estimated from where the jet stopped (detect.wire); DCS's `wire` takes priority when known.
     wire_estimate: int | None = None
     # Which report's aircraft track this result was built from, when the hub merged several.
@@ -264,18 +268,31 @@ def _passes_for_pair(carrier: ObjectTrack, plane: ObjectTrack, timeline: Carrier
                 continue
             tracker = PassTracker(frame, wind)
         if not tracker.feed(sample.time, pose, sample.transform, sample.aoa):
-            result = _finish(carrier, plane, frame, tracker)
+            result = _finish(carrier, plane, frame, tracker, timeline=timeline)
             if result:
                 yield result
             tracker = None
     if tracker is not None:  # the aircraft's track ended during the pass
-        result = _finish(carrier, plane, frame, tracker, track_ended=True)
+        result = _finish(carrier, plane, frame, tracker, track_ended=True, timeline=timeline)
         if result:
             yield result
 
 
+DECK_WIND_SPAN_S = 10.0  # the carrier's velocity: its movement over the last this many seconds of the pass
+
+
+def _deck_wind(timeline: CarrierTimeline | None, frame: DeckFrame, wind: WindProfile | None,
+               end: float) -> DeckWind | None:
+    if wind is None or timeline is None:
+        return None
+    a, b = timeline.at(end - DECK_WIND_SPAN_S), timeline.at(end)
+    ship = ((b.u - a.u) / DECK_WIND_SPAN_S, (b.v - a.v) / DECK_WIND_SPAN_S)
+    return DeckWind.at(wind, ship, b.heading, frame.carrier.deck_angle)
+
+
 def _finish(carrier: ObjectTrack, plane: ObjectTrack, frame: DeckFrame,
-            tracker: PassTracker, track_ended: bool = False) -> PassResult | None:
+            tracker: PassTracker, track_ended: bool = False,
+            timeline: CarrierTimeline | None = None) -> PassResult | None:
     samples = tracker.samples()
     if not samples or min(s.hook_height for s in samples) > MAX_MIN_HOOK_HEIGHT_M:
         return None
@@ -291,5 +308,6 @@ def _finish(carrier: ObjectTrack, plane: ObjectTrack, frame: DeckFrame,
         end_time=samples[-1].time,
         samples=samples,
         wind=tracker.wind,
+        deck_wind=_deck_wind(timeline, frame, tracker.wind, samples[-1].time),
         wire_estimate=estimate_wire(samples, frame) if outcome is Outcome.TRAP else None,
     )

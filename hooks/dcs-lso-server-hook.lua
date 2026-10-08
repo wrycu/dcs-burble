@@ -128,6 +128,25 @@ local function is_carrier(type_name)
   return false
 end
 
+-- Turbulence in the groove: the gusts (DCS's wind with turbulence, less the steady wind) at points along the
+-- glide path astern of the carrier, as an RMS speed in m/s.
+local TURBULENCE_DISTANCES = { 200, 400, 600, 800, 1000, 1200, 1400, 1600 }
+
+local function turbulence(p, forward)
+  local sum, n = 0, 0
+  for _, d in ipairs(TURBULENCE_DISTANCES) do
+    local at = { x = p.x - forward.x * d, y = 20 + d * 0.061, z = p.z - forward.z * d }  -- about 3.5 degrees
+    local steady = try(function() return atmosphere.getWind(at) end)
+    local gusty = try(function() return atmosphere.getWindWithTurbulence(at) end)
+    if steady and gusty then
+      local dx, dy, dz = gusty.x - steady.x, (gusty.y or 0) - (steady.y or 0), gusty.z - steady.z
+      sum, n = sum + dx * dx + dy * dy + dz * dz, n + 1
+    end
+  end
+  if n == 0 then return nil end
+  return math.sqrt(sum / n)
+end
+
 local function log_wind()
   for _, side in ipairs({ coalition.side.NEUTRAL, coalition.side.RED, coalition.side.BLUE }) do
     for _, group in ipairs(try(function() return coalition.getGroups(side, Group.Category.SHIP) end) or {}) do
@@ -140,13 +159,30 @@ local function log_wind()
             local w = try(function() return atmosphere.getWind({ x = p.x, y = alt, z = p.z }) end)
             if w then levels[#levels + 1] = { alt = alt, east = w.z, north = w.x } end
           end
+          local pos = try(function() return unit:getPosition() end)
           log_event({ event = 'wind', t = timer.getTime(), carrier = try(function() return unit:getName() end),
-                      type = type_name, levels = levels })
+                      type = type_name, levels = levels,
+                      turbulence = pos and try(function() return turbulence(p, pos.x) end) or nil })
         end
       end
     end
   end
 end
+
+-- The mission's weather settings (once per mission), for the trap card.
+local function log_weather()
+  local w = env.mission and env.mission.weather
+  if not w then return end
+  local clouds, fog = w.clouds or {}, w.fog or {}
+  log_event({ event = 'weather', t = timer.getTime(), dynamic = w.atmosphere_type == 1,
+              ground_turbulence = w.groundTurbulence, temperature = w.season and w.season.temperature,
+              qnh_mmhg = w.qnh, visibility_m = w.visibility and w.visibility.distance,
+              clouds = { preset = clouds.preset, base_m = clouds.base, thickness_m = clouds.thickness,
+                         density = clouds.density, precipitation = clouds.iprecptns },
+              fog = w.enable_fog and { visibility_m = fog.visibility, thickness_m = fog.thickness } or nil,
+              dust_m = w.enable_dust and w.dust_density or nil })
+end
+pcall(log_weather)
 
 timer.scheduleFunction(function(_, now)
   pcall(log_wind)

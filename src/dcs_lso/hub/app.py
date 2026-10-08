@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..cards import render_card
 from ..cards.overlay import render_overlay
-from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M
+from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M, wind_text
 from ..geometry import airframe
 from ..grading import grade_pass
 from ..grading.trends import DEFAULT_PASSES
@@ -711,7 +711,8 @@ def create_app(hub: Hub) -> FastAPI:
             result = hub.load_pass(p, reports)
             svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls,
                               night=bool(p.night), zoom_hint=True, **_badges(accuracy))
-            return pages.pass_page(p, svg, reports=reports, track_source=result.track_source, accuracy=accuracy)
+            return pages.pass_page(p, svg, reports=reports, track_source=result.track_source, accuracy=accuracy,
+                                   wind=wind_text(result), weather=result.weather)
         except (IngestError, OSError) as exc:
             return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports, accuracy=accuracy)
 

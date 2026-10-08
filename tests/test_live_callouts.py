@@ -304,7 +304,7 @@ class WireHooks:
         self.asked += 1
         return self.wire
 
-    def wind_for(self, carrier_unit):
+    def wind_for(self, carrier_unit, at=None):
         return None
 
     def wire_for(self, tacview_id, start, end):

@@ -20,6 +20,7 @@ class WindProfile:
     """The mission's wind at a carrier, by altitude: where the air is moving to, in m/s."""
 
     levels: tuple[tuple[float, float, float], ...]  # (altitude m, east, north), ascending altitude
+    turbulence: float | None = None  # gusts along the glide path, RMS m/s (the hook's measure), when known
 
     def at(self, alt: float) -> tuple[float, float]:
         """(east, north) at `alt`, interpolated between levels (constant beyond them)."""
@@ -35,14 +36,53 @@ class WindProfile:
         return levels[-1][1], levels[-1][2]
 
     def to_dict(self) -> dict:
-        return {"levels": [{"alt": a, "east": e, "north": n} for a, e, n in self.levels]}
+        out: dict = {"levels": [{"alt": a, "east": e, "north": n} for a, e, n in self.levels]}
+        if self.turbulence is not None:
+            out["turbulence"] = self.turbulence
+        return out
 
     @classmethod
     def from_dict(cls, data: dict | None) -> WindProfile | None:
         if not data or not data.get("levels"):
             return None
         levels = sorted((float(x["alt"]), float(x["east"]), float(x["north"])) for x in data["levels"])
-        return cls(tuple(levels))
+        turbulence = data.get("turbulence")
+        return cls(tuple(levels), float(turbulence) if turbulence is not None else None)
+
+
+@dataclass(frozen=True, slots=True)
+class DeckWind:
+    """The wind a pilot landed in: over the angled deck (the mission's wind less the carrier's own motion), and
+    the wind itself near the water. Directions are where the wind comes from, in degrees on the map grid."""
+
+    speed: float  # over the deck, m/s
+    off_axis: float  # degrees the deck wind comes from off the angled deck's axis (+ starboard, - port)
+    wind_speed: float  # the mission's wind near the water, m/s
+    wind_from: float
+    turbulence: float | None = None  # gusts along the glide path, RMS m/s (WindProfile.turbulence)
+
+    @property
+    def crosswind(self) -> float:
+        """Across the angled deck, m/s (+ from starboard)."""
+        return self.speed * math.sin(math.radians(self.off_axis))
+
+    @property
+    def headwind(self) -> float:
+        """Down the angled deck, m/s."""
+        return self.speed * math.cos(math.radians(self.off_axis))
+
+    @classmethod
+    def at(cls, wind: WindProfile, ship_velocity: tuple[float, float], heading: float, deck_angle: float,
+           alt: float = 20.0) -> DeckWind:
+        """`ship_velocity`: the carrier's (east, north) m/s; `heading`: its heading (map grid), whose angled deck
+        points `deck_angle` degrees to port; `alt`: where the wind is taken (about the flight deck)."""
+        we, wn = wind.at(alt)
+        re, rn = we - ship_velocity[0], wn - ship_velocity[1]  # the air, moving over the ship
+        speed = math.hypot(re, rn)
+        from_deg = math.degrees(math.atan2(-re, -rn)) % 360.0
+        off = (from_deg - (heading - deck_angle) + 180.0) % 360.0 - 180.0
+        return cls(speed, off if speed > 0.05 else 0.0, math.hypot(we, wn),
+                   math.degrees(math.atan2(-we, -wn)) % 360.0, wind.turbulence)
 
 
 def centred_velocity(t0: float, p0: Vec3, t1: float, p1: Vec3, t2: float, p2: Vec3) -> Vec3 | None:

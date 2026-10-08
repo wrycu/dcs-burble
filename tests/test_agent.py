@@ -47,7 +47,7 @@ class StubHooks:
         # As the hook logs a player's slot: from the mission, the slot's livery and side number.
         return {"livery": "VFA-37", "onboard_num": "300", "unit": "Aerial-1-1"} if pilot == "Aerial-1-1" else None
 
-    def wind_for(self, carrier_unit):
+    def wind_for(self, carrier_unit, at=None):
         # As logged by the hook (Lua arrays arrive keyed "1", "2", ...).
         return wind_profile({"carrier": carrier_unit, "levels": {"2": {"alt": 100, "east": 1.0, "north": -6.0},
                                                                   "1": {"alt": 10, "east": 0.5, "north": -4.0}}})
