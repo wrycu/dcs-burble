@@ -49,7 +49,8 @@ PLAYER_RECENT = timedelta(hours=24)
 # A server agent's player list is current if it reported it this recently (it reports at least every 2 min).
 PLAYERS_FRESH = timedelta(minutes=10)
 PILOT_HOOK_ACCEPT = ("ours", "any")
-# A carrier rebuilt from a jet (detect/rebuild.py): its type isn't known; the Nimitz class's deck is assumed.
+# A carrier rebuilt from a jet (detect/rebuild.py): the mission's carrier the approach ended nearest, as the pilot
+# hook names it (version 6); else unknown, and the Nimitz class's deck is assumed.
 REBUILT_CARRIER_TYPE = "CVN_71"
 REBUILT_CARRIER_UNIT = "rebuilt from the jet (Nimitz class assumed)"
 REBUILT_STOP_S = 20.0  # the trap found against the rebuilt carrier ends this close to the jet's stop
@@ -411,18 +412,32 @@ class Hub:
                                if (r.slice.sidecar or {}).get("weather")), None)
         return result
 
+    @staticmethod
+    def _rebuilt_carrier(p: Pass) -> tuple[str, str] | None:
+        """The type and unit name a carrier rebuilt from `p`'s jet is: the mission's, as the pilot hook named it,
+        else the Nimitz class assumed. None: a carrier with no deck data here (it can't be graded)."""
+        named = (p.slice.sidecar or {}).get("mission_carrier") or {}
+        ctype = named.get("type")
+        if not ctype:
+            return REBUILT_CARRIER_TYPE, REBUILT_CARRIER_UNIT
+        if ctype not in CARRIERS:
+            return None
+        return ctype, f"{named.get('unit') or ctype} (rebuilt from the jet)"[:100]
+
     def _rebuilt_pass(self, p: Pass) -> PassResult | None:
         """The trap in `p`'s own-jet track, against the carrier rebuilt from it (placed by DCS's wire if known)."""
+        carrier = self._rebuilt_carrier(p)
+        if carrier is None:
+            return None
         recording = load_recording(self.store.path(p.slice.sha256))
         plane = recording.objects.get(p.aircraft_id)
         if plane is None or plane.name not in AIRCRAFT:
             return None
-        rebuilt = rebuild_carrier(plane, CARRIERS[REBUILT_CARRIER_TYPE], AIRCRAFT[plane.name], p.wire)
+        rebuilt = rebuild_carrier(plane, CARRIERS[carrier[0]], AIRCRAFT[plane.name], p.wire)
         if rebuilt is None:
             return None
         carrier_id = max(recording.objects) + 1
-        objects = {**recording.objects, carrier_id: ObjectTrack(carrier_id, {"Name": REBUILT_CARRIER_TYPE},
-                                                                rebuilt.samples)}
+        objects = {**recording.objects, carrier_id: ObjectTrack(carrier_id, {"Name": carrier[0]}, rebuilt.samples)}
         traps = [c for c in find_passes(Recording(recording.globals, objects, recording.first_frame))
                  if c.aircraft_id == p.aircraft_id and c.outcome is Outcome.TRAP
                  and abs(c.end_time - rebuilt.stop_time) <= REBUILT_STOP_S]
@@ -441,7 +456,7 @@ class Hub:
             result = None
         elevation = (row.slice.sidecar or {}).get("sun_elevation")
         if result is not None:
-            row.kind, row.carrier_type, row.carrier_unit = "rebuilt", REBUILT_CARRIER_TYPE, REBUILT_CARRIER_UNIT
+            row.kind, (row.carrier_type, row.carrier_unit) = "rebuilt", self._rebuilt_carrier(row)
             row.start_time, row.end_time = result.start_time, result.end_time
             row.night = None if elevation is None else float(elevation) < NIGHT_BELOW_DEG
             self._regrade(s, row)
@@ -527,7 +542,7 @@ class Hub:
                 rebuilt = None
             if rebuilt is None:
                 return self._grade_dcs_only(s, row)
-            row.kind, row.carrier_type, row.carrier_unit = "rebuilt", REBUILT_CARRIER_TYPE, REBUILT_CARRIER_UNIT
+            row.kind, (row.carrier_type, row.carrier_unit) = "rebuilt", self._rebuilt_carrier(row)
             row.start_time, row.end_time = rebuilt.start_time, rebuilt.end_time
         reports = self.reports(row, s)
         loaded = self.load_pass(row, reports, s)

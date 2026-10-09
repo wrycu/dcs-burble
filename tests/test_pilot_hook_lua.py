@@ -183,7 +183,8 @@ local callbacks
 package.preload['terrain'] = function() return { GetTerrainConfig = function(k) if k == 'SummerTimeDelta' then return 0 end end } end
 DCS = { setUserCallbacks = function(c) callbacks = c end, getMissionName = function() return 'MISSION' end,
         isMultiplayer = function() return true end,
-        getCurrentMission = function() return { mission = { date = { Year = 2016, Month = 6, Day = 21 }, start_time = 28800 } } end,
+        getCurrentMission = function() return { mission = { date = { Year = 2016, Month = 6, Day = 21 }, start_time = 28800,
+                                                               coalition = MISSION_COALITION } } end,
         getSunAzimuthElevation = function(lat, lon, y, m, d, seconds)
           print(string.format('SUN %.4f %.4f %d-%02d-%02d %.0f', lat, lon, y, m, d, seconds))
           return 95.0, -12.5
@@ -297,13 +298,41 @@ def test_uploader_logs_once_that_a_newer_version_is_out(tmp_path, recorded):
     run_uploader(tmp_path, recorded[0], send_to_all=True)
     sent = [line for line in run_uploader.log if "->" in line]
     updates = [line for line in run_uploader.log if "newer pilot hook" in line]
-    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 5): see http://hub1:8000"]
+    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 6): see http://hub1:8000"]
 
 
 def test_uploader_sends_dcss_own_sun(tmp_path, recorded):
     requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False)
     (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
     assert json.loads(body)["sun_elevation"] == -12.5
+
+
+def test_uploader_names_the_missions_carrier_nearest_the_approach(tmp_path, recorded):
+    """For a hub rebuilding the carrier from the jet: the mission's carrier whose route passes nearest the stop."""
+    last = recorded[0].read_text().strip().splitlines()[-1].split(",")
+    x, z = float(last[1]), float(last[3])
+
+    def ship(kind, name, at_x, at_y, route):
+        points = ", ".join(f"{{ x = {px}, y = {py} }}" for px, py in route)
+        return (f"{{ units = {{ {{ type = '{kind}', name = '{name}', x = {at_x}, y = {at_y} }} }}, "
+                f"route = {{ points = {{ {points} }} }} }}")
+
+    # Blue's Truman starts 60 km away but its route runs past the stop; red's carrier is 30 km away; a
+    # destroyer sits right there (not a carrier).
+    blue = ", ".join([ship("CVN_75", "Truman", x - 60000, z, [(x - 60000, z), (x + 20000, z + 500)]),
+                      ship("USS_Arleigh_Burke_IIa", "Escort", x, z, [])])
+    red = ship("CV_1143_5", "Kuznetsov", x + 30000, z, [(x + 30000, z), (x + 40000, z)])
+    coalition = (f"MISSION_COALITION = {{ blue = {{ country = {{ {{ ship = {{ group = {{ {blue} }} }} }} }} }},"
+                 f" red = {{ country = {{ {{ ship = {{ group = {{ {red} }} }} }} }} }} }}\n")
+    requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False, driver=coalition + IN_MISSION)
+    (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
+    assert json.loads(body)["mission_carrier"] == {"type": "CVN_75", "unit": "Truman"}
+
+
+def test_without_carriers_in_the_mission_none_is_named(tmp_path, recorded):
+    requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False)
+    (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
+    assert "mission_carrier" not in json.loads(body)
 
 
 def test_a_hub_that_was_down_while_flying_still_gets_the_approach(tmp_path, recorded):

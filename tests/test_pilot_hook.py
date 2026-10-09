@@ -450,6 +450,26 @@ def test_a_trap_on_another_server_is_graded_against_the_carrier_rebuilt_from_the
     assert landing["accuracy"]["wire"]["level"] == "Full"
 
 
+def test_the_rebuilt_carrier_is_the_missions(tmp_path):
+    """The pilot hook names the mission's carrier the approach ended nearest (version 6): its deck and name."""
+    hub, client, token = other_communitys_hub(tmp_path)
+    named = {"type": "CVN_73", "unit": "CVN-73 George Washington"}
+    post(client, {**hook_upload(), "version": 6, "here": False, "mission_carrier": named}, token)
+    (landing,) = client.get("/api/v1/passes?days=0").json()
+    assert landing["outcome"] == "trap" and landing["carrier"] == "CVN-73 George Washington (rebuilt from the jet)"
+    with hub.sessions() as s:
+        assert s.get(Pass, landing["id"]).carrier_type == "CVN_73"
+    assert "Nimitz class assumed" not in client.get(f"/passes/{landing['id']}").text
+
+
+def test_a_missions_carrier_with_no_deck_data_isnt_rebuilt(tmp_path):
+    hub, client, token = other_communitys_hub(tmp_path)
+    named = {"type": "CV_1143_5", "unit": "Admiral Kuznetsov"}  # no deck data: DCS's grade alone
+    post(client, {**hook_upload(dcs_grade=DCS_GRADE), "version": 6, "here": False, "mission_carrier": named}, token)
+    (landing,) = client.get("/api/v1/passes?days=0").json()
+    assert landing["accuracy"]["approach"]["level"] == "None" and landing["dcs_grade"] == DCS_GRADE
+
+
 def test_a_track_on_this_hubs_server_waits_for_the_server_report(tmp_path):
     hub, client, token = other_communitys_hub(tmp_path)
     (report,) = post(client, {**hook_upload(), "version": 3, "here": True}, token).json()["reports"]

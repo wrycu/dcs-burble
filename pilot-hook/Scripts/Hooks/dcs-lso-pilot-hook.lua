@@ -21,7 +21,7 @@ package.cpath = package.cpath .. ';.\\LuaSocket\\?.dll;'
 local socket = require('socket')
 local lfs = require('lfs')
 
-local VERSION = 5
+local VERSION = 6
 local HUB_SLOTS = 3
 local SCAN_EVERY_S = 2          -- look for new approach files
 local HERE_EVERY_S = 60         -- ask the hubs again whether we're on one of their servers
@@ -197,6 +197,56 @@ local function sun_elevation(lat, lon, model_time)
   if ok then return tonumber(elevation) end
 end
 
+-- The carrier in the mission an approach ended nearest (its type and unit name), for a hub that rebuilds the
+-- carrier from the jet (on a server that doesn't let clients see other objects, the recorder has no carrier).
+-- Carriers move, so each is a line through its route's waypoints, from where it starts; scripted turns into the
+-- wind make that rough, but it only has to pick between carriers usually far apart. x, z: the jet's (north, east),
+-- the mission's x, y. Only for the mission running now.
+local CARRIER_TYPES = { 'CVN', 'Stennis', 'Forrestal', 'CV_1143', 'ara_vdm' }
+
+local function is_carrier_type(name)
+  for _, pattern in ipairs(CARRIER_TYPES) do
+    if tostring(name or ''):find(pattern, 1, true) then return true end
+  end
+  return false
+end
+
+local function segment_distance(px, py, ax, ay, bx, by)
+  local dx, dy = bx - ax, by - ay
+  local len2 = dx * dx + dy * dy
+  local f = len2 > 0 and math.max(0, math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) or 0
+  return math.sqrt((px - ax - f * dx) ^ 2 + (py - ay - f * dy) ^ 2)
+end
+
+local function mission_carrier(x, z)
+  if not (DCS.getCurrentMission and x and z) then return nil end
+  local current = DCS.getCurrentMission()
+  local coalitions = current and current.mission and current.mission.coalition
+  if type(coalitions) ~= 'table' then return nil end
+  local best, best_d
+  for _, side in pairs(coalitions) do
+    for _, country in ipairs(type(side) == 'table' and side.country or {}) do
+      for _, group in ipairs(type(country.ship) == 'table' and country.ship.group or {}) do
+        local points = type(group.route) == 'table' and group.route.points or {}
+        for _, unit in ipairs(group.units or {}) do
+          if is_carrier_type(unit.type) and tonumber(unit.x) and tonumber(unit.y) then
+            local ax, ay = unit.x, unit.y
+            local d = math.sqrt((x - ax) ^ 2 + (z - ay) ^ 2)
+            for _, wp in ipairs(points) do
+              if tonumber(wp.x) and tonumber(wp.y) then
+                d = math.min(d, segment_distance(x, z, ax, ay, wp.x, wp.y))
+                ax, ay = wp.x, wp.y
+              end
+            end
+            if not best_d or d < best_d then best, best_d = unit, d end
+          end
+        end
+      end
+    end
+  end
+  if best then return tostring(best.type), tostring(best.name or best.type) end
+end
+
 -- The hubs that said "you're on one of our servers" this session, as "url|url" (kept with the session and each
 -- file, so files sent after leaving the server still go to that server's hub).
 local function here_list()
@@ -228,13 +278,15 @@ local function stamp(name)
   local current = context.started and written >= context.started - 60
   local ctx = current and context or previous
   if not ctx or not ctx.mission then return end
-  local elevation
+  local elevation, carrier_type, carrier_unit
   if current then
     local _, csv = read_file(path)
     local last = csv:match('([^\n]+)$') or ''
     local fields = {}
     for v in last:gmatch('[^,]+') do fields[#fields + 1] = tonumber(v) end
     elevation = sun_elevation(fields[9], fields[10], tonumber(meta.model_time))
+    local ok, ctype, cunit = pcall(mission_carrier, fields[2], fields[4])
+    if ok and ctype then carrier_type, carrier_unit = ctype, cunit end
   end
   local f = io.open(path, 'a')
   if not f then return end
@@ -246,6 +298,10 @@ local function stamp(name)
   local answered = current and answered_list() or ctx.answered
   if answered and answered ~= '' then f:write('# answered=', answered, '\n') end
   if elevation then f:write(string.format('# sun_elevation=%.2f\n', elevation)) end
+  if carrier_type then
+    f:write('# mission_carrier_type=', (carrier_type:gsub('[\r\n]', ' ')), '\n')
+    f:write('# mission_carrier_unit=', (carrier_unit:gsub('[\r\n]', ' ')), '\n')
+  end
   f:close()
 end
 
@@ -261,6 +317,8 @@ local function upload_body(meta, csv, carrier, calls, here)
     .. ',"sent_model_time":' .. (tonumber(meta.model_time) or 0)
     .. (tonumber(meta.sun_elevation) and (',"sun_elevation":' .. tonumber(meta.sun_elevation)) or '')
     .. ',"csv":' .. json_string(csv)
+    .. (meta.mission_carrier_type and (',"mission_carrier":{"type":' .. json_string(meta.mission_carrier_type)
+        .. ',"unit":' .. json_string(meta.mission_carrier_unit) .. '}') or '')
     .. (meta.dcs_grade and (',"dcs_grade":' .. json_string(meta.dcs_grade)) or '')
     .. (calls and (',"calls":' .. calls.raw .. ',"calls_from":' .. json_string(calls.from)) or '')
     .. (carrier ~= '' and meta.carrier_type and (',"carrier":{"type":' .. json_string(meta.carrier_type)

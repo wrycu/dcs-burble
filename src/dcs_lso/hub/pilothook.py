@@ -48,7 +48,7 @@ PLACEHOLDER_REFERENCE = "2000-01-01T00:00:00Z"
 
 # The pilot hook's latest version (`VERSION` in pilot-hook/Scripts/Hooks/dcs-lso-pilot-hook.lua). The hub tells an
 # older hook in its reply, and the hook logs that an update is available.
-PILOT_HOOK_VERSION = 5  # 5: loads the recorder itself (no Export.lua line); 4: sends to hubs that didn't answer while it was flown (they decide); 3: says whether this hub was the server's when the approach was flown (`here`)
+PILOT_HOOK_VERSION = 6  # 6: names the mission's carrier nearest the approach (for a rebuilt carrier); 5: loads the recorder itself (no Export.lua line); 4: sends to hubs that didn't answer while it was flown (they decide); 3: says whether this hub was the server's when the approach was flown (`here`)
 
 
 class HookUploadError(ValueError):
@@ -86,6 +86,9 @@ class HookUpload:
     # DCS's own LSO grade for the pass, from the pilot's debrief.log (e.g. "LSO: GRADE:OK : (LOAR)  WIRE# 1"):
     # sent again once DCS has written it (at the end of the mission); a re-upload may add it.
     dcs_grade: str | None = None
+    # The mission's carrier the approach ended nearest (type, unit name), from the mission file (version 6): for a
+    # carrier rebuilt from the jet when the upload has none (the server doesn't let clients see other objects).
+    mission_carrier: tuple[str, str] | None = None
 
 
 def parse_upload(body: dict) -> HookUpload:
@@ -114,6 +117,12 @@ def parse_upload(body: dict) -> HookUpload:
             carrier_rows = _rows(str(c.get("csv") or ""), CARRIER_COLUMNS)
             if len(carrier_rows) >= 2:
                 carrier = HookCarrier(type=str(c["type"]), unit=str(c.get("unit") or c["type"])[:100], rows=carrier_rows)
+    mission_carrier = None
+    if isinstance(body.get("mission_carrier"), dict):
+        c = body["mission_carrier"]
+        ctype = str(c.get("type") or "").strip()[:50]
+        if ctype:
+            mission_carrier = (ctype, str(c.get("unit") or ctype).strip()[:100] or ctype)
     sent_at = None
     if body.get("sent_at") is not None:
         try:
@@ -135,7 +144,8 @@ def parse_upload(body: dict) -> HookUpload:
                       onboard_num=optional("onboard_num"), rows=rows, carrier=carrier,
                       sun_elevation=_number(body.get("sun_elevation")), calls=_calls(body.get("calls")),
                       calls_from=optional("calls_from"), dcs_grade=_dcs_grade(body.get("dcs_grade")),
-                      here=body["here"] if isinstance(body.get("here"), bool) else None)
+                      here=body["here"] if isinstance(body.get("here"), bool) else None,
+                      mission_carrier=mission_carrier)
 
 
 def _dcs_grade(value: object) -> str | None:
@@ -260,6 +270,8 @@ def hook_reports(upload: HookUpload, work_dir: Path) -> list[tuple[bytes, dict]]
         if upload.sent_at is not None and upload.sent_model_time is not None:
             ended = upload.sent_at - timedelta(seconds=max(0.0, upload.sent_model_time - end))
             meta["pass"]["occurred_at"] = (ended - timedelta(seconds=end - start)).isoformat()
+        if upload.mission_carrier is not None:
+            meta["mission_carrier"] = {"type": upload.mission_carrier[0], "unit": upload.mission_carrier[1]}
         if upload.livery or upload.onboard_num:
             meta["aircraft"] = {"livery": upload.livery, "onboard_num": upload.onboard_num}
         reports.append((data, meta))
