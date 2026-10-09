@@ -83,6 +83,8 @@ LoGetWorldObjects = function()
                     Position = { x = s[11], y = s[12], z = s[13] }, Heading = s[14], LatLongAlt = { Lat = s[15], Long = s[16] } } }
 end
 LoGetPilotName = function() return 'Wrycu' end
+dofile(RECORDER_PATH)  -- from an old install's line in Export.lua: does nothing
+DCSLSO_PILOT_HOOK = true  -- as the pilot hook runs it
 dofile(RECORDER_PATH)
 for n = 1, #samples do i = n; LuaExportAfterNextFrame() end
 print('LOG mission ends')
@@ -101,6 +103,7 @@ def recorded(tmp_path_factory) -> Path:
     files = sorted((root / "Logs" / "dcs-lso").glob("approach-*.csv"))
     assert len(files) == 1, out.stdout
     logs = [line for line in out.stdout.splitlines() if line.startswith("LOG ")]
+    assert logs.count("LOG recorder loaded") == 1 and any("no longer needed" in line for line in logs)
     # Written a few seconds after the trap (on deck), not only when the mission ends.
     assert logs.index("LOG mission ends") > next(i for i, line in enumerate(logs) if "written" in line)
     return files[0], chained
@@ -188,6 +191,9 @@ DCS = { setUserCallbacks = function(c) callbacks = c end, getMissionName = funct
 net = { get_my_player_id = function() return 2 end,
         get_player_info = function() return { ucid = 'UCID', name = 'Wrycu', ipaddr = 'HOME' } end,
         get_server_host = function() return '192.168.1.238:10308' end }
+local export_calls = 0
+Export = { LoGetModelTime = function() export_calls = export_calls + 1 return clock end,
+           LoGetSelfData = function() return nil end }  -- in the menus' sense: no jet
 local menu_tick
 if WITH_UPDATE_MANAGER then
   package.preload['UpdateManager'] = function() return { add = function(f) menu_tick = f end, delete = function() end } end
@@ -268,11 +274,30 @@ def test_uploader_sends_to_the_current_servers_hub(tmp_path, recorded):
     assert list((out_dir / "sent").glob("approach-*.csv")) and not list(out_dir.glob("approach-*.csv"))
 
 
+def test_the_hook_runs_the_recorder(tmp_path, recorded):
+    """No Export.lua line needed: the hook loads the recorder as the mission starts and runs it every frame,
+    with DCS's Export.Lo* functions."""
+    (tmp_path / "Scripts").mkdir()
+    shutil.copy(RECORDER, tmp_path / "Scripts" / RECORDER.name)
+    driver = IN_MISSION + "print('LOG export calls ' .. export_calls)\n"
+    run_uploader(tmp_path, recorded[0], send_to_all=True, driver=driver)
+    assert run_uploader.log.count("recorder loaded") == 1
+    assert not any("recorder not loaded" in line for line in run_uploader.log)
+    calls = int(next(line for line in run_uploader.log if line.startswith("export calls")).split()[-1])
+    assert calls >= 399  # every frame after the first
+
+
+def test_without_the_recorder_file_the_hook_says_so(tmp_path, recorded):
+    run_uploader(tmp_path, recorded[0], send_to_all=True)
+    assert any(line.startswith("recorder not loaded: ") for line in run_uploader.log)
+    assert len([line for line in run_uploader.log if "->" in line]) == 2  # still sends
+
+
 def test_uploader_logs_once_that_a_newer_version_is_out(tmp_path, recorded):
     run_uploader(tmp_path, recorded[0], send_to_all=True)
     sent = [line for line in run_uploader.log if "->" in line]
     updates = [line for line in run_uploader.log if "newer pilot hook" in line]
-    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 4): see http://hub1:8000"]
+    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 5): see http://hub1:8000"]
 
 
 def test_uploader_sends_dcss_own_sun(tmp_path, recorded):

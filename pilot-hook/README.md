@@ -14,12 +14,10 @@ Scripts/Hooks/dcs-lso-pilot-hook.lua the uploader
 Scripts/dcs-lso-pilot-recorder.lua   the recorder
 ```
 
-Then add this line at the **end** of `Saved Games/DCS/Scripts/Export.lua` (create the file if you don't have
-one; keep any Tacview, SRS or other lines above it):
-
-```lua
-pcall(function() dofile(lfs.writedir() .. [[Scripts\dcs-lso-pilot-recorder.lua]]) end)
-```
+Nothing goes in `Export.lua`: the uploader loads the recorder itself as each mission starts. If you installed
+an older version, you can remove its `dcs-lso-pilot-recorder.lua` line from `Scripts/Export.lua` (left in, it's
+harmless: the recorder still runs once). That line used to disappear whenever SRS or another installer rewrote
+`Export.lua`.
 
 ## Set up
 
@@ -48,7 +46,8 @@ In DCS: **Options > Special > DCS-LSO**.
 - With "send to all", the other hubs also get the live calls the LSO made on that server: the uploader asks the
   server's hub for them first, so those hubs get your pass up to a minute later.
 - Your trap shows up on the hub's greenie board, merged with the server's report of the same landing.
-- What it's doing is logged in `Saved Games/DCS/Logs/dcs.log`, on lines starting with `DCSLSO-PILOT`.
+- What it's doing is logged in `Saved Games/DCS/Logs/dcs.log`, on lines starting with `DCSLSO-PILOT`;
+  `recorder loaded` at the start of each mission means it's recording.
 
 Uploads use plain HTTP, because DCS's Lua can't do HTTPS. They contain your jet's track (and the carrier's, when visible), your DCS name and
 account id (UCID), the server's address, whether that hub was the server's hub when you flew it (shown on the

@@ -6,12 +6,16 @@
 -- one flown on another community's server). The pilot hook's uploader
 -- (Scripts/Hooks/dcs-lso-pilot-hook.lua) sends those files to the hubs set in Options > Special > DCS-LSO.
 --
--- Install: add this line at the END of Saved Games/DCS/Scripts/Export.lua (after Tacview's and SRS's):
---   pcall(function() dofile(lfs.writedir() .. [[Scripts\dcs-lso-pilot-recorder.lua]]) end)
--- It calls the export functions defined before it, so Tacview and SRS keep working; any error here is
--- logged and switches the recorder off rather than affecting them.
+-- Run by the pilot hook (Scripts/Hooks/dcs-lso-pilot-hook.lua), every frame, with DCS's export functions
+-- (Export.Lo*, which hooks can call) as its LoGet* functions: nothing needs adding to Export.lua, which SRS's
+-- and others' installers rewrite. A line left in Export.lua by an older install loads it there too; it then
+-- does nothing, so each approach is recorded once.
 
-do
+if not DCSLSO_PILOT_HOOK then
+  if log and log.write then
+    log.write('DCSLSO-PILOT', log.INFO, 'recorder: the line in Export.lua is no longer needed (the pilot hook runs it)')
+  end
+else
   local VERSION = 2
   local RATE_S = 0.02                -- sample interval (50 Hz)
   local LEAD_S, TAIL_S = 45, 10      -- seconds kept before an approach starts, and recorded after it ends

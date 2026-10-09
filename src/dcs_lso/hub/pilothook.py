@@ -1,4 +1,4 @@
-"""Uploads from the pilot hook: a pilot's own jet, recorded by DCS's Export.lua on their PC.
+"""Uploads from the pilot hook: a pilot's own jet, recorded in DCS's export environment on their PC.
 
 The pilot hook sends one upload per approach (JSON), with the jet's samples as CSV text (simple to build
 in DCS's Lua). Columns, one row per frame (or whatever rate the hook sends):
@@ -48,7 +48,7 @@ PLACEHOLDER_REFERENCE = "2000-01-01T00:00:00Z"
 
 # The pilot hook's latest version (`VERSION` in pilot-hook/Scripts/Hooks/dcs-lso-pilot-hook.lua). The hub tells an
 # older hook in its reply, and the hook logs that an update is available.
-PILOT_HOOK_VERSION = 4  # 4: sends to hubs that didn't answer while it was flown (they decide); 3: says whether this hub was the server's when the approach was flown (`here`)
+PILOT_HOOK_VERSION = 5  # 5: loads the recorder itself (no Export.lua line); 4: sends to hubs that didn't answer while it was flown (they decide); 3: says whether this hub was the server's when the approach was flown (`here`)
 
 
 class HookUploadError(ValueError):

@@ -13,6 +13,7 @@
 -- straight away. After a mission, DCS's own grades from debrief.log are added to its approaches and sent again.
 -- Files that were sent go to Logs/dcs-lso/sent/; ones no hub took after a day, to unsent/. The queue and a
 -- "Send now" button are on the settings page (DCSLSO_PILOT.status / .retry, or status.txt and retry.flag).
+-- It also runs the recorder (Scripts/dcs-lso-pilot-recorder.lua) every frame: no Export.lua line needed.
 
 package.path = package.path .. ';.\\LuaSocket\\?.lua;'
 package.cpath = package.cpath .. ';.\\LuaSocket\\?.dll;'
@@ -20,7 +21,7 @@ package.cpath = package.cpath .. ';.\\LuaSocket\\?.dll;'
 local socket = require('socket')
 local lfs = require('lfs')
 
-local VERSION = 4
+local VERSION = 5
 local HUB_SLOTS = 3
 local SCAN_EVERY_S = 2          -- look for new approach files
 local HERE_EVERY_S = 60         -- ask the hubs again whether we're on one of their servers
@@ -529,7 +530,33 @@ end
 
 local callbacks = {}
 
+-- The recorder, run here every frame. It was written for Export.lua's environment; hooks have the same
+-- export functions as Export.Lo* (allowed on clients as the server sets), so it gets those as its LoGet*
+-- functions, in an environment of its own. (DCS only runs Export.lua in the export environment, and
+-- net.dostring_in into it is blocked unless allowed in autoexec.cfg.)
+local RECORDER = lfs.writedir() .. 'Scripts/dcs-lso-pilot-recorder.lua'
+local recorder = nil         -- the recorder's environment (its LuaExportAfterNextFrame / LuaExportStop)
+local recorder_wanted = false
+
+local function load_recorder()
+  if type(Export) ~= 'table' or not Export.LoGetSelfData then note('recorder not loaded: no export functions'); return end
+  local chunk, err = loadfile(RECORDER)
+  if not chunk then note('recorder not loaded: ' .. tostring(err)); return end
+  local env = { DCSLSO_PILOT_HOOK = true, lfs = lfs, log = log }
+  setmetatable(env, { __index = function(_, k)
+    if type(k) ~= 'string' or k:find('^LuaExport') then return nil end
+    if k == 'LoGetModelTime' and not Export.LoGetModelTime then return DCS.getModelTime end
+    if k:find('^Lo') then return Export[k] end
+    return _G[k]
+  end })
+  setfenv(chunk, env)
+  local ok, e = pcall(chunk)
+  if not ok then note('recorder not loaded: ' .. tostring(e)); return end
+  recorder = env
+end
+
 function callbacks.onSimulationStart()
+  recorder_wanted = true
   load_settings()
   previous = load_session() or previous
   context = { mission = DCS.getMissionName and DCS.getMissionName() or '', started = os.time() }
@@ -543,6 +570,9 @@ end
 -- Approaches written as the mission ends belong to it: stamp them now, and keep this session for any written
 -- after this (the recorder's last flush) and for its debrief.log.
 function callbacks.onSimulationStop()
+  recorder_wanted = false
+  if recorder and recorder.LuaExportStop then pcall(recorder.LuaExportStop) end
+  recorder = nil
   pcall(scan)
   previous, context = context, {}
 end
@@ -573,6 +603,11 @@ local function tick()
 end
 
 function callbacks.onSimulationFrame()
+  if recorder_wanted then
+    recorder_wanted = false
+    load_recorder()
+  end
+  if recorder and recorder.LuaExportAfterNextFrame then recorder.LuaExportAfterNextFrame() end
   if now() - last_tick > 1 then tick() end  -- UpdateManager isn't driving us
 end
 
