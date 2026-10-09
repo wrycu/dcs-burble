@@ -467,11 +467,11 @@ def test_the_rebuilt_carrier_is_close_to_the_real_one():
     carrier, plane = recording.objects[p.carrier_id], recording.objects[p.aircraft_id]
     rebuilt = rebuild_carrier(plane, CARRIERS[carrier.name], AIRCRAFT[plane.name], wire=2)
     real, ours = CarrierTimeline(carrier.samples), CarrierTimeline(rebuilt.samples)
-    for back_s, within_m in ((0, 3.0), (30, 15.0)):
+    for back_s, within_m in ((0, 3.0), (30, 5.0)):
         a, b = real.at(rebuilt.stop_time - back_s), ours.at(rebuilt.stop_time - back_s)
         assert math.hypot(a.u - b.u, a.v - b.v) < within_m
-    assert abs((rebuilt.heading - real.at(rebuilt.stop_time).heading + 180) % 360 - 180) < 0.5
-    assert abs(rebuilt.speed_ms - 13.9) < 1.0
+    assert abs((rebuilt.heading - real.at(rebuilt.stop_time).heading + 180) % 360 - 180) < 0.2
+    assert abs(rebuilt.speed_ms - 13.9) < 0.3
 
 
 def test_a_player_who_left_hours_ago_is_still_recognised(tmp_path, hub):

@@ -2,7 +2,9 @@
 share other objects with clients, where nothing records the carrier itself.
 
 After an arrestment the jet sits on the angled deck, moving with the ship:
-- the ship's velocity (speed and course) is the jet's once it has stopped;
+- the ship's velocity (speed and course) is the jet's once it has stopped: the fastest steady stretch in the
+  seconds after the stop (the wire then pulls the jet back a little, which only ever makes it slower over the
+  ground than the ship);
 - the ship's heading is that course (ships don't crab); for a ship standing still, the jet's heading down the
   angled deck during the rollout plus the deck angle;
 - where the jet stopped is a fixed runout past the wire it caught: with DCS's wire (carrier comms) that places
@@ -14,6 +16,7 @@ graded against as if it had been recorded.
 
 from __future__ import annotations
 
+import bisect
 import math
 from dataclasses import dataclass
 
@@ -33,9 +36,14 @@ ROLLOUT_MIN_MS = 5.0  # rollout samples: at least this fast relative to the ship
 SETTLED_MAX_S = 10.0  # use up to this long sitting on deck after the stop...
 TAXI_MS = 3.0  # ...until the jet moves off (taxiing) relative to the ship
 HEADING_STEP_DEG, HEADING_SEARCH_STEPS = 0.02, 200  # heading search: +-4 degrees around the first guess
+# The ship's velocity: the jet's over the fastest STEADY_WINDOW_S after the stop (from STEADY_FROM_S to
+# STEADY_TO_S) whose positions fit a straight line within STEADY_FIT_M. Measured on 22 own-jet traps (2026-10-08):
+# within 0.18 m/s of the real carrier (median 0.05), where the rollout fit below was up to 4.8 m/s out.
+STEADY_WINDOW_S, STEADY_STEP_S, STEADY_FROM_S, STEADY_TO_S, STEADY_FIT_M = 2.0, 0.5, 1.0, 8.0, 0.6
+SHIP_UNDERWAY_MS = 2.0  # slower: the ship's heading from the rollout (a course means little)
 # Where the jet sits when stopped, against the real carrier (measured on own-jet traps with the carrier recorded):
-STOP_LATERAL_M = -2.2  # mean of six traps: -4.7 to +0.1
-STOP_HOOK_HEIGHT_M = -0.24  # mean of six traps: -0.36 to -0.11
+STOP_LATERAL_M = -1.6  # 16 traps (2026-10-08): -4.7 to +3.0, mean -1.1; -1.6 matched the grades best (15 of 17)
+STOP_HOOK_HEIGHT_M = -0.18  # mean of 16 traps: -0.29 to 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +91,31 @@ def _still(samples: list[Sample], vel: list, i: int) -> tuple[int, float, float]
                 return i, mu, mv
         i += 1
     return None
+
+
+def _ship_velocity(samples: list[Sample], t0: float) -> tuple[float, float] | None:
+    """The jet's velocity over the fastest steady stretch after `t0` (the stop), if any (see STEADY_*)."""
+    times = [s.time for s in samples]
+    best: tuple[float, float] | None = None
+    a = t0 + STEADY_FROM_S
+    while a <= t0 + STEADY_TO_S:
+        pts = [(s.time, s.transform.u, s.transform.v)
+               for s in samples[bisect.bisect_left(times, a):bisect.bisect_right(times, a + STEADY_WINDOW_S)]]
+        a += STEADY_STEP_S
+        if len(pts) < 5:
+            continue
+        mt = sum(p[0] for p in pts) / len(pts)
+        mu = sum(p[1] for p in pts) / len(pts)
+        mv = sum(p[2] for p in pts) / len(pts)
+        stt = sum((p[0] - mt) ** 2 for p in pts)
+        if stt <= 0:
+            continue
+        vu = sum((p[0] - mt) * (p[1] - mu) for p in pts) / stt
+        vv = sum((p[0] - mt) * (p[2] - mv) for p in pts) / stt
+        fit = max(math.hypot(p[1] - mu - vu * (p[0] - mt), p[2] - mv - vv * (p[0] - mt)) for p in pts)
+        if fit <= STEADY_FIT_M and (best is None or math.hypot(vu, vv) > math.hypot(*best)):
+            best = (vu, vv)
+    return best
 
 
 def rebuild_carrier(plane: ObjectTrack, carrier: CarrierInfo, aircraft: AircraftInfo,
@@ -159,6 +192,9 @@ def rebuild_carrier(plane: ObjectTrack, carrier: CarrierInfo, aircraft: Aircraft
     _, heading, slope = best
     heading %= 360.0
     ship_speed = max(0.0, slope / sin_d)
+    steady = _ship_velocity(samples, samples[still].time)
+    if steady is not None and math.hypot(*steady) >= SHIP_UNDERWAY_MS:
+        heading, ship_speed = math.degrees(math.atan2(*steady)) % 360.0, math.hypot(*steady)
     vu, vv = ship_speed * math.sin(math.radians(heading)), ship_speed * math.cos(math.radians(heading))
     au, av = math.sin(math.radians(heading - carrier.deck_angle)), math.cos(math.radians(heading - carrier.deck_angle))
     check = None
