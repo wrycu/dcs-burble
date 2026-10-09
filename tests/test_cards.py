@@ -106,3 +106,16 @@ def test_card_zooms_into_a_stretch_of_the_approach():
     # Only the calls in view get a marker (all are still listed below the card).
     assert zoomed.count('class="tc-call"') == 1 and "re high (0.49 nm)" in zoomed
     assert "drag across" not in render_card(p, grade_pass(p))  # offline cards: no hint
+
+
+def test_a_pilots_call_reads_above_the_answer():
+    """Recorded at the same moment (as the agent does): the pilot's call still goes first, above the answer."""
+    (p,) = find_passes(load_recording(FIXTURES / "ai_hornet_trap_cvn75.zip.acmi"))
+    pilot = {"time": 5.0, "along": 900.0, "call": "clara", "text": "015, Clara", "by": "pilot"}
+    answer = {"time": 5.0, "along": 900.0, "call": "roger clara"}
+    for calls in ([pilot, answer], [answer, pilot]):  # stored in either order
+        svg = render_card(p, grade_pass(p), calls=calls)
+        root = ET.fromstring(svg)
+        y = {t.text: float(t.get("y")) for t in root.iter(f"{SVG}text") if "tc-call-label" in t.get("class", "")}
+        assert y["“015, Clara”"] < y["Roger clara"]
+        assert svg.index("Pilot:") < svg.index("LSO calls:")

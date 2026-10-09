@@ -226,6 +226,11 @@ def call_label(call: dict) -> str:
     return text[:1].upper() + text[1:]
 
 
+def _said_order(call: dict) -> tuple[float, int]:
+    """In the order said: a pilot's call before the LSO's answer to it (they're recorded at the same time)."""
+    return call.get("time", 0.0), 0 if call.get("by") == "pilot" else 1
+
+
 def _call_markers(calls: list[dict], samples: list[PassSample], x: Axis, y_of, top: float, height: float,
                   out: list[str]) -> None:
     """Live calls the LSO made: a marker on the track where each was given, with its label on the
@@ -235,7 +240,7 @@ def _call_markers(calls: list[dict], samples: list[PassSample], x: Axis, y_of, t
         return
     size, row = 11, 14
     placed: list[tuple[float, float, float, float]] = []  # label boxes: x0, y0, x1, y1
-    for call in sorted(calls, key=lambda c: c.get("time", 0.0), reverse=True):
+    for call in sorted(calls, key=_said_order, reverse=True):
         near = min((s for s in samples if s.along >= 0), key=lambda s: abs(s.along - call["along"]), default=samples[0])
         cx, cy = x(near.along), y_of(near)
         label = call_label(call)
@@ -466,7 +471,7 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     `dark`: always the dark colours (otherwise they follow the viewer's light or dark mode). `accuracy`: the
     landing's overall accuracy level (hub/accuracy.py), shown as a badge; `elsewhere`: flown on another
     server than the hub's own, marked beside it."""
-    calls = sorted(calls or [], key=lambda c: c["time"])
+    calls = sorted(calls or [], key=_said_order)
     listed: list[tuple[str, list[str]]] = []  # (heading, items) for each line of the lists below the table
     for heading, group in (("Pilot:", [c for c in calls if c.get("by") == "pilot"]),
                            ("LSO calls:", [c for c in calls if c.get("by") != "pilot"])):
