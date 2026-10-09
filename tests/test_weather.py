@@ -5,13 +5,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from dcs_lso.agent.service import HookFeed
-from dcs_lso.cards.svg import KT, wind_text
-from dcs_lso.geometry import DeckWind, WindProfile
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.pages import weather_text
-from dcs_lso.hub.service import Hub
-from dcs_lso.slices import slice_recording
+from burble.agent.service import HookFeed
+from burble.cards.svg import KT, wind_text
+from burble.geometry import DeckWind, WindProfile
+from burble.hub.app import create_app
+from burble.hub.pages import weather_text
+from burble.hub.service import Hub
+from burble.slices import slice_recording
 
 FIXTURE = Path(__file__).parent / "fixtures" / "live" / "tomcat-trap-server.zip.acmi"
 
@@ -33,7 +33,7 @@ def test_wind_over_the_angled_deck():
 
 def _hooks(tmp_path) -> HookFeed:
     log_file = tmp_path / "dcs.log"
-    prefix = "2026-10-07 20:{:02d}:00.000 INFO    DCSLSO (Main): DCSLSO "
+    prefix = "2026-10-07 20:{:02d}:00.000 INFO    BURBLE (Main): BURBLE "
     log_file.write_text("\n".join([
         prefix.format(0) + '{"event":"handler_installed","t":0}',
         prefix.format(0) + '{"event":"weather","t":0,"dynamic":false,"ground_turbulence":12,"temperature":26,'
@@ -59,9 +59,9 @@ def test_backfill_carries_the_wind_and_weather_to_the_card(tmp_path):
 
 
 def test_wind_text_without_wind_or_turbulence():
-    from dcs_lso.detect.passes import Outcome, PassResult
+    from burble.detect.passes import Outcome, PassResult
     p = PassResult(1, "CVN_75", 2, "FA-18C_hornet", "Goose", Outcome.TRAP, 0.0, 1.0)
-    assert wind_text(p) == "Wind not recorded (no dcs-lso server hook)"
+    assert wind_text(p) == "Wind not recorded (no burble server hook)"
     p.deck_wind = DeckWind(25 * KT, 0.4, 0.0, 0.0, None)
     assert wind_text(p) == "Wind over deck 25 kt, straight down the angled deck · winds calm"
     p.deck_wind = DeckWind(25 * KT, -12.0, 10 * KT, 300.0, 0.1)

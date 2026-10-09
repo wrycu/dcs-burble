@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.passwords import FailureLimiter, hash_password, verify_password
-from dcs_lso.hub.service import Hub
-from dcs_lso.detect import find_passes
-from dcs_lso.slices import sidecar, slice_objects
+from burble.acmi import load_recording
+from burble.hub.app import create_app
+from burble.hub.passwords import FailureLimiter, hash_password, verify_password
+from burble.hub.service import Hub
+from burble.detect import find_passes
+from burble.slices import sidecar, slice_objects
 
 FIXTURES = Path(__file__).parent / "fixtures"
 OWN = FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi"  # Wrycu's own recording (his jet has AOA)

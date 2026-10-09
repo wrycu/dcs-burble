@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.callouts import Call, CalloutEngine, GrooveState, Thresholds
-from dcs_lso.callouts.rules import conditions
-from dcs_lso.callouts.sim import replay
-from dcs_lso.detect import find_passes
+from burble.acmi import load_recording
+from burble.callouts import Call, CalloutEngine, GrooveState, Thresholds
+from burble.callouts.rules import conditions
+from burble.callouts.sim import replay
+from burble.detect import find_passes
 
 NM = 1852.0
 FIXTURE = Path(__file__).parent / "fixtures" / "ai_hornet_trap_cvn75.zip.acmi"
@@ -174,7 +174,7 @@ def test_urgent_calls_follow_quickly_others_wait_longer():
 
 
 def test_welcome_kinds_and_picking():
-    from dcs_lso.callouts.voice import PHRASES, variants, welcome_kind
+    from burble.callouts.voice import PHRASES, variants, welcome_kind
     assert welcome_kind("Welcome home, good trap.") == welcome_kind("Welcome back aboard.") == "home"
     assert welcome_kind("Two wire, welcome aboard.") == "aboard"
     assert welcome_kind("Two wire. That was a wave off, by the way.") is None

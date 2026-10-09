@@ -1,4 +1,4 @@
-# dcs-lso
+# Burble
 
 An [LSO](https://en.wikipedia.org/wiki/Landing_signal_officer) for 
 [DCS World](https://www.digitalcombatsimulator.com/en/) carrier landings. It watches every pass at the carrier,

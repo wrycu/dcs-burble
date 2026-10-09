@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import AcmiParser, ObjectUpdate, load_recording
-from dcs_lso.acmi.stream import HandshakeError, TelemetryClient, crc64_we, password_hash, serve_recording
+from burble.acmi import AcmiParser, ObjectUpdate, load_recording
+from burble.acmi.stream import HandshakeError, TelemetryClient, crc64_we, password_hash, serve_recording
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ai_hornet_trap_cvn75.zip.acmi"
 
@@ -36,7 +36,7 @@ async def _stream_all(password_host, password_client):
 
 def test_stream_round_trip_matches_file():
     info, moved = asyncio.run(_stream_all(None, None))
-    assert info.name == "dcs-lso-replay"
+    assert info.name == "burble-replay"
     recording = load_recording(FIXTURE)
     assert moved == sum(len(t.samples) for t in recording.objects.values())
 

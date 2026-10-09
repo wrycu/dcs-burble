@@ -1,6 +1,6 @@
 import pytest
 
-from dcs_lso.acmi import AcmiParser, Frame, ObjectRemoved, ObjectUpdate
+from burble.acmi import AcmiParser, Frame, ObjectRemoved, ObjectUpdate
 
 
 def feed_all(parser: AcmiParser, text: str) -> list:

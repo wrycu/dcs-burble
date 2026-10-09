@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.callouts.estimator import LiveEstimator, LiveInput, derived_aoa
-from dcs_lso.callouts.sim import _inputs
-from dcs_lso.detect import find_passes
-from dcs_lso.geometry import FA18C, WindProfile
+from burble.acmi import load_recording
+from burble.callouts.estimator import LiveEstimator, LiveInput, derived_aoa
+from burble.callouts.sim import _inputs
+from burble.detect import find_passes
+from burble.geometry import FA18C, WindProfile
 
 PAIRS = Path(__file__).parent / "fixtures" / "server_vs_client"
 NM = 1852.0
@@ -92,7 +92,7 @@ def test_wind_is_taken_out_of_derived_aoa():
 def test_bank_is_accounted_for():
     # In a 30 deg bank, the airflow comes from below the nose in the aircraft's own frame, not
     # straight below in the world: pitch minus flight path would understate the AOA.
-    from dcs_lso.geometry import body_aoa
+    from burble.geometry import body_aoa
     aoa, bank = 8.0, 30.0
     # Body frame velocity (forward, right, down) for this AOA; level flight in the world.
     a = math.radians(aoa)

@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import Recording, load_recording
-from dcs_lso.acmi.reader import ObjectTrack
-from dcs_lso.callouts.sim import thin
-from dcs_lso.detect import find_passes
-from dcs_lso.grading import grade_pass
+from burble.acmi import Recording, load_recording
+from burble.acmi.reader import ObjectTrack
+from burble.callouts.sim import thin
+from burble.detect import find_passes
+from burble.grading import grade_pass
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -55,10 +55,10 @@ def test_no_estimate_from_a_servers_copy_of_a_clients_jet():
 
 def test_estimate_from_the_pilots_own_track_against_the_servers_carrier(tmp_path):
     """The same wire-2 trap as a merged landing: the pilot's track, the server's carrier."""
-    from dcs_lso.hub.db import Pass
-    from dcs_lso.hub.service import Hub
-    from dcs_lso.detect.approaches import find_approaches
-    from dcs_lso.slices import sidecar, slice_objects, track_sidecar
+    from burble.hub.db import Pass
+    from burble.hub.service import Hub
+    from burble.detect.approaches import find_approaches
+    from burble.slices import sidecar, slice_objects, track_sidecar
 
     hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
     hub.add_source("server1")
@@ -79,7 +79,7 @@ def test_a_pilot_hook_track_over_the_servers_carrier_stops_on_deck():
     """A real trap (2026-10-05): the pilot hook's 43 Hz track against the server's carrier. Between samples
     23 ms apart, position jitter alone read as several m/s, so the jet never counted as stopped and the trap
     was graded a bolter. Speed on deck is now measured over half a second."""
-    from dcs_lso.acmi import ObjectTrack, Recording
+    from burble.acmi import ObjectTrack, Recording
     live = Path(__file__).parent / "fixtures" / "live"
     server, hook = load_recording(live / "trap-server.zip.acmi"), load_recording(live / "trap-pilot-hook.zip.acmi")
     (server_jet,) = [o for o in server.objects.values() if o.name == "FA-18C_hornet"]

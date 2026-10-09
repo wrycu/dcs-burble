@@ -1,0 +1,24 @@
+# Burble hub (website, greenie board, grading, slice archive) as a systemd *user* service.
+# Listens on 127.0.0.1:8000 only; publish it through a reverse proxy (e.g. Caddy).
+# Install: cp deploy/systemd/*.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#          systemctl --user enable --now burble-hub
+# A new hub: create its data folder first, e.g. `uv run burble hub --data-dir ~/burble-data/central --create add-agent server1`
+# (the hub refuses a data folder without lso.db otherwise, so a mistyped path never starts an empty hub).
+[Unit]
+Description=Burble hub (greenie board, grading, ACMI archive)
+
+[Install]
+WantedBy=default.target
+
+[Service]
+WorkingDirectory=%h/dcs-burble
+# Optional settings, e.g. Discord (see `burble hub serve --help`):
+#   BURBLE_PUBLIC_URL=https://lso.example.com
+#   BURBLE_DISCORD_BOARD_WEBHOOK=https://discord.com/api/webhooks/...
+#   BURBLE_DISCORD_TRAPS_WEBHOOK=https://discord.com/api/webhooks/...
+#   BURBLE_PILOT_HOOK_ACCEPT=any        (take pilot hook traps flown on other servers, with a pilot token)
+#   BURBLE_OTHER_SERVERS=hidden         (those landings off the board unless a viewer picks "All servers")
+EnvironmentFile=-%h/.config/burble/hub.env
+ExecStart=%h/.local/bin/uv run --frozen burble hub --data-dir %h/burble-data/central serve --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5

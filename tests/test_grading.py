@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.detect import find_passes
-from dcs_lso.grading import GRADING_VERSION, Grade, Position, Remark, Severity, grade_pass
-from dcs_lso.grading.grade import POINTS, _trap_grade
+from burble.acmi import load_recording
+from burble.detect import find_passes
+from burble.grading import GRADING_VERSION, Grade, Position, Remark, Severity, grade_pass
+from burble.grading.grade import POINTS, _trap_grade
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -60,7 +60,7 @@ def test_all_positions_counted_on_full_passes():
 
 
 def test_grade_names_and_short_labels():
-    from dcs_lso.grading import grade_name, grade_short
+    from burble.grading import grade_name, grade_short
     assert grade_name("---") == "No Grade" and grade_short("---") == "NG"
     assert grade_name("C") == "Cut" and grade_short("C") == "C"
     assert grade_short("_OK_") == "OK+" and grade_name("?") == "?"

@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.hub.service import Hub
-from dcs_lso.detect import find_passes
-from dcs_lso.slices import sidecar, slice_objects
-from dcs_lso.srs import Radio
+from burble.acmi import load_recording
+from burble.hub.service import Hub
+from burble.detect import find_passes
+from burble.slices import sidecar, slice_objects
+from burble.srs import Radio
 from test_live_callouts import CONFIG, SlotHooks, clips, run_collector  # noqa: F401 (clips: a fixture)
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -72,7 +72,7 @@ def test_each_pass_goes_to_its_own_carrier(recording):
     passes = sorted((r.objects[p.carrier_id].pilot, p.pilot, p.outcome.value) for p in find_passes(r))
     assert passes == [(WASHINGTON, "Maverick", "trap"), (TRUMAN, "Wrycu", "trap")]
     # The same flight relative to its own deck: the same grade and wire estimate.
-    from dcs_lso.grading import grade_pass
+    from burble.grading import grade_pass
     graded = {p.pilot: (grade_pass(p).text, p.wire_estimate) for p in find_passes(r)}
     assert graded["Maverick"] == graded["Wrycu"]
 
@@ -99,7 +99,7 @@ def test_each_carriers_calls_go_out_on_its_own_frequency(tmp_path, clips, record
     assert per_jet[0x2C02] > 0 and per_jet[0x3C02] > 0
     assert per_radio == {FREQUENCIES[TRUMAN]: per_jet[0x2C02], FREQUENCIES[WASHINGTON]: per_jet[0x3C02]}
     # Two grooves at once, but on different carriers: neither is "busy", nobody fouls the other's deck.
-    from dcs_lso.callouts.rules import Call
+    from burble.callouts.rules import Call
     assert not any(text[:3] in ("301", "302") for text in sink.texts)
     assert Call.WAVE_OFF_FOUL_DECK not in {call for call, _ in sink.said}
     # Each uploaded pass names its carrier.
@@ -115,6 +115,6 @@ def test_hub_keeps_the_carrier_of_each_landing(tmp_path, recording):
         hub.ingest(1, recording.read_bytes(), sidecar(r, p, "x", slice_objects(r, p)))
     from fastapi.testclient import TestClient
 
-    from dcs_lso.hub.app import create_app
+    from burble.hub.app import create_app
     landings = TestClient(create_app(hub)).get("/api/v1/passes", params={"days": 0}).json()
     assert sorted((x["pilot"], x["carrier"]) for x in landings) == [("Maverick", WASHINGTON), ("Wrycu", TRUMAN)]

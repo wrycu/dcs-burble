@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import Transform, load_recording
-from dcs_lso.detect import Outcome, find_passes
-from dcs_lso.geometry import FA18C, NIMITZ, CarrierPose, DeckFrame
+from burble.acmi import Transform, load_recording
+from burble.detect import Outcome, find_passes
+from burble.geometry import FA18C, NIMITZ, CarrierPose, DeckFrame
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ai_hornet_trap_cvn75.zip.acmi"
 NM = 1852.0

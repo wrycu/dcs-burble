@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.acmi.stream import serve_recording
-from dcs_lso.hub.service import Hub
-from dcs_lso.detect import find_passes
-from dcs_lso.detect.approaches import find_approaches
-from dcs_lso.agent.service import Agent, AgentConfig
-from dcs_lso.slices import sidecar, slice_objects, track_sidecar
+from burble.acmi import load_recording
+from burble.acmi.stream import serve_recording
+from burble.hub.service import Hub
+from burble.detect import find_passes
+from burble.detect.approaches import find_approaches
+from burble.agent.service import Agent, AgentConfig
+from burble.slices import sidecar, slice_objects, track_sidecar
 
 PAIRS = Path(__file__).parent / "fixtures" / "server_vs_client"
 CALLS = [{"time": 1100.0, "along": 700.0, "call": "you're a little high"}]
@@ -49,7 +49,7 @@ def hub(tmp_path):
 def landings(hub: Hub):
     from fastapi.testclient import TestClient
 
-    from dcs_lso.hub.app import create_app
+    from burble.hub.app import create_app
     return TestClient(create_app(hub)).get("/api/v1/passes", params={"days": 0}).json()
 
 
@@ -69,7 +69,7 @@ def test_reports_of_one_landing_are_combined(hub, pilot_first):
     assert landing["wire"] == 3 and landing["dcs_grade"] == "LSO: GRADE:OK : WIRE# 3" and landing["calls"] == CALLS
     # ...and the pilot's track (recorded AOA, higher rate) is what's graded.
     with hub.sessions() as s:
-        from dcs_lso.hub.db import Pass
+        from burble.hub.db import Pass
         row = s.get(Pass, landing["id"])
         result = hub.load_pass(row)
     assert result.track_source == "Wrycu: wrycu-pc"
@@ -91,7 +91,7 @@ def test_a_different_landing_is_not_merged(hub):
 def test_the_board_lists_a_landing_under_every_source_that_reported_it(hub):
     from fastapi.testclient import TestClient
 
-    from dcs_lso.hub.app import create_app
+    from burble.hub.app import create_app
     hub.ingest(1, *server_report("trap"))
     hub.ingest(2, *pilot_report("trap"))
     client = TestClient(create_app(hub))
@@ -130,7 +130,7 @@ def test_pilot_mode_collector_uploads_its_own_track(tmp_path):
 def test_livery_and_side_number_are_kept_and_shown(hub):
     from fastapi.testclient import TestClient
 
-    from dcs_lso.hub.app import create_app
+    from burble.hub.app import create_app
     data, meta = server_report("trap")
     meta["aircraft"] = {"livery": "VFA-106 high visibility", "onboard_num": "301", "unit": "Hornet 2"}
     hub.ingest(1, data, meta)
@@ -157,7 +157,7 @@ def test_livery_and_side_number_are_kept_and_shown(hub):
 def test_pilot_collector_adds_dcs_wire_from_its_debrief(tmp_path, hub):
     """A multiplayer client's DCS writes its own traps' grades and wires to debrief.log at mission end;
     the pilot's agent re-uploads its track report with it, and the landing gets DCS's wire."""
-    from dcs_lso.dcslog import Debrief, DcsEvent
+    from burble.dcslog import Debrief, DcsEvent
 
     async def run():
         server = await serve_recording(PAIRS / "client-trap.zip.acmi", port=0, speed=0)
@@ -181,12 +181,12 @@ def test_pilot_collector_adds_dcs_wire_from_its_debrief(tmp_path, hub):
                  initiator_unit_type="FA-18C_hornet", initiator_object_id=dcs_id,
                  comment="LSO: GRADE:C : _EGTL_  3PTSIW  WIRE# 2[BC]"),
     ])
-    import dcs_lso.agent.service as collector_mod
+    import burble.agent.service as collector_mod
     collector_mod.load_debrief = lambda path: debrief  # (the file's format is covered by test_dcslog)
     try:
         assert agent.apply_debrief(session.names, debrief_path) == 1
     finally:
-        from dcs_lso.dcslog import load_debrief
+        from burble.dcslog import load_debrief
         collector_mod.load_debrief = load_debrief
     (item,) = agent.outbox.pending()
     assert item.meta()["dcs"]["wire"] == 2

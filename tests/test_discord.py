@@ -8,9 +8,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from dcs_lso.hub.db import Pass, Setting
-from dcs_lso.hub.discord import BOARD_SETTING, Discord
-from dcs_lso.hub.service import Hub
+from burble.hub.db import Pass, Setting
+from burble.hub.discord import BOARD_SETTING, Discord
+from burble.hub.service import Hub
 from test_pilot_hook import DCS_BOLTER, HOME, bolter_upload, client_at, hook_upload, post, server_report
 
 TRAPS = "https://discord.test/api/webhooks/1/traps"
@@ -121,7 +121,7 @@ def test_ingest_tells_discord(tmp_path):
 
 
 def test_board_image():
-    from dcs_lso.cards.board import BoardRow, render_board
+    from burble.cards.board import BoardRow, render_board
     import xml.etree.ElementTree as ET
     rows = [BoardRow("Wrycu", 3, 3.17, 2 / 3, [("OK", False), ("B", True), ("(OK)", False)]),
             BoardRow("Goose & <Maverick>", 1, None, 0.0, [("WO", False)])]
@@ -130,12 +130,12 @@ def test_board_image():
     assert "Wrycu" in svg and "Goose &amp; &lt;Maverick&gt;" in svg and "3.17" in svg and "67%" in svg
     assert svg.count("<circle") == 2  # one night landing, plus the legend's
     assert "No passes yet" in render_board([], 15)
-    from dcs_lso.hub.discord import png
+    from burble.hub.discord import png
     assert png(svg).startswith(b"\x89PNG")
 
 
 def test_board_image_has_a_section_per_airframe():
-    from dcs_lso.cards.board import BoardRow, render_board
+    from burble.cards.board import BoardRow, render_board
     import xml.etree.ElementTree as ET
     one = [BoardRow("Wrycu", 1, 4.0, 1.0, [("OK", False)], "F/A-18C Hornet")]
     assert "F/A-18C HORNET" not in render_board(one, 15)  # one airframe: no headings

@@ -258,7 +258,7 @@ wheels = [
 ]
 
 [[package]]
-name = "dcs-lso"
+name = "dcs-burble"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.dcslog import LsoGrade, follow, parse_hook_line
+from burble.dcslog import LsoGrade, follow, parse_hook_line
 
-HOOK = Path(__file__).parents[1] / "hooks" / "dcs-lso-server-hook.lua"
+HOOK = Path(__file__).parents[1] / "hooks" / "burble-server-hook.lua"
 
 STUBS = r"""
 LOG = {}
@@ -103,7 +103,7 @@ def test_hook_events_round_trip(lua_output):
 
 def test_parse_ignores_other_lines():
     assert parse_hook_line("2026-09-28 12:00:00.123 INFO    TACVIEW: something") is None
-    assert parse_hook_line("DCSLSO {not json") is None
+    assert parse_hook_line("BURBLE {not json") is None
 
 
 def test_follow_sees_appended_and_replaced_file(tmp_path):

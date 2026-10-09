@@ -10,16 +10,16 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.db import Pass
-from dcs_lso.hub.pilothook import parse_upload
-from dcs_lso.hub.service import Hub
+from burble.acmi import load_recording
+from burble.hub.app import create_app
+from burble.hub.db import Pass
+from burble.hub.pilothook import parse_upload
+from burble.hub.service import Hub
 from test_pilot_hook import HOME, JOINED_S, PILOT, SERVER, UCID, make_hub, server_report
 
 ROOT = Path(__file__).parents[1] / "pilot-hook"
-RECORDER = ROOT / "Scripts" / "dcs-lso-pilot-recorder.lua"
-UPLOADER = ROOT / "Scripts" / "Hooks" / "dcs-lso-pilot-hook.lua"
+RECORDER = ROOT / "Scripts" / "burble-pilot-recorder.lua"
+UPLOADER = ROOT / "Scripts" / "Hooks" / "burble-pilot-hook.lua"
 MISSION = "wrycu_training_syria_v1.12"
 
 
@@ -84,7 +84,7 @@ LoGetWorldObjects = function()
 end
 LoGetPilotName = function() return 'Wrycu' end
 dofile(RECORDER_PATH)  -- from an old install's line in Export.lua: does nothing
-DCSLSO_PILOT_HOOK = true  -- as the pilot hook runs it
+BURBLE_PILOT_HOOK = true  -- as the pilot hook runs it
 dofile(RECORDER_PATH)
 for n = 1, #samples do i = n; LuaExportAfterNextFrame() end
 print('LOG mission ends')
@@ -100,7 +100,7 @@ def recorded(tmp_path_factory) -> Path:
     script = f"RECORDER_PATH = {str(RECORDER)!r}\n" + RECORDER_STUBS.replace("SAMPLES", lua_samples())
     out = subprocess.run([luajit(), "-", f"{root}/"], input=script, capture_output=True, text=True, check=True)
     chained = int(next(line for line in out.stdout.splitlines() if line.startswith("CHAINED")).split()[1])
-    files = sorted((root / "Logs" / "dcs-lso").glob("approach-*.csv"))
+    files = sorted((root / "Logs" / "burble").glob("approach-*.csv"))
     assert len(files) == 1, out.stdout
     logs = [line for line in out.stdout.splitlines() if line.startswith("LOG ")]
     assert logs.count("LOG recorder loaded") == 1 and any("no longer needed" in line for line in logs)
@@ -113,7 +113,7 @@ def test_recorder_writes_the_approach(recorded):
     path, chained = recorded
     assert chained > 100  # the export function defined before ours still ran every frame
     lines = path.read_text().splitlines()
-    assert lines[0] == "# dcs-lso pilot hook 2" and "# aircraft=FA-18C_hornet" in lines and "# pilot=Wrycu" in lines
+    assert lines[0] == "# Burble pilot hook 2" and "# aircraft=FA-18C_hornet" in lines and "# pilot=Wrycu" in lines
     header, carrier = lines.index("t,x,y,z,heading,pitch,bank,aoa,lat,lon"), lines.index("## carrier")
     assert "# carrier_type=CVN_75" in lines and "# carrier_unit=CVN-75 Harry S. Truman" in lines
     carrier_csv = [line for line in lines[carrier:] if not line.startswith("#")]
@@ -131,7 +131,7 @@ FLAGS = FLAGS or ''
 local clock = 1000
 local options = { sendToAll = SEND_TO_ALL, hub1Url = 'http://hub1:8000', hub1Token = '',
                   hub2Url = 'https://hub2.example.com/lso/', hub2Token = ' tok2 ' }
-package.preload['optionsEditor'] = function() return { getOption = function(k) return options[k:gsub('^plugins%.DCS%-LSO%.', '')] end } end
+package.preload['optionsEditor'] = function() return { getOption = function(k) return options[k:gsub('^plugins%.Burble%.', '')] end } end
 package.preload['lfs'] = function()
   return { writedir = function() return WRITEDIR end, mkdir = function(p) os.execute('mkdir -p "' .. p .. '"') end,
            attributes = function(p)
@@ -215,7 +215,7 @@ def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool | None,
                  update_manager: bool = False, flags: str = "") -> tuple[list[str], Path]:
     """`send_to_all`: None as if never set. `flags`: "elsewhere" (on no hub's server), "ours" (`refuse` answers
     403: it only takes traps from its own servers)."""
-    out_dir = tmp_path / "Logs" / "dcs-lso"
+    out_dir = tmp_path / "Logs" / "burble"
     out_dir.mkdir(parents=True)
     # Written during this session (the uploader stamps it with the session's mission, account and server)...
     shutil.copy(approach, out_dir / approach.name)
@@ -251,7 +251,7 @@ def test_a_file_from_the_last_session_is_stamped_with_it(tmp_path, recorded):
     headers, body = posts["hub2.example.com"]
     assert "Authorization" not in headers and "here" not in body
     # This session is saved for next time.
-    assert f"mission={MISSION}" in (tmp_path / "Logs" / "dcs-lso" / "session.txt").read_text()
+    assert f"mission={MISSION}" in (tmp_path / "Logs" / "burble" / "session.txt").read_text()
 
 
 def split(request: str) -> tuple[str, dict, str]:
@@ -442,7 +442,7 @@ def test_sent_from_the_menus_after_the_mission(tmp_path, recorded):
     """DCS's UpdateManager keeps the uploader going in the menus: an approach left when the mission ended (e.g.
     written as the pilot quit) is sent straight away, not next session."""
     driver = """
-local d = WRITEDIR .. 'Logs/dcs-lso/'
+local d = WRITEDIR .. 'Logs/burble/'
 local name = io.popen('ls -1 "' .. d .. '" | grep approach'):read('*l')
 os.rename(d .. name, WRITEDIR .. name)  -- not written yet
 callbacks.onSimulationStart()
@@ -483,9 +483,9 @@ def test_send_now_tries_again(tmp_path, recorded):
     driver = """
 callbacks.onSimulationStart()
 for n = 1, 200 do clock = clock + 0.1; callbacks.onSimulationFrame() end
-local queued = DCSLSO_PILOT.status()
+local queued = BURBLE_PILOT.status()
 print('QUEUED ' .. queued)
-local f = io.open(WRITEDIR .. 'Logs/dcs-lso/retry.flag', 'w'); f:write('retry'); f:close()  -- "Send now"
+local f = io.open(WRITEDIR .. 'Logs/burble/retry.flag', 'w'); f:write('retry'); f:close()  -- "Send now"
 for n = 1, 200 do clock = clock + 0.1; callbacks.onSimulationFrame() end
 """
     requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=True, refuse="hub2.example.com", driver=driver)
@@ -495,7 +495,7 @@ for n = 1, 200 do clock = clock + 0.1; callbacks.onSimulationFrame() end
     assert not (out_dir / "retry.flag").exists()
 
 
-OPTIONS = ROOT / "Mods" / "Services" / "DCS-LSO" / "Options" / "optionsDb.lua"
+OPTIONS = ROOT / "Mods" / "Services" / "Burble" / "Options" / "optionsDb.lua"
 OPTIONS_STUBS = r"""
 WRITEDIR, SHARED = ...
 local chain = setmetatable({}, { __index = function(t, k) return function(self) return self end end })
@@ -508,7 +508,7 @@ package.preload['lfs'] = function()
 end
 package.preload['UpdateManager'] = function() return { add = function() end, delete = function() end } end
 if SHARED == 'yes' then
-  DCSLSO_PILOT = { status = function() return 3, os.time() - 600 end, retry = function() print('RETRIED') end }
+  BURBLE_PILOT = { status = function() return 3, os.time() - 600 end, retry = function() print('RETRIED') end }
 end
 local db = dofile(OPTIONS_PATH)
 local label = { setText = function(self, text) print('LABEL ' .. text) end }
@@ -521,7 +521,7 @@ db.callbackOnClose()
 
 @pytest.mark.parametrize("shared", [True, False])
 def test_settings_page_shows_the_queue_and_sends_now(tmp_path, recorded, shared):
-    out_dir = tmp_path / "Logs" / "dcs-lso"
+    out_dir = tmp_path / "Logs" / "burble"
     out_dir.mkdir(parents=True)
     shutil.copy(recorded[0], out_dir / recorded[0].name)
     script = f"OPTIONS_PATH = {str(OPTIONS)!r}\n" + OPTIONS_STUBS

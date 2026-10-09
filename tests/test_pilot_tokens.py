@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.acmi.stream import serve_recording
-from dcs_lso.agent.service import Agent, AgentConfig
-from dcs_lso.detect import find_passes
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.service import Hub, IngestError
-from dcs_lso.slices import sidecar, slice_objects
+from burble.acmi import load_recording
+from burble.acmi.stream import serve_recording
+from burble.agent.service import Agent, AgentConfig
+from burble.detect import find_passes
+from burble.hub.app import create_app
+from burble.hub.service import Hub, IngestError
+from burble.slices import sidecar, slice_objects
 from test_backfill import two_pilots
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -213,7 +213,7 @@ def test_removing_a_pilot(hub):
 
 
 def test_the_hub_command_refuses_an_empty_data_folder(tmp_path, capsys):
-    from dcs_lso.cli import main
+    from burble.cli import main
     with pytest.raises(SystemExit, match="no hub in"):
         main(["hub", "--data-dir", str(tmp_path / "typo"), "regrade"])
     assert not (tmp_path / "typo").exists()

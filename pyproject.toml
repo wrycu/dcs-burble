@@ -1,5 +1,5 @@
 [project]
-name = "dcs-lso"
+name = "dcs-burble"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-dcs-lso = "dcs_lso.cli:main"
+burble = "burble.cli:main"
 
 [project.optional-dependencies]
 listen = [
@@ -27,7 +27,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/dcs_lso"]
+packages = ["src/burble"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

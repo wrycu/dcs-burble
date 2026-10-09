@@ -5,15 +5,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-from dcs_lso.acmi import AcmiParser, iter_lines, load_recording
-from dcs_lso.acmi.stream import serve_recording
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.service import Hub
-from dcs_lso.dcslog import Debrief, HookEvent
-from dcs_lso.detect import find_passes
-from dcs_lso.agent.service import Agent, AgentConfig, to_dcs_event, wind_profile
-from dcs_lso.agent.live import LivePassDetector
-from dcs_lso.slices import TAIL_S
+from burble.acmi import AcmiParser, iter_lines, load_recording
+from burble.acmi.stream import serve_recording
+from burble.hub.app import create_app
+from burble.hub.service import Hub
+from burble.dcslog import Debrief, HookEvent
+from burble.detect import find_passes
+from burble.agent.service import Agent, AgentConfig, to_dcs_event, wind_profile
+from burble.agent.live import LivePassDetector
+from burble.slices import TAIL_S
 
 FIXTURES = Path(__file__).parent / "fixtures"
 AI_TRAP = FIXTURES / "ai_hornet_trap_cvn75.zip.acmi"
@@ -82,7 +82,7 @@ async def collect(source: Path, work: Path, port_holder: list, client=None, hook
 
 def passes_on(hub) -> list[dict]:
     with hub.sessions() as s:
-        from dcs_lso.hub.db import Pass
+        from burble.hub.db import Pass
         return [{"outcome": p.outcome, "wire": p.wire, "dcs": p.dcs_grade, "grade": p.grade.grade}
                 for p in s.query(Pass).all()]
 
@@ -157,7 +157,7 @@ def test_warns_when_connection_has_no_frames(tmp_path, monkeypatch, caplog):
     """A Tacview host that sends the header and then nothing (Export.lua missing Tacview)."""
     import logging
 
-    import dcs_lso.agent.service as collector_mod
+    import burble.agent.service as collector_mod
 
     monkeypatch.setattr(collector_mod, "NO_FRAMES_WARNING_S", 0.2)
     monkeypatch.setattr(collector_mod, "WATCH_INTERVAL_S", 0.05)
@@ -178,7 +178,7 @@ def test_warns_when_connection_has_no_frames(tmp_path, monkeypatch, caplog):
         async with server:
             await Agent(AgentConfig(work_dir=tmp_path / "edge", tacview_port=port)).run_session()
 
-    with caplog.at_level(logging.WARNING, logger="dcs_lso.agent.service"):
+    with caplog.at_level(logging.WARNING, logger="burble.agent.service"):
         asyncio.run(run())
     assert any("no new frames" in r.message and "Export.lua" in r.message for r in caplog.records)
 
@@ -186,7 +186,7 @@ def test_warns_when_connection_has_no_frames(tmp_path, monkeypatch, caplog):
 def test_pass_is_sliced_when_the_server_pauses_after_it(tmp_path, monkeypatch):
     """The pilot leaves right after trapping, DCS pauses the empty server, and frames stop while the
     connection stays open: the waiting pass is still sliced, from what was recorded."""
-    import dcs_lso.agent.service as collector_mod
+    import burble.agent.service as collector_mod
 
     monkeypatch.setattr(collector_mod, "STALLED_SLICE_S", 0.3)
     monkeypatch.setattr(collector_mod, "WATCH_INTERVAL_S", 0.05)
@@ -227,7 +227,7 @@ def test_pass_is_sliced_when_the_server_pauses_after_it(tmp_path, monkeypatch):
 
 def test_wire_from_carrier_animation_without_dcs_grade(tmp_path):
     """No DCS comms: the hook's wire-animation samples still give the wire."""
-    from dcs_lso.agent.service import HookFeed
+    from burble.agent.service import HookFeed
 
     feed = HookFeed.__new__(HookFeed)
     import threading
@@ -261,7 +261,7 @@ def test_hook_events_are_scoped_to_the_current_mission():
     """Mission time restarts at 0, so a previous mission's grade/wire must not match a new pass."""
     import threading
 
-    from dcs_lso.agent.service import HookFeed
+    from burble.agent.service import HookFeed
 
     feed = HookFeed.__new__(HookFeed)
     feed._events, feed._lock = [], threading.Lock()
@@ -321,15 +321,15 @@ def test_retention_settings_from_central(tmp_path):
 
 
 def test_server_agent_reports_connected_players(tmp_path, hub):
-    from dcs_lso.agent.service import HookFeed
-    from dcs_lso.dcslog import parse_hook_line
+    from burble.agent.service import HookFeed
+    from burble.dcslog import parse_hook_line
 
     log_file = tmp_path / "dcs.log"
     log_file.write_text("")
     feed = HookFeed(log_file)
     agent = Agent(AgentConfig(work_dir=tmp_path / "agent"), client=make_client(hub))
     agent.hooks = feed
-    line = ('2026-10-03 20:33:05.817 INFO    DCSLSO (Main): DCSLSO {"event":"players","t":42.5,"players":'
+    line = ('2026-10-03 20:33:05.817 INFO    BURBLE (Main): BURBLE {"event":"players","t":42.5,"players":'
             '[{"id":2,"ucid":"fa26","ip":"69.222.184.25","name":"Wrycu"}]}')
 
     async def run():
@@ -348,14 +348,14 @@ def test_server_agent_reports_connected_players(tmp_path, hub):
 
 
 def test_hook_feed_knows_who_is_a_player(tmp_path):
-    from dcs_lso.agent.service import HookFeed
-    from dcs_lso.dcslog import parse_hook_line
+    from burble.agent.service import HookFeed
+    from burble.dcslog import parse_hook_line
 
     log_file = tmp_path / "dcs.log"
     log_file.write_text("")
     feed = HookFeed(log_file)
     assert feed.player_names() is None  # nothing from the hook yet: can't tell AI from players
-    prefix = "2026-10-05 10:00:00.000 INFO    DCSLSO (Main): DCSLSO "
+    prefix = "2026-10-05 10:00:00.000 INFO    BURBLE (Main): BURBLE "
     feed.add(parse_hook_line(prefix + '{"event":"slot","t":10,"player":"Host Pilot","unit":"Hornet 1"}'))  # a listen server's host
     feed.add(parse_hook_line(prefix + '{"event":"players","t":11,"players":[{"ucid":"a","ip":"1.2.3.4","name":"Wrycu"}]}'))
     assert feed.player_names() == {"Host Pilot", "Wrycu"}
@@ -364,8 +364,8 @@ def test_hook_feed_knows_who_is_a_player(tmp_path):
 
 
 def test_a_jet_sitting_on_the_deck_departed_from_that_carrier():
-    from dcs_lso.acmi import AcmiParser
-    from dcs_lso.agent.live import LivePassDetector
+    from burble.acmi import AcmiParser
+    from burble.agent.live import LivePassDetector
     detector = LivePassDetector()
     parser = AcmiParser()
     lines = ["FileType=text/acmi/tacview", "FileVersion=2.2", "0,ReferenceTime=2016-06-21T05:00:00Z"]
@@ -386,15 +386,15 @@ def test_a_jet_sitting_on_the_deck_departed_from_that_carrier():
 
 @pytest.mark.parametrize("name", ["crash-server", "crash-pilot-hook"])
 def test_a_crash_on_deck_is_not_a_bolter(name):
-    from dcs_lso.detect.passes import Outcome
-    from dcs_lso.grading import grade_pass
+    from burble.detect.passes import Outcome
+    from burble.grading import grade_pass
     # Wrycu dove into the deck at about 100 m/s; the jet's track ends there (the server's copy: removed).
     (result,) = find_passes(load_recording(FIXTURES / "live" / f"{name}.zip.acmi"))
     assert result.outcome is Outcome.CRASH and grade_pass(result).grade.value == "C"
 
 
 def test_a_bolter_cut_off_by_the_end_of_the_stream_is_not_a_crash():
-    from dcs_lso.detect.passes import Outcome
+    from burble.detect.passes import Outcome
     parser, live = AcmiParser(), LivePassDetector()
     found = []
     for line in iter_lines(FIXTURES / "live" / "crash-server.zip.acmi"):
@@ -406,7 +406,7 @@ def test_a_bolter_cut_off_by_the_end_of_the_stream_is_not_a_crash():
 
 
 def test_the_hub_records_a_crash_and_regrading_corrects_old_bolters(tmp_path):
-    from dcs_lso.hub.db import Pass
+    from burble.hub.db import Pass
     hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
     hub.add_source("server1")
     hub.ingest_recording(1, FIXTURES / "live" / "crash-server.zip.acmi")

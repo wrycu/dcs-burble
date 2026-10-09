@@ -9,15 +9,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-from dcs_lso.acmi.stream import serve_recording
-from dcs_lso.callouts.rules import Call
-from dcs_lso.callouts.voice import DIGITS, PHRASES, ClipLibrary, clip_name, variants
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.service import Hub
-from dcs_lso.agent.callouts import CalloutSettings, SrsSink
-from dcs_lso.agent.service import Agent, AgentConfig
-from dcs_lso.srs import Modulation, Radio, SrsClient
-from dcs_lso.srs.opus import tone
+from burble.acmi.stream import serve_recording
+from burble.callouts.rules import Call
+from burble.callouts.voice import DIGITS, PHRASES, ClipLibrary, clip_name, variants
+from burble.hub.app import create_app
+from burble.hub.service import Hub
+from burble.agent.callouts import CalloutSettings, SrsSink
+from burble.agent.service import Agent, AgentConfig
+from burble.srs import Modulation, Radio, SrsClient
+from burble.srs.opus import tone
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FLAT_LOW_CUT = FIXTURES / "passes" / "20260927-204347_Wrycu_4769s.zip.acmi"  # flown ~2.8 deg low throughout
@@ -28,7 +28,7 @@ CONFIG = {"callouts": {"enabled": True, "srs": {"host": "127.0.0.1", "port": 500
 
 @pytest.fixture
 def clips(tmp_path) -> Path:
-    """A clip set made of short tones (stands in for `dcs-lso voice build`)."""
+    """A clip set made of short tones (stands in for `burble voice build`)."""
     d = tmp_path / "voice"
     d.mkdir()
     manifest = {"voice": "test-tones", "clips": {}}
@@ -83,8 +83,8 @@ def test_settings_from_config():
 
 
 def test_the_hubs_config_picks_the_voice(tmp_path, clips):
-    from dcs_lso.agent.service import Agent, AgentConfig
-    from dcs_lso.callouts.voice import choose_clip_set
+    from burble.agent.service import Agent, AgentConfig
+    from burble.callouts.voice import choose_clip_set
     voices = tmp_path / "voices"
     for name in ("clips-amy", "clips-ryan"):
         shutil.copytree(clips, voices / name)
@@ -144,7 +144,7 @@ def test_live_calls_are_spoken_and_uploaded(tmp_path, clips):
     said = [call for call, _ in sink.said]
     # The flat, low pass: power calls (escalating), a wave-off, and (as the pilot trapped anyway)
     # nothing after it but the salty welcome.
-    from dcs_lso.callouts.rules import POWER_CALLS
+    from burble.callouts.rules import POWER_CALLS
     assert said[0] is Call.POWER and Call.POWER_X2 in said
     assert sum(c in POWER_CALLS for c in said) >= 2 and said[-2:] == [Call.WAVE_OFF, Call.TRAPPED_WAVED_OFF]
     assert all(radio == Radio(127.6, Modulation.AM) for _, radio in sink.said)  # the Truman's frequency
@@ -191,7 +191,7 @@ def test_wave_off_cuts_off_the_current_call():
         async def close(self):
             pass
 
-    from dcs_lso.callouts.voice import Clip
+    from burble.callouts.voice import Clip
 
     async def run():
         import time
@@ -317,7 +317,7 @@ class WireHooks:
         return None
 
     def debrief(self):
-        from dcs_lso.dcslog import Debrief
+        from burble.dcslog import Debrief
         return Debrief(None, [])
 
 
@@ -328,7 +328,7 @@ class WireHooks:
     ("20260927-204347_Wrycu_4769s", None, Call.TRAPPED_WAVED_OFF),
 ])
 def test_welcome_names_dcs_wire(tmp_path, clips, monkeypatch, name, wire, expected):
-    import dcs_lso.agent.callouts as callouts_mod
+    import burble.agent.callouts as callouts_mod
     monkeypatch.setattr(callouts_mod, "WIRE_WAIT_S", 0.2)
     hooks = WireHooks(wire)
     agent, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / f"{name}.zip.acmi", tmp_path / "edge",
@@ -340,8 +340,8 @@ def test_welcome_names_dcs_wire(tmp_path, clips, monkeypatch, name, wire, expect
 
 
 def test_hook_feed_reads_the_wire_from_dcs_grade(tmp_path):
-    from dcs_lso.dcslog import HookEvent
-    from dcs_lso.agent.service import HookFeed
+    from burble.dcslog import HookEvent
+    from burble.agent.service import HookFeed
     feed = HookFeed.__new__(HookFeed)  # no dcs.log follower thread
     import threading
     feed._events, feed._lock = [], threading.Lock()
@@ -360,13 +360,13 @@ def test_hook_feed_reads_the_wire_from_dcs_grade(tmp_path):
 def test_only_good_passes_get_a_nice_trap(tmp_path, clips, monkeypatch, path, glideslope, grade, praised):
     """Welcomes that compliment the landing only for passes we grade OK or better."""
     from dataclasses import replace
-    import dcs_lso.callouts.voice as voice
-    from dcs_lso.detect import find_passes
-    from dcs_lso.geometry import AIRCRAFT
-    from dcs_lso.grading import grade_pass
+    import burble.callouts.voice as voice
+    from burble.detect import find_passes
+    from burble.geometry import AIRCRAFT
+    from burble.grading import grade_pass
     if glideslope is not None:
         monkeypatch.setitem(AIRCRAFT, "FA-18C_hornet", replace(AIRCRAFT["FA-18C_hornet"], glideslope=glideslope))
-    (p,) = find_passes(__import__("dcs_lso.acmi", fromlist=["load_recording"]).load_recording(path))
+    (p,) = find_passes(__import__("burble.acmi", fromlist=["load_recording"]).load_recording(path))
     assert grade_pass(p).grade.value == grade
     # Always pick a complimenting welcome when one is allowed.
     monkeypatch.setattr(voice.random, "choice", lambda clips: next((c for c in clips if voice.is_praise(c.text)), clips[0]))
@@ -376,7 +376,7 @@ def test_only_good_passes_get_a_nice_trap(tmp_path, clips, monkeypatch, path, gl
 
 
 def test_praise_is_never_picked_when_not_allowed(clips):
-    from dcs_lso.callouts.voice import is_praise
+    from burble.callouts.voice import is_praise
     lib = ClipLibrary.load(clips)
     assert {is_praise(lib.pick(Call.TRAPPED, praise=False).text) for _ in range(300)} == {False}
     assert {is_praise(lib.pick(Call.TRAPPED_WIRE_3, praise=False).text) for _ in range(300)} == {False}
@@ -394,9 +394,9 @@ def test_side_number_goes_before_a_call(clips):
 
 
 def test_foul_deck_is_another_aircraft_in_the_landing_area():
-    from dcs_lso.acmi import ObjectTrack, Sample, Transform
-    from dcs_lso.agent.live import LivePassDetector
-    from dcs_lso.geometry import FA18C, NIMITZ, CarrierPose, DeckFrame
+    from burble.acmi import ObjectTrack, Sample, Transform
+    from burble.agent.live import LivePassDetector
+    from burble.geometry import FA18C, NIMITZ, CarrierPose, DeckFrame
     frame = DeckFrame(NIMITZ, FA18C)
     pose = CarrierPose(u=0.0, v=0.0, alt=0.0, heading=0.0)
     detector = LivePassDetector()
@@ -430,7 +430,7 @@ def test_foul_deck_is_another_aircraft_in_the_landing_area():
 
 
 def test_foul_deck_waves_the_pilot_off(tmp_path, clips, monkeypatch):
-    from dcs_lso.agent.live import LivePassDetector
+    from burble.agent.live import LivePassDetector
     monkeypatch.setattr(LivePassDetector, "landing_area_foul", lambda self, *args: True)
     _, _, sink = asyncio.run(run_collector(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi",
                                            tmp_path / "edge", clips))
@@ -471,11 +471,11 @@ WELCOMES = {Call.TRAPPED, Call.TRAPPED_WAVED_OFF, Call.BOLTER} | {c for c in Cal
 def test_hook_feed_reads_each_carriers_mission_frequency():
     import threading
 
-    from dcs_lso.dcslog import parse_hook_line
-    from dcs_lso.agent.service import HookFeed
+    from burble.dcslog import parse_hook_line
+    from burble.agent.service import HookFeed
     feed = HookFeed.__new__(HookFeed)
     feed._events, feed._lock = [], threading.Lock()
-    line = ('2026-10-03 12:00:00.000 INFO    DCSLSO (Main): DCSLSO {"event":"carrier","t":0,'
+    line = ('2026-10-03 12:00:00.000 INFO    BURBLE (Main): BURBLE {"event":"carrier","t":0,'
             '"name":"CVN-75 Harry S. Truman","type":"CVN_75","frequency":127500000,"modulation":0}')
     feed.add(parse_hook_line(line))
     feed.add(parse_hook_line(line.replace("CVN-75 Harry S. Truman", "Tarawa").replace("127500000", "264000000")
@@ -494,7 +494,7 @@ def test_carrier_radio_precedence():
 
 
 def test_srs_sink_announces_a_detected_frequency_before_using_it():
-    from dcs_lso.callouts.voice import Clip
+    from burble.callouts.voice import Clip
 
     class FakeClient:
         connected = True
@@ -575,8 +575,8 @@ def test_ai_passes_get_calls_but_are_not_uploaded(tmp_path, clips, players, uplo
 @pytest.mark.parametrize(("roll", "dig"), [(0.0, True), (0.99, False)])
 def test_rough_landings_get_a_dig_now_and_then(tmp_path, clips, monkeypatch, roll, dig):
     """A poor pass (graded No Grade) gets a dig after its welcome, but only by chance (default one in three)."""
-    import dcs_lso.agent.callouts as callouts_mod
-    from dcs_lso.callouts.voice import PHRASES
+    import burble.agent.callouts as callouts_mod
+    from burble.callouts.voice import PHRASES
     monkeypatch.setattr(callouts_mod.random, "random", lambda: roll)
     _, _, sink = asyncio.run(run_collector(FIXTURES / "live" / "trap-server.zip.acmi", tmp_path / "edge", clips))
     assert sink.said[-1][0] is Call.TRAPPED
@@ -585,8 +585,8 @@ def test_rough_landings_get_a_dig_now_and_then(tmp_path, clips, monkeypatch, rol
 
 def test_a_visitor_is_welcomed_aboard_not_home(tmp_path, clips, monkeypatch):
     """The jet in this recording never sat on the carrier's deck before its trap: "welcome aboard", never "home"."""
-    import dcs_lso.agent.callouts as callouts_mod
-    import dcs_lso.callouts.voice as voice
+    import burble.agent.callouts as callouts_mod
+    import burble.callouts.voice as voice
     monkeypatch.setattr(callouts_mod.random, "random", lambda: 0.99)  # no dig: the last pick is the welcome
     picked = []
     real = voice.random.choice
@@ -612,10 +612,10 @@ class Said:
 
 
 def test_pilots_calls_are_answered_for_the_jet_that_made_them(clips):
-    from dcs_lso.acmi import ObjectTrack
-    from dcs_lso.agent.callouts import LiveCallouts
-    from dcs_lso.agent.listening import Heard
-    from dcs_lso.callouts.heard import parse
+    from burble.acmi import ObjectTrack
+    from burble.agent.callouts import LiveCallouts
+    from burble.agent.listening import Heard
+    from burble.callouts.heard import parse
 
     sink = Said()
     callouts = LiveCallouts(CalloutSettings.from_config(CONFIG), ClipLibrary.load(clips), sink)
@@ -652,11 +652,11 @@ def test_pilots_calls_are_answered_for_the_jet_that_made_them(clips):
 
 
 def test_the_listener_hands_recognised_calls_on():
-    from dcs_lso.agent.listening import Listener
-    from dcs_lso.callouts.heard import PilotCall
-    from dcs_lso.srs.listen import END_GAP_S
-    from dcs_lso.srs.opus import encode_pcm
-    from dcs_lso.srs.packet import VoicePacket
+    from burble.agent.listening import Listener
+    from burble.callouts.heard import PilotCall
+    from burble.srs.listen import END_GAP_S
+    from burble.srs.opus import encode_pcm
+    from burble.srs.packet import VoicePacket
 
     class Recognises:
         def hear(self, pcm):

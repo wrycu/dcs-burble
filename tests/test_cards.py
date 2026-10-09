@@ -1,12 +1,12 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.cards import CardEntry, render_card, render_index
-from dcs_lso.cli import main
-from dcs_lso.dcslog import attach_dcs_grades, load_debrief
-from dcs_lso.detect import find_passes
-from dcs_lso.grading import grade_pass
+from burble.acmi import load_recording
+from burble.cards import CardEntry, render_card, render_index
+from burble.cli import main
+from burble.dcslog import attach_dcs_grades, load_debrief
+from burble.detect import find_passes
+from burble.grading import grade_pass
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SVG = "{http://www.w3.org/2000/svg}"
@@ -61,7 +61,7 @@ def test_cards_command_writes_svgs_and_index(tmp_path):
 
 
 def test_no_grade_is_labelled_not_blank():
-    from dcs_lso.acmi import load_recording
+    from burble.acmi import load_recording
     (p,) = find_passes(load_recording(FIXTURES / "passes" / "20260928-025423_New_callsign_86s.zip.acmi"))
     root = ET.fromstring(render_card(p, grade_pass(p)))
     texts = [t.text or "" for t in root.iter(f"{SVG}text")]
@@ -71,7 +71,7 @@ def test_no_grade_is_labelled_not_blank():
 
 
 def test_lineup_calls_go_on_the_lineup_plot():
-    from dcs_lso.cards.svg import SIDE_H, SIDE_TOP, TOP_H, TOP_TOP
+    from burble.cards.svg import SIDE_H, SIDE_TOP, TOP_H, TOP_TOP
     recording = load_recording(FIXTURES / "ai_hornet_trap_cvn75.zip.acmi")
     (p,) = find_passes(recording)
     calls = [{"time": 1.0, "along": 900.0, "call": "you're high"},

@@ -3,15 +3,15 @@
 
 import asyncio
 
-from dcs_lso.acmi import ObjectTrack
-from dcs_lso.acmi.reader import Sample
-from dcs_lso.acmi.parser import Transform
-from dcs_lso.agent.callouts import CalloutSettings, LiveCallouts, is_case_iii
-from dcs_lso.agent.listening import Heard
-from dcs_lso.callouts import Call, CalloutEngine
-from dcs_lso.callouts.heard import describe, parse
-from dcs_lso.callouts.voice import Clip, ClipLibrary
-from dcs_lso.geometry import WindProfile
+from burble.acmi import ObjectTrack
+from burble.acmi.reader import Sample
+from burble.acmi.parser import Transform
+from burble.agent.callouts import CalloutSettings, LiveCallouts, is_case_iii
+from burble.agent.listening import Heard
+from burble.callouts import Call, CalloutEngine
+from burble.callouts.heard import describe, parse
+from burble.callouts.voice import Clip, ClipLibrary
+from burble.geometry import WindProfile
 from test_callouts import NM, state
 
 

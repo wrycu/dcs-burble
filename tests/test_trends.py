@@ -4,12 +4,12 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.service import Hub
-from dcs_lso.detect import find_passes
-from dcs_lso.grading.trends import TrendPass, trends
-from dcs_lso.slices import sidecar, slice_objects
+from burble.acmi import load_recording
+from burble.hub.app import create_app
+from burble.hub.service import Hub
+from burble.detect import find_passes
+from burble.grading.trends import TrendPass, trends
+from burble.slices import sidecar, slice_objects
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ON_SPEED = (7.4, 8.8)
@@ -107,8 +107,8 @@ def test_pilot_page_and_api(tmp_path):
 def test_overlay_card(tmp_path):
     import xml.etree.ElementTree as ET
 
-    from dcs_lso.cards.overlay import OverlayPass, render_overlay
-    from dcs_lso.grading import grade_pass
+    from burble.cards.overlay import OverlayPass, render_overlay
+    from burble.grading import grade_pass
     items = []
     for f in sorted((FIXTURES / "passes").glob("20260927-*.zip.acmi")):
         (p,) = find_passes(load_recording(f))

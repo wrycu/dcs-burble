@@ -6,12 +6,12 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.service import Hub
-from dcs_lso.cli import main
-from dcs_lso.detect import find_passes
-from dcs_lso.grading import grade_pass
+from burble.acmi import load_recording
+from burble.hub.app import create_app
+from burble.hub.service import Hub
+from burble.cli import main
+from burble.detect import find_passes
+from burble.grading import grade_pass
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PASS_FILES = sorted((FIXTURES / "passes").glob("*.zip.acmi"))
@@ -93,8 +93,8 @@ def test_board_and_pass_pages(client, token):
 
 
 def test_dcs_grade_from_sidecar_is_shown(client, token, tmp_path):
-    from dcs_lso.dcslog import attach_dcs_grades, load_debrief
-    from dcs_lso.slices import write_pass_slice
+    from burble.dcslog import attach_dcs_grades, load_debrief
+    from burble.slices import write_pass_slice
 
     source = FIXTURES / "ai_hornet_trap_cvn75.zip.acmi"
     recording = load_recording(source)
@@ -113,8 +113,8 @@ def test_regrade_adds_new_version_and_keeps_slices(hub, client, token, monkeypat
     slices = sorted((hub.store.root).rglob("*.zip.acmi"))
     before = [hashlib.sha256(p.read_bytes()).hexdigest() for p in slices]
     assert hub.regrade() == (0, len(PASS_FILES))
-    monkeypatch.setattr("dcs_lso.grading.grade.GRADING_VERSION", "test-2")
-    monkeypatch.setattr("dcs_lso.hub.service.GRADING_VERSION", "test-2")
+    monkeypatch.setattr("burble.grading.grade.GRADING_VERSION", "test-2")
+    monkeypatch.setattr("burble.hub.service.GRADING_VERSION", "test-2")
     assert hub.regrade() == (len(PASS_FILES), 0)
     rows = client.get("/api/v1/passes", params={"days": 0}).json()
     assert {r["grading_version"] for r in rows} == {"test-2"}
@@ -153,7 +153,7 @@ def test_pass_page_card_zooms(client, token):
 
 
 def test_board_has_a_table_per_airframe(client, token, tmp_path):
-    from dcs_lso.slices import slice_recording
+    from burble.slices import slice_recording
 
     for acmi in PASS_FILES:
         upload(client, token, acmi)
@@ -172,7 +172,7 @@ def test_board_has_a_table_per_airframe(client, token, tmp_path):
 
 
 def test_pilot_page_has_a_tab_per_airframe(client, token, tmp_path):
-    from dcs_lso.slices import slice_recording
+    from burble.slices import slice_recording
 
     for acmi in PASS_FILES:
         upload(client, token, acmi)

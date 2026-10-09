@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.srs import Decoder, Modulation, Radio, SrsClient, VoicePacket, encode_pcm, short_guid, tone
-from dcs_lso.srs.audio import resample
-from dcs_lso.srs.opus import FRAME_SAMPLES
+from burble.srs import Decoder, Modulation, Radio, SrsClient, VoicePacket, encode_pcm, short_guid, tone
+from burble.srs.audio import resample
+from burble.srs.opus import FRAME_SAMPLES
 
 GUID = "ufYS_WlLVkmFPjqCgxz6GA"
 

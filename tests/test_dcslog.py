@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.dcslog import LsoGrade, attach_dcs_grades, load_debrief
-from dcs_lso.dcslog.luatable import as_list, parse_assignments
-from dcs_lso.detect import find_passes
+from burble.acmi import load_recording
+from burble.dcslog import LsoGrade, attach_dcs_grades, load_debrief
+from burble.dcslog.luatable import as_list, parse_assignments
+from burble.detect import find_passes
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

@@ -8,13 +8,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.service import Hub
-from dcs_lso.dcslog import Debrief, DcsEvent, track_dcs_grades
-from dcs_lso.detect import find_passes
-from dcs_lso.detect.approaches import find_approaches
-from dcs_lso.slices import sidecar, slice_objects, slice_recording
+from burble.acmi import load_recording
+from burble.hub.app import create_app
+from burble.hub.service import Hub
+from burble.dcslog import Debrief, DcsEvent, track_dcs_grades
+from burble.detect import find_passes
+from burble.detect.approaches import find_approaches
+from burble.slices import sidecar, slice_objects, slice_recording
 
 FIXTURES = Path(__file__).parent / "fixtures"
 AI_TRAP = FIXTURES / "ai_hornet_trap_cvn75.zip.acmi"
@@ -207,7 +207,7 @@ def test_a_recording_without_an_own_pilot_needs_a_token(hub):
 
 
 def test_other_aircraft_in_the_recording_are_not_imported(hub, tmp_path):
-    from dcs_lso.slices import own_pilots
+    from burble.slices import own_pilots
     path = two_pilots(OWN, tmp_path / "hosted.zip.acmi")  # Maverick: another player in the host's recording
     assert own_pilots(load_recording(path)) == ["Wrycu"]
     client = TestClient(create_app(hub))
@@ -259,7 +259,7 @@ def test_a_server_can_require_a_token(tmp_path):
 def test_an_upload_waits_a_day_for_its_pilot(tmp_path):
     from datetime import UTC, datetime, timedelta
 
-    from dcs_lso.hub.db import Upload
+    from burble.hub.db import Upload
     db, data = f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub"
     c = Hub(db, data)
     c.add_source("s")
@@ -283,7 +283,7 @@ def test_upload_leftovers_are_cleaned_at_startup(tmp_path):
     c = Hub(db, data)
     c.add_source("s")
     waiting, _ = c.add_upload(1, "a.zip.acmi", 1, choose_pilot=True)
-    from dcs_lso.hub.db import Upload
+    from burble.hub.db import Upload
     with c.sessions.begin() as s:
         s.get(Upload, waiting).status = "choose_pilot"
     c.upload_path(waiting, "a.zip.acmi").write_bytes(b"x")  # waiting for its pilot: kept

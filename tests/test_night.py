@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.service import Hub
-from dcs_lso.detect import find_passes
-from dcs_lso.slices import sidecar, slice_objects
-from dcs_lso.sun import is_night, sun_elevation
+from burble.acmi import load_recording
+from burble.hub.app import create_app
+from burble.hub.service import Hub
+from burble.detect import find_passes
+from burble.slices import sidecar, slice_objects
+from burble.sun import is_night, sun_elevation
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY = FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi"  # Syria, 08:00 local start (05:00Z)
@@ -72,7 +72,7 @@ def test_existing_passes_are_backfilled(tmp_path):
     r = load_recording(night)
     (p,) = find_passes(r)
     pass_id = hub.ingest(1, night.read_bytes(), sidecar(r, p, "x", slice_objects(r, p))).pass_id
-    from dcs_lso.hub.db import Pass
+    from burble.hub.db import Pass
     with hub.sessions.begin() as s:
         s.get(Pass, pass_id).night = None  # as stored before day/night was recorded
     with Hub(url, data).sessions() as s:  # a restart works it out

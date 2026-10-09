@@ -5,9 +5,9 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from dcs_lso.cli import main
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.service import Hub
+from burble.cli import main
+from burble.hub.app import create_app
+from burble.hub.service import Hub
 
 
 @pytest.fixture

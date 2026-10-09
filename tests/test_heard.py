@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.callouts.heard import PilotCall, parse
-from dcs_lso.srs.listen import END_GAP_S, Transmissions
-from dcs_lso.srs.opus import encode_pcm, tone
-from dcs_lso.srs.packet import VoicePacket
+from burble.callouts.heard import PilotCall, parse
+from burble.srs.listen import END_GAP_S, Transmissions
+from burble.srs.opus import encode_pcm, tone
+from burble.srs.packet import VoicePacket
 
 
 @pytest.mark.parametrize("text, want", [
@@ -54,10 +54,10 @@ def test_transmissions_are_put_back_together_per_speaker():
     assert [(x.name, x.unit_id, round(x.seconds, 1)) for x in done] == [("Wrycu", 42, 0.4), ("", 7, 0.4)]
 
 
-@pytest.mark.skipif(not os.environ.get("DCS_LSO_VOSK_MODEL"), reason="set DCS_LSO_VOSK_MODEL to a Vosk model folder")
+@pytest.mark.skipif(not os.environ.get("BURBLE_VOSK_MODEL"), reason="set BURBLE_VOSK_MODEL to a Vosk model folder")
 def test_recogniser_hears_a_ball_call():
-    from dcs_lso.callouts.heard import Recogniser
-    from dcs_lso.srs.audio import load_wav
+    from burble.callouts.heard import Recogniser
+    from burble.srs.audio import load_wav
     from piper import PiperVoice
     import wave, tempfile
     voice = PiperVoice.load(str(Path(__file__).parents[1] / "acmi" / "voices" / "en_US-ryan-high.onnx"))
@@ -66,5 +66,5 @@ def test_recogniser_hears_a_ball_call():
         with wave.open(str(path), "wb") as w:
             voice.synthesize_wav("three zero one, Hornet ball, five point two", w)
         pcm = load_wav(path)
-    call = Recogniser(os.environ["DCS_LSO_VOSK_MODEL"]).hear(pcm)
+    call = Recogniser(os.environ["BURBLE_VOSK_MODEL"]).hear(pcm)
     assert (call.call, call.side_number, call.aircraft, call.fuel) == ("ball", "301", "Hornet", 5.2)

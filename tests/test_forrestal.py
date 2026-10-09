@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.cards import render_card
-from dcs_lso.detect import find_passes
-from dcs_lso.geometry import CARRIERS, DeckFrame
-from dcs_lso.geometry.data import FA18C, FORRESTAL, NIMITZ
+from burble.acmi import load_recording
+from burble.cards import render_card
+from burble.detect import find_passes
+from burble.geometry import CARRIERS, DeckFrame
+from burble.geometry.data import FA18C, FORRESTAL, NIMITZ
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SOURCE = FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi"
@@ -64,7 +64,7 @@ def recording(tmp_path) -> Path:
 
 
 def test_pass_on_the_forrestal(recording):
-    from dcs_lso.grading import grade_pass
+    from burble.grading import grade_pass
     (p,) = find_passes(load_recording(recording))
     assert p.carrier_type == "Forrestal" and p.outcome.value == "trap"
     assert p.wire_estimate is None  # arrest runout not measured on its gear

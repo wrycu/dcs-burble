@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.acmi.writer import escape, slice_lines
-from dcs_lso.detect import find_passes
-from dcs_lso.slices import slice_objects, write_pass_slice
+from burble.acmi import load_recording
+from burble.acmi.writer import escape, slice_lines
+from burble.detect import find_passes
+from burble.slices import slice_objects, write_pass_slice
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PASSES = sorted((FIXTURES / "passes").glob("*.json"))

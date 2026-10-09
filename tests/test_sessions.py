@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from dcs_lso.hub.app import SESSION_COOKIE, create_app
-from dcs_lso.hub.db import WebSession
-from dcs_lso.hub.service import Hub, SignedIn
+from burble.hub.app import SESSION_COOKIE, create_app
+from burble.hub.db import WebSession
+from burble.hub.service import Hub, SignedIn
 
 
 @pytest.fixture

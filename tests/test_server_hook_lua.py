@@ -6,10 +6,10 @@ import re
 import subprocess
 from pathlib import Path
 
-from dcs_lso.agent.service import wind_profile
+from burble.agent.service import wind_profile
 from test_pilot_hook_lua import luajit
 
-HOOK = Path(__file__).parents[1] / "hooks" / "dcs-lso-server-hook.lua"
+HOOK = Path(__file__).parents[1] / "hooks" / "burble-server-hook.lua"
 
 STUBS = r"""
 env = { info = function(s) print(s) end, mission = { weather = {
@@ -40,7 +40,7 @@ def run_handler(stubs: str = STUBS) -> list[dict]:
     handler = text.split("local HANDLER = [==[", 1)[1].split("]==]", 1)[0]
     script = stubs + handler + "\nfor _, s in ipairs(scheduled) do s[1](s[2], 100) end\n"
     out = subprocess.run([luajit(), "-"], input=script, capture_output=True, text=True, check=True).stdout
-    return [json.loads(m) for m in re.findall(r"^DCSLSO (\{.*\})$", out, re.M)]
+    return [json.loads(m) for m in re.findall(r"^BURBLE (\{.*\})$", out, re.M)]
 
 
 def test_wind_turbulence_and_weather_events():

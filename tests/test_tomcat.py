@@ -3,13 +3,13 @@ session showed: Tacview reusing an object's id for a respawned jet, and keeping 
 
 from pathlib import Path
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.callouts import Thresholds
-from dcs_lso.detect.passes import Outcome, find_passes
-from dcs_lso.detect.wire import wire_signals
-from dcs_lso.geometry import AIRCRAFT, CARRIERS, DeckFrame
-from dcs_lso.grading import grade_pass
-from dcs_lso.grading.grade import Position
+from burble.acmi import load_recording
+from burble.callouts import Thresholds
+from burble.detect.passes import Outcome, find_passes
+from burble.detect.wire import wire_signals
+from burble.geometry import AIRCRAFT, CARRIERS, DeckFrame
+from burble.grading import grade_pass
+from burble.grading.grade import Position
 
 FIXTURE = Path(__file__).parent / "fixtures" / "live" / "tomcat-trap-server.zip.acmi"
 
@@ -56,13 +56,13 @@ def test_a_reused_object_id_is_two_objects(tmp_path):
 
 
 def _feed(tmp_path, *events: str):
-    from dcs_lso.agent.service import HookFeed
-    from dcs_lso.dcslog import parse_hook_line
+    from burble.agent.service import HookFeed
+    from burble.dcslog import parse_hook_line
 
     log_file = tmp_path / "dcs.log"
     log_file.write_text("")
     feed = HookFeed(log_file)
-    prefix = "2026-10-07 20:00:00.000 INFO    DCSLSO (Main): DCSLSO "
+    prefix = "2026-10-07 20:00:00.000 INFO    BURBLE (Main): BURBLE "
     for e in events:
         feed.add(parse_hook_line(prefix + e))
     return feed
@@ -81,7 +81,7 @@ def test_the_pilot_comes_from_the_hook_when_tacview_kept_an_old_name(tmp_path):
     assert feed.pilot_for("AI-1", "F-14BU", 0x403, 2110.0, 2160.0) == "AI-1"  # no slot: not a player's name
 
 
-def test_dcs_lso_grade_names_the_pilot(tmp_path):
+def test_burble_grade_names_the_pilot(tmp_path):
     feed = _feed(tmp_path,
                  '{"event":"slot","t":631,"player":"Wrycu","type":"F-14BU","unit":"a"}',
                  '{"event":"slot","t":824,"player":"Jive","type":"F-14BU","unit":"b"}',
@@ -93,17 +93,17 @@ def test_dcs_lso_grade_names_the_pilot(tmp_path):
 
 
 def test_backfill_with_the_server_dcs_log(tmp_path):
-    """`dcs-lso upload --dcs-log`: a server agent's session archive, with the server hook's events from the
+    """`burble upload --dcs-log`: a server agent's session archive, with the server hook's events from the
     server's dcs.log, as the agent would have sent it live."""
-    from dcs_lso.agent.service import HookFeed
-    from dcs_lso.slices import slice_recording
+    from burble.agent.service import HookFeed
+    from burble.slices import slice_recording
 
     log_file = tmp_path / "dcs.log"
     log_file.write_text("\n".join([
-        '2026-10-07 20:00:00.000 INFO    DCSLSO (Main): DCSLSO {"event":"handler_installed","t":0}',
-        '2026-10-07 20:11:01.539 INFO    DCSLSO (Main): DCSLSO {"type":"F-14BU","group":"f-14","t":823.972,'
+        '2026-10-07 20:00:00.000 INFO    BURBLE (Main): BURBLE {"event":"handler_installed","t":0}',
+        '2026-10-07 20:11:01.539 INFO    BURBLE (Main): BURBLE {"type":"F-14BU","group":"f-14","t":823.972,'
         '"event":"slot","unit":"u","player":"Jive","livery":"vf-32","onboard_num":"016","unit_id":371}',
-        '2026-10-07 20:45:53.424 INFO    SCRIPTING (Main): DCSLSO {"comment":"LSO: GRADE:--- : _WX_  _DRX_  _LOIM_'
+        '2026-10-07 20:45:53.424 INFO    SCRIPTING (Main): BURBLE {"comment":"LSO: GRADE:--- : _WX_  _DRX_  _LOIM_'
         '  LOIC  WIRE# 3 EGIW [BC]","initiator":{"type":"F-14BU","object_id":16780802,"player":"Jive",'
         '"unit_id":"371"},"place":{"name":"CVN-75 Harry S. Truman"},"t":2915.84,"event":"landing_quality_mark"}',
     ]) + "\n")

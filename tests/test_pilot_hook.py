@@ -12,14 +12,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dcs_lso.acmi import load_recording
-from dcs_lso.detect import find_passes
-from dcs_lso.hub.app import create_app
-from dcs_lso.hub.db import Pass, Source
+from burble.acmi import load_recording
+from burble.detect import find_passes
+from burble.hub.app import create_app
+from burble.hub.db import Pass, Source
 from sqlalchemy import select
-from dcs_lso.hub.pilothook import HookUploadError, parse_upload
-from dcs_lso.hub.service import Hub
-from dcs_lso.slices import sidecar, slice_objects
+from burble.hub.pilothook import HookUploadError, parse_upload
+from burble.hub.service import Hub
+from burble.slices import sidecar, slice_objects
 
 WIRES = Path(__file__).parent / "fixtures" / "wires"
 SERVER = WIRES / "server-dcs-wire-2.zip.acmi"  # the server's recording: starts at mission start
@@ -263,12 +263,12 @@ def test_dcs_grade_added_by_a_later_upload(tmp_path):
 
 
 def test_an_old_pilot_hook_is_told_to_update(hub):
-    from dcs_lso.hub.pilothook import PILOT_HOOK_VERSION
+    from burble.hub.pilothook import PILOT_HOOK_VERSION
     client = client_at(hub)
     old = post(client, {**hook_upload(), "version": PILOT_HOOK_VERSION - 1}, hub.token).json()["pilot_hook"]
     current = post(client, {**hook_upload(), "version": PILOT_HOOK_VERSION}, hub.token).json()["pilot_hook"]
     assert old == {"latest": PILOT_HOOK_VERSION, "update": True} and current["update"] is False
-    lua = (Path(__file__).parents[1] / "pilot-hook/Scripts/Hooks/dcs-lso-pilot-hook.lua").read_text()
+    lua = (Path(__file__).parents[1] / "pilot-hook/Scripts/Hooks/burble-pilot-hook.lua").read_text()
     assert f"local VERSION = {PILOT_HOOK_VERSION}\n" in lua  # bump both together
 
 
@@ -279,7 +279,7 @@ def test_wire_check_measures_the_server_copy_against_the_pilots_own_track(hub, c
     (row,) = hub.wire_check()
     assert (row.known, row.known_from) == (2, "own track")  # from the pilot hook's track
     assert 5 < row.overshoot_m < 20 and row.signals.wire in (None, 2)
-    from dcs_lso.cli import main
+    from burble.cli import main
     data_dir = hub.store.root.parent
     assert main(["hub", "--data-dir", str(data_dir), "--database-url", f"sqlite:///{data_dir.parent / 'lso.db'}",
                  "wire-check"]) == 0
@@ -426,7 +426,7 @@ def test_landings_from_other_servers_can_be_hidden(tmp_path, default):
     assert (landings(), landings("?servers=all"), landings("?servers=ours")) == ((1 if default == "shown" else 0), 1, 0)
     page = client.get("/pilots/Wrycu").text
     assert ('value="ours" selected' in page) == (default == "hidden") and 'name="servers"' in page
-    from dcs_lso.hub.discord import Discord
+    from burble.hub.discord import Discord
     import httpx
     discord = Discord(hub, client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))), start=False)
     assert [r.name for r in discord.board_rows()] == ([] if default == "hidden" else ["Wrycu"])
@@ -479,9 +479,9 @@ def test_a_track_on_this_hubs_server_waits_for_the_server_report(tmp_path):
 def test_the_rebuilt_carrier_is_close_to_the_real_one():
     """Pass 25: the pilot hook recorded the real carrier too. Rebuilt from the jet alone (placed by wire 2)."""
     import math
-    from dcs_lso.detect.passes import CarrierTimeline
-    from dcs_lso.detect.rebuild import rebuild_carrier
-    from dcs_lso.geometry import AIRCRAFT, CARRIERS
+    from burble.detect.passes import CarrierTimeline
+    from burble.detect.rebuild import rebuild_carrier
+    from burble.geometry import AIRCRAFT, CARRIERS
     recording = load_recording(Path(__file__).parent / "fixtures" / "live" / "trap-pilot-hook.zip.acmi")
     (p,) = [x for x in find_passes(recording) if x.outcome.value == "trap"]
     carrier, plane = recording.objects[p.carrier_id], recording.objects[p.aircraft_id]
@@ -498,7 +498,7 @@ def test_a_player_who_left_hours_ago_is_still_recognised(tmp_path, hub):
     """The pilot hook sends again after the mission (DCS's grade), or in the next DCS session: without a token,
     the hub still knows the player from its server (same address), up to a day later."""
     from datetime import timedelta
-    from dcs_lso.hub.db import PlayerSeen
+    from burble.hub.db import PlayerSeen
     with hub.sessions.begin() as s:
         for row in s.query(PlayerSeen):
             row.connected, row.last_seen = False, row.last_seen - timedelta(hours=2)  # left two hours ago

@@ -1,4 +1,4 @@
-# dcs-lso pilot hook
+# Burble pilot hook
 
 Sends your carrier approaches, recorded from your own jet, to your communities' LSO hubs. Your own jet's
 data is better than what the server sees: true AOA and about 50 samples a second, so the hub can grade you
@@ -9,19 +9,16 @@ more precisely and estimate the wire. Nothing else to install: it runs inside DC
 Copy the contents of this folder into your DCS Saved Games folder (`Saved Games/DCS`, or `DCS.openbeta`):
 
 ```
-Mods/Services/DCS-LSO/              the settings page (Options > Special > DCS-LSO)
-Scripts/Hooks/dcs-lso-pilot-hook.lua the uploader
-Scripts/dcs-lso-pilot-recorder.lua   the recorder
+Mods/Services/Burble/              the settings page (Options > Special > Burble)
+Scripts/Hooks/burble-pilot-hook.lua the uploader
+Scripts/burble-pilot-recorder.lua   the recorder
 ```
 
-Nothing goes in `Export.lua`: the uploader loads the recorder itself as each mission starts. If you installed
-an older version, you can remove its `dcs-lso-pilot-recorder.lua` line from `Scripts/Export.lua` (left in, it's
-harmless: the recorder still runs once). That line used to disappear whenever SRS or another installer rewrote
-`Export.lua`.
+Nothing goes in `Export.lua`: the uploader loads the recorder itself as each mission starts.
 
 ## Set up
 
-In DCS: **Options > Special > DCS-LSO**.
+In DCS: **Options > Special > Burble**.
 
 - **Hub address:** your community's LSO website, e.g. `lso.example.com`. Up to three hubs.
 - **Pilot token:** lets that hub take your traps from any server, not only its own. Create one on your
@@ -33,11 +30,11 @@ In DCS: **Options > Special > DCS-LSO**.
 
 ## What happens
 
-- After each approach to deck height, the recorder writes it to `Saved Games/DCS/Logs/dcs-lso/`.
+- After each approach to deck height, the recorder writes it to `Saved Games/DCS/Logs/burble/`.
 - Where the server lets clients see other objects, the nearest carrier is recorded too. Then any hub can grade
   the pass on its own, even one whose community doesn't run that server.
 - The uploader sends it in the background, while you fly and in the menus after the mission. Sent files move
-  to `Logs/dcs-lso/sent/`. The settings page shows how many are waiting, with a **Send now** button (also after
+  to `Logs/burble/sent/`. The settings page shows how many are waiting, with a **Send now** button (also after
   fixing a pilot token).
 - If a hub was down or unreachable while you flew, it still gets the approach later (without your token): it
   takes it if it recognises you from its own servers, and turns it down otherwise.
@@ -46,7 +43,7 @@ In DCS: **Options > Special > DCS-LSO**.
 - With "send to all", the other hubs also get the live calls the LSO made on that server: the uploader asks the
   server's hub for them first, so those hubs get your pass up to a minute later.
 - Your trap shows up on the hub's greenie board, merged with the server's report of the same landing.
-- What it's doing is logged in `Saved Games/DCS/Logs/dcs.log`, on lines starting with `DCSLSO-PILOT`;
+- What it's doing is logged in `Saved Games/DCS/Logs/dcs.log`, on lines starting with `BURBLE-PILOT`;
   `recorder loaded` at the start of each mission means it's recording.
 
 Uploads use plain HTTP, because DCS's Lua can't do HTTPS. They contain your jet's track (and the carrier's, when visible), your DCS name and
