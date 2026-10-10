@@ -26,11 +26,12 @@ from ..geometry import AIRCRAFT, CARRIERS, DeckFrame, WindProfile, airframe
 from ..slices import is_default_pilot, own_pilots, slice_recording
 from ..sun import NIGHT_BELOW_DEG, is_night
 from ..cards.overlay import OverlayPass
+from ..cards.theme import MAX_CSS
 from ..grading import GRADING_VERSION, GradeResult, grade_name, grade_pass
 from ..grading.grade import POINTS, dcs_only_grade, dcs_only_outcome
 from ..grading.trends import DEFAULT_PASSES, TrendPass, Trends, trends
 from .accuracy import flown_elsewhere, landing_accuracy
-from .db import (Grade, Pass, Pilot, PilotAlias, PlayerSeen, Slice, Source, Upload, WebSession, make_engine,
+from .db import (Grade, Pass, Pilot, PilotAlias, PlayerSeen, Setting, Slice, Source, Upload, WebSession, make_engine,
                  make_sessionmaker)
 from .pilothook import HookUploadError, hook_reports, parse_upload
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
@@ -40,6 +41,7 @@ START_TIME_TOLERANCE_S = 0.5
 log = logging.getLogger(__name__)
 
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
+CUSTOM_CSS_SETTING = "custom_css"
 PILOT_HOOKS = "pilot hooks"  # source of pilot hook uploads recognised without a token (see pilot_hook_access)
 INTERNAL_SOURCES = (PUBLIC_UPLOADS, PILOT_HOOKS)
 # A player counts as flying on one of this hub's servers if a server agent reported them this recently. Not only
@@ -358,6 +360,24 @@ class Hub:
             if source is None or (kind is not None and source.kind != kind):
                 raise ValueError(f"no source named {name!r}")
             source.config = config
+
+    def custom_css(self) -> str:
+        """The CSS the hub's admins set for the website (its theme variables also colour the Discord images)."""
+        with self.sessions() as s:
+            row = s.get(Setting, CUSTOM_CSS_SETTING)
+            return row.value or "" if row else ""
+
+    def set_custom_css(self, css: str) -> None:
+        css = css.replace("\r\n", "\n").strip()
+        if len(css) > MAX_CSS:
+            raise ValueError(f"the CSS is too long (at most {MAX_CSS:,} characters)")
+        with self.sessions.begin() as s:
+            row = s.get(Setting, CUSTOM_CSS_SETTING)
+            if row is None:
+                s.add(Setting(key=CUSTOM_CSS_SETTING, value=css))
+            else:
+                row.value = css
+        self._notify(None)  # the Discord board is redrawn with it
 
     def authenticate(self, token: str) -> Source | None:
         with self.sessions() as s:

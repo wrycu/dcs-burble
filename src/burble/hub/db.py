@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, create_engine,
-                        event, inspect, text)
+from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint,
+                        create_engine, event, inspect, text)
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -86,11 +86,11 @@ class PilotAlias(Base):
 
 
 class Setting(Base):
-    """Small pieces of hub state, by key (e.g. the Discord greenie board message's id)."""
+    """Hub-wide settings and state, by key (e.g. the Discord greenie board message's id, the admins' custom CSS)."""
 
     __tablename__ = "settings"
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
-    value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PlayerSeen(Base):

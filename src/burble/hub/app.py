@@ -98,12 +98,15 @@ def create_app(hub: Hub) -> FastAPI:
         pilot = await run_in_threadpool(hub.session_pilot, token) if token else None
         request.state.pilot = pilot
         request.state.admin = await run_in_threadpool(hub.is_admin, pilot) if pilot else False
-        reset = pages.CURRENT_PILOT.set(pilot), pages.CURRENT_ADMIN.set(request.state.admin)
+        css = await run_in_threadpool(hub.custom_css)
+        reset = (pages.CURRENT_PILOT.set(pilot), pages.CURRENT_ADMIN.set(request.state.admin),
+                 pages.CURRENT_CSS.set(css))
         try:
             response = await call_next(request)
         finally:
             pages.CURRENT_PILOT.reset(reset[0])
             pages.CURRENT_ADMIN.reset(reset[1])
+            pages.CURRENT_CSS.reset(reset[2])
         if token and pilot is None and not getattr(request.state, "session_set", False):
             response.delete_cookie(SESSION_COOKIE, path="/")  # ended (signed out elsewhere, expired)
         return response
@@ -469,8 +472,8 @@ def create_app(hub: Hub) -> FastAPI:
     def _admin_page(request: Request, done: str | None = None, error: str | None = None, q: str = "",
                     new_token: tuple[str, str] | None = None, status: int = 200) -> HTMLResponse:
         _admin(request)
-        return HTMLResponse(pages.admin_page(hub.admin_pilots(q), hub.server_agents(), q, done, error, new_token),
-                            status_code=status)
+        return HTMLResponse(pages.admin_page(hub.admin_pilots(q), hub.server_agents(), q, done, error, new_token,
+                                             css=hub.custom_css()), status_code=status)
 
     def _admin_step(request: Request, step, done: str, q: str = ""):
         _admin(request)
@@ -551,6 +554,11 @@ def create_app(hub: Hub) -> FastAPI:
                                     status_code=303)
         return _admin_step(request, lambda: hub.set_config(name, parsed, kind="server"),
                            f"Configuration for {name} saved; its agent applies it when the next mission starts.")
+
+    @app.post("/admin/appearance")
+    def admin_appearance(request: Request, css: Annotated[str, Form()] = ""):
+        return _admin_step(request, lambda: hub.set_custom_css(css),
+                           "CSS saved; the Discord board is redrawn with its colours in a few seconds.")
 
     def _upload(upload_id: int) -> Upload:
         with hub.sessions() as s:

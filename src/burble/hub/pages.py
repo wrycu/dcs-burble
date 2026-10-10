@@ -10,6 +10,7 @@ from html import escape
 from urllib.parse import quote
 
 from ..cards.overlay import GRADE_COLORS
+from ..cards.theme import COLOR_VARS, FONT_VAR, GRADE_VARS, MAX_CSS, safe_css
 from ..geometry import airframe
 from ..grading import grade_name, grade_short
 from .accuracy import Accuracy
@@ -23,7 +24,7 @@ STYLE = """
   :root { --bg: #010409; --card: #0d1117; --text: #e6edf3; --muted: #8d96a0; --border: #30363d; --empty: #161b22; }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font, system-ui), -apple-system, "Segoe UI", sans-serif; }
 main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
 a { color: inherit; }
 h1 { font-size: 22px; margin: 0 0 4px; }
@@ -123,16 +124,19 @@ nav.airframes .n { font-weight: 400; font-size: 12px; color: var(--muted); }
   border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; vertical-align: 2px; }
 """
 
+# Each grade's colour, overridable by its variable (cards.theme.GRADE_VARS) in the admins' custom CSS.
 GRADE_CSS = "\n".join(
-    f'.g-{i} {{ background: {light}; }}' for i, (light, _) in enumerate(GRADE_COLORS.values())
+    f'.g-{i} {{ background: var({GRADE_VARS[g]}, {light}); }}' for i, (g, (light, _)) in enumerate(GRADE_COLORS.items())
 ) + "\n@media (prefers-color-scheme: dark) {\n" + "\n".join(
-    f'  .g-{i} {{ background: {dark}; }}' for i, (_, dark) in enumerate(GRADE_COLORS.values())
+    f'  .g-{i} {{ background: var({GRADE_VARS[g]}, {dark}); }}' for i, (g, (_, dark)) in enumerate(GRADE_COLORS.items())
 ) + "\n}"
 GRADE_CLASS = {g: f"g-{i}" for i, g in enumerate(GRADE_COLORS)}
 
 # Who the request is signed in as (set per request by the app), for the bar at the top of every page.
 CURRENT_PILOT: ContextVar[str | None] = ContextVar("current_pilot", default=None)
 CURRENT_ADMIN: ContextVar[bool] = ContextVar("current_admin", default=False)
+# The admins' custom CSS (set per request by the app), added after the built-in styles on every page.
+CURRENT_CSS: ContextVar[str] = ContextVar("current_css", default="")
 
 
 def _nav() -> str:
@@ -151,7 +155,8 @@ def _nav() -> str:
 def _page(title: str, body: str) -> str:
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f"<title>{escape(title)}</title><style>{STYLE}\n{GRADE_CSS}</style></head>"
+            f"<title>{escape(title)}</title><style>{STYLE}\n{GRADE_CSS}</style>"
+            + (f"<style>{safe_css(css)}</style>" if (css := CURRENT_CSS.get()) else "") + "</head>"
             f"<body><main>{_nav()}{body}</main></body></html>")
 
 
@@ -776,7 +781,7 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
 
 
 def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None, error: str | None = None,
-               new_token: tuple[str, str] | None = None) -> str:
+               new_token: tuple[str, str] | None = None, css: str = "") -> str:
     """For admins (pilots with the role, signed in): pilots (admin role, password reset, removal, other names,
     pilot tokens) and server agents (adding one, their configuration). `new_token`: (what, token), shown once."""
     me = CURRENT_PILOT.get()
@@ -850,8 +855,22 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
             '<p class="sub">Only a pilot with a password can be an admin; resetting an admin\'s password removes the '
             'role. A pilot with passes can\'t be removed.</p></div>'
             f'<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Server agents</h2>{agents_table}'
-            f"{add_agent}</div></div>")
+            f"{add_agent}</div>{_appearance(css)}</div>")
     return _page("Admin", body)
+
+
+def _appearance(css: str) -> str:
+    """The admins' custom CSS box, with the theme variables it can set."""
+    names = ", ".join(f"<code>{v}</code>" for v in [*COLOR_VARS.values(), FONT_VAR, *GRADE_VARS.values()])
+    return ('<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Appearance</h2>'
+            '<p class="sub">CSS added to every page of this board. The Discord images (the greenie board, and the '
+            "colour beside each landing's post) can't use CSS rules, so they take only the theme variables set on "
+            f"<code>:root</code>: {names}. Discord's images are dark, so values set for dark mode "
+            "(<code>@media (prefers-color-scheme: dark)</code>) win there. Colours as #hex, rgb() or names.</p>"
+            '<form method="post" action="/admin/appearance">'
+            f'<textarea name="css" spellcheck="false" maxlength="{MAX_CSS}" '
+            'placeholder=":root { --bg: #101820; --card: #18242f; --grade-ok: #00c853; }">'
+            f'{escape(css)}</textarea><button type="submit">Save CSS</button></form></div>')
 
 
 def not_admin_page(pilot: str | None) -> str:

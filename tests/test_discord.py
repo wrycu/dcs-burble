@@ -171,3 +171,22 @@ def test_a_landing_graded_by_dcs_alone_is_posted_without_a_card(setup):
     (method, url, payload, image), _board = fake.requests
     assert url == TRAPS + "?wait=true" and image is None and "image" not in payload["embeds"][0]
     assert "graded by DCS's LSO" in payload["embeds"][0]["description"]
+
+
+def test_board_and_posts_take_the_hubs_theme(setup):
+    """The admins' theme variables colour the Discord board image and the landing posts."""
+    import xml.etree.ElementTree as ET
+    from burble.cards.board import BoardRow, render_board
+    from burble.cards.theme import theme_from_css
+    theme = theme_from_css(":root { --bg: #123456; --grade-ok: #00c853; --font: Impact; }")
+    svg = render_board([BoardRow("Wrycu", 1, 4.0, 1.0, [("OK", False)])], 15, theme=theme)
+    ET.fromstring(svg)
+    assert 'fill="#123456"' in svg and 'fill="#00c853"' in svg and 'font-family="Impact, DejaVu Sans' in svg
+
+    hub, discord, fake = setup
+    hub.set_custom_css(":root { --grade-no-grade: #abcdef; --grade-ok: #abcdef; --grade-fair: #abcdef; }")
+    assert discord._queue.get_nowait() is None  # the board is redrawn
+    result = hub.ingest(1, *fresh_report())
+    discord.step(result.pass_id, now=1000.0)
+    post = next(p for m, u, p, _ in fake.requests if u.startswith(TRAPS))
+    assert post["embeds"][0]["color"] == 0xABCDEF

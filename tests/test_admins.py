@@ -100,3 +100,41 @@ def test_cli_set_admin(hub, tmp_path, capsys):
     assert main([*args, "Goose"]) == 0 and hub.is_admin("Goose")
     assert main([*args, "Goose", "--remove"]) == 0 and not hub.is_admin("Goose")
     assert main([*args, "Nobody"]) == 1
+
+
+CSS = """/* the board's colours */
+:root { --bg: #101820; --card: #18242f; --grade-ok: #00c853; --font: "Roboto Condensed"; }
+@media (prefers-color-scheme: dark) { :root { --card: #0a0f14; } }
+@media (prefers-color-scheme: light) { :root { --card: #ffffff; } }
+table.board td.pilot { text-transform: uppercase; }
+"""
+
+
+def test_admins_set_custom_css_for_every_page(hub):
+    viper = client_for(hub, "Viper", "viper password")
+    goose = client_for(hub, "Goose", "goose password")
+    assert goose.post("/admin/appearance", data={"css": "body { color: red }"}).status_code == 403
+    assert hub.custom_css() == ""
+    r = viper.post("/admin/appearance", data={"css": CSS + "</style><script>alert(1)</script>"},
+                   follow_redirects=False)
+    assert "done=" in r.headers["location"]
+    page = goose.get("/").text  # every page, whoever's looking
+    assert "text-transform: uppercase" in page and "--grade-ok: #00c853" in page
+    assert "<script>" not in page and "\\3c /style>" in page  # can't end the <style> early
+    assert "var(--grade-ok, " in page  # the board's grade colours follow the variables
+    assert "--grade-ok: #00c853" in viper.get("/admin").text  # shown back to edit
+    r = viper.post("/admin/appearance", data={"css": "x" * 20_001}, follow_redirects=False)
+    assert "error=" in r.headers["location"] and "too%20long" in r.headers["location"]
+    assert "text-transform" in hub.custom_css()  # kept
+    viper.post("/admin/appearance", data={"css": ""})
+    assert hub.custom_css() == "" and "<style></style>" not in goose.get("/").text
+
+
+def test_theme_variables_for_the_discord_images():
+    from burble.cards.theme import Theme, theme_from_css
+    t = theme_from_css(CSS)
+    assert (t.bg, t.panel, t.text) == ("#101820", "#0a0f14", Theme().text)  # dark mode wins; light-only ignored
+    assert t.grades == {"OK": "#00c853"} and t.font.startswith('"Roboto Condensed", ')
+    bad = theme_from_css(':root { --bg: url(x.png); --text: "><svg onload=1>; --grade-cut: rgb(255, 0, 0); }')
+    assert (bad.bg, bad.text, bad.grades) == (Theme().bg, Theme().text, {"C": "rgb(255, 0, 0)"})
+    assert theme_from_css(None) == Theme() and theme_from_css("not css {{{") == Theme()

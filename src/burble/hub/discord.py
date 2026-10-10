@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from ..cards import render_card
 from ..cards.board import BoardRow, render_board
+from ..cards.theme import Theme, theme_from_css
 from ..geometry import airframe
 from ..grading import grade_name, grade_pass, grade_short
 from ..grading.grade import Grade as GradeValue
@@ -43,6 +44,17 @@ CHANGES_EVERY_S = 5.0  # look for landings changed outside this process (`hub re
 
 COLORS = {GradeValue.PERFECT: 0x2DA44E, GradeValue.OK: 0x3FB950, GradeValue.FAIR: 0xD4A72C, GradeValue.NO_GRADE: 0x9A6700,
           GradeValue.CUT: 0xCF222E, GradeValue.BOLTER: 0x0969DA, GradeValue.WAVE_OFF: 0x8C959F}
+
+
+def embed_color(theme: Theme, grade: GradeValue) -> int:
+    """A landing post's colour: the grade's colour in the hub's theme (as #rrggbb), else the default."""
+    custom = theme.grades.get(grade.value, "")
+    if len(custom) == 7 and custom.startswith("#"):
+        try:
+            return int(custom[1:], 16)
+        except ValueError:
+            pass
+    return COLORS.get(grade, 0x8C959F)
 
 
 def png(svg: str, zoom: float = 1.5) -> bytes:
@@ -180,7 +192,7 @@ class Discord:
                 "title": f"{p.pilot.name} · {grade_name(g.value)} ({grade_short(g.value)})",
                 "url": self._link(f"/passes/{p.id}"),
                 "description": f"`{p.grade.text}`\n" + " · ".join(x for x in facts if x),
-                "color": COLORS.get(g, 0x8C959F),
+                "color": embed_color(theme_from_css(hub.custom_css()), g),
                 "timestamp": when.replace(tzinfo=when.tzinfo or UTC).isoformat() if when else None,
                 "footer": {"text": p.mission or "Burble"},
             }]}
@@ -234,7 +246,8 @@ class Discord:
         now = datetime.now(UTC)
         subtitle = (f"last {BOARD_DAYS} days · {sum(r.passes for r in rows)} landings · "
                     f"updated {now:%Y-%m-%d %H:%M} UTC")
-        image = png(render_board(rows, BOARD_PASSES, title="", subtitle=subtitle), zoom=1.0)  # the message names it
+        theme = theme_from_css(self.hub.custom_css())  # the admins' theme variables
+        image = png(render_board(rows, BOARD_PASSES, title="", subtitle=subtitle, theme=theme), zoom=1.0)  # the message names it
         # A plain message with the image attached (no embed, so no coloured bar beside it); `embeds: []` clears
         # the embed an older board message had.
         link = self._link("/")
