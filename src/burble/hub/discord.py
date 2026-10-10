@@ -179,7 +179,7 @@ class Discord:
                 result = hub.load_pass(p, reports, s)
                 svg = render_card(result, grade_pass(result), card_title(p), uid="discord", calls=p.calls,
                                   night=bool(p.night), dark=True, accuracy=accuracy.overall.level,
-                                  elsewhere=accuracy.flown.level == "elsewhere")
+                                  elsewhere=accuracy.flown.level == "elsewhere", theme=theme_from_css(hub.custom_css()))
             g = GradeValue(p.grade.grade)
             estimate = (p.grade.detail or {}).get("wire_estimate")
             wire = f"wire #{p.wire}" if p.wire is not None else (f"wire #{estimate} (est.)" if estimate else None)

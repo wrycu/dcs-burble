@@ -37,18 +37,21 @@ class Theme:
     border: str = "#30363d"
     font: str = DEFAULT_FONT
     grades: dict[str, str] = field(default_factory=dict)  # grade -> colour, where the CSS sets one
+    values: dict[str, str] = field(default_factory=dict)  # every theme variable the CSS sets, checked (e.g. --card)
 
 
 def theme_from_css(css: str | None) -> Theme:
     """The theme the CSS's variables give (anything not set, or not a plain colour or font, keeps its default)."""
-    values = css_variables(css or "")
-    theme = Theme()
-    changes = {name: values[var] for name, var in COLOR_VARS.items()
-               if var in values and _COLOR.fullmatch(values[var])}
-    if FONT_VAR in values and _FONT.fullmatch(values[FONT_VAR]):
+    found = css_variables(css or "")
+    colors = [*COLOR_VARS.values(), *GRADE_VARS.values()]
+    values = {var: found[var] for var in colors if var in found and _COLOR.fullmatch(found[var])}
+    if FONT_VAR in found and _FONT.fullmatch(found[FONT_VAR]):
+        values[FONT_VAR] = found[FONT_VAR]
+    changes = {name: values[var] for name, var in COLOR_VARS.items() if var in values}
+    if FONT_VAR in values:
         changes["font"] = f"{values[FONT_VAR]}, {DEFAULT_FONT}"
-    grades = {g: values[var] for g, var in GRADE_VARS.items() if var in values and _COLOR.fullmatch(values[var])}
-    return replace(theme, **changes, grades=grades)
+    grades = {g: values[var] for g, var in GRADE_VARS.items() if var in values}
+    return replace(Theme(), **changes, grades=grades, values=values)
 
 
 def css_variables(css: str) -> dict[str, str]:

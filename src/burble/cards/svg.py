@@ -9,6 +9,7 @@ styles (light and dark), so it renders the same inline, in an <img>, or on its o
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from html import escape
 
@@ -17,6 +18,7 @@ from ..detect import PassResult, PassSample
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
 from ..grading import GradeResult, grade_name, grade_short
 from ..grading.grade import GLIDESLOPE_DEG, LINEUP_DEG, POSITIONS
+from .theme import Theme
 
 NM = 1852.0
 FT = 0.3048
@@ -97,9 +99,41 @@ _DARK = """
   .tc-call { fill: #0d1117; stroke: #e6edf3; }
   .tc-call-label { fill: #e6edf3; }
 """
-# The card follows the viewer's light or dark mode; DARK_STYLE is always dark (e.g. images for Discord, where
-# there is no viewer to ask).
-STYLE = _LIGHT + "@media (prefers-color-scheme: dark) {\n" + _DARK + "}\n"
+# The hub's theme variables (cards.theme, from its admins' custom CSS) the card takes: rule -> (property,
+# variable). Its background and the call markers follow the website's panels (--card).
+THEMED = {".tc": (("font-family", "--font"),), ".tc-bg": (("fill", "--card"),), ".tc-text": (("fill", "--text"),),
+          ".tc-ideal": (("stroke", "--text"),), ".tc-muted": (("fill", "--muted"),),
+          ".tc-grid": (("stroke", "--border"),), ".tc-rule": (("stroke", "--border"),),
+          ".tc-call": (("fill", "--card"), ("stroke", "--text")), ".tc-call-label": (("fill", "--text"),)}
+
+
+def _with_variables(css: str) -> str:
+    """The rules in THEMED reading their variable, with the built-in value as the fallback: inlined in the
+    website's pages, the card takes the page's theme (light or dark, and the admins' CSS); on its own, it's
+    unchanged."""
+    def rule(m: re.Match) -> str:
+        selector, body = m.group(1), m.group(2)
+        for prop, var in THEMED.get(selector.strip(), ()):
+            body = re.sub(rf"(?<![\w-]){prop}:\s*([^;]+);", lambda d: f"{prop}: var({var}, {d.group(1)});", body)
+        return f"{selector}{{{body}}}"
+    return re.sub(r"(\.tc[\w-]*\s*)\{([^}]*)\}", rule, css)
+
+
+def theme_style(theme: Theme) -> str:
+    """Overrides for an image with no page around it (Discord: resvg has no CSS variables), from the theme
+    variables the hub's CSS sets."""
+    out = []
+    for selector, props in THEMED.items():
+        set_ = [f"{prop}: {theme.font if var == '--font' else theme.values[var]};"
+                for prop, var in props if var in theme.values]
+        if set_:
+            out.append(f"{selector} {{ {' '.join(set_)} }}")
+    return "\n".join(out)
+
+
+# The card follows the viewer's light or dark mode (and, inlined in the website, its theme); DARK_STYLE is always
+# dark (e.g. images for Discord, where there is no viewer to ask; `theme_style` gives the hub's theme there).
+STYLE = _with_variables(_LIGHT) + "@media (prefers-color-scheme: dark) {\n" + _with_variables(_DARK) + "}\n"
 DARK_STYLE = _LIGHT + _DARK
 
 
@@ -462,7 +496,7 @@ def wind_text(p: PassResult) -> str:
 def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc",
                 calls: list[dict] | None = None, night: bool = False, view: tuple[float, float] | None = None,
                 zoom_hint: bool = False, dark: bool = False, accuracy: str | None = None,
-                elsewhere: bool = False) -> str:
+                elsewhere: bool = False, theme: Theme | None = None) -> str:
     """`uid` prefixes element ids, so several cards can be inlined in one page. `calls` are the
     live LSO calls made during the pass ({"time", "along", "call"}), if any. `night`: flown at night
     (marked with a black dot, as on the greenie board). `view`: the stretch of the approach to show, as
@@ -470,7 +504,8 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     carries the view (data-near/data-far) so a page can zoom by dragging; `zoom_hint` says so on the card.
     `dark`: always the dark colours (otherwise they follow the viewer's light or dark mode). `accuracy`: the
     landing's overall accuracy level (hub/accuracy.py), shown as a badge; `elsewhere`: flown on another
-    server than the hub's own, marked beside it."""
+    server than the hub's own, marked beside it. `theme`: the hub's theme, for a `dark` image (inlined in a page,
+    the card takes the page's theme variables itself)."""
     calls = sorted(calls or [], key=_said_order)
     listed: list[tuple[str, list[str]]] = []  # (heading, items) for each line of the lists below the table
     for heading, group in (("Pilot:", [c for c in calls if c.get("by") == "pilot"]),
@@ -489,7 +524,7 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
         f'<svg xmlns="http://www.w3.org/2000/svg" class="tc" viewBox="0 0 {WIDTH} {height}" '
         f'width="{WIDTH}" height="{height}" role="img" aria-label="Trap card: {escape(p.pilot)} {escape(grade.text)}" '
         f'data-near="{near:.1f}" data-far="{far:.1f}" data-pad-l="{PAD_L}" data-plot-w="{PLOT_W}">',
-        f"<style>{DARK_STYLE if dark else STYLE}</style>",
+        f"<style>{DARK_STYLE + theme_style(theme) if dark and theme else DARK_STYLE if dark else STYLE}</style>",
         f'<rect class="tc-bg" width="{WIDTH}" height="{height}" rx="10"/>',
     ]
     pilot = escape(p.pilot or f"id {p.aircraft_id:x}")

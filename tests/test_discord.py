@@ -190,3 +190,22 @@ def test_board_and_posts_take_the_hubs_theme(setup):
     discord.step(result.pass_id, now=1000.0)
     post = next(p for m, u, p, _ in fake.requests if u.startswith(TRAPS))
     assert post["embeds"][0]["color"] == 0xABCDEF
+
+
+def test_trap_card_takes_the_theme():
+    """On the website the card reads the page's theme variables (built-in colours as fallbacks); in a Discord image
+    (no CSS variables in resvg) the theme's values are written into its style."""
+    from burble.acmi import load_recording
+    from burble.cards import render_card
+    from burble.cards.theme import theme_from_css
+    from burble.detect import find_passes
+    from burble.grading import grade_pass
+    from burble.hub.discord import png
+    (p,) = find_passes(load_recording(Path(__file__).parent / "fixtures" / "live" / "trap-server.zip.acmi"))
+    web = render_card(p, grade_pass(p))
+    assert ".tc-bg { fill: var(--card, #ffffff); }" in web and "fill: var(--card, #0d1117)" in web
+    theme = theme_from_css(":root { --card: #102030; --text: #fafafa; --font: Impact; --bg: url(x) }")
+    image = render_card(p, grade_pass(p), dark=True, theme=theme)
+    assert "var(" not in image and ".tc-bg { fill: #102030; }" in image and "font-family: Impact, DejaVu" in image
+    assert png(image).startswith(b"\x89PNG")
+    assert "var(" not in render_card(p, grade_pass(p), dark=True)  # no theme: as before
