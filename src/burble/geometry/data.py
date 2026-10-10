@@ -109,6 +109,10 @@ FA18C = AircraftInfo(
 # - stop point: 104.4-106.1 m past the caught wire (wires 2, 3, 3, 4) on the server's copy; less the
 #   server-copy overshoot measured on the FA-18C (12.7 m, detect.wire), 92.6 m. Not yet confirmed on a
 #   Tomcat's own track (recorded AOA too, to check the offset).
+# - the hook (2026-10-09): parked on deck its hook sits 0.2-0.35 m below deck height, as the FA-18C's does, so its
+#   height is right. Where it first reaches the deck on the server's copy is 16 m short of the caught wire (the
+#   FA-18C: 3-10 m; own tracks 3-9.5 m), so the hook-down wire signal reads one wire short on the Tomcat. Its fore
+#   and aft position can't be told from a parked jet; a Tomcat trap with the pilot hook (43 Hz) would show it.
 F14 = AircraftInfo(
     name="F-14",
     hook=(-1.978941, -6.563727),

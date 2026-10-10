@@ -21,6 +21,7 @@ from ..callouts import CallEvent, CalloutEngine, LiveEstimator, LiveInput, Thres
 from ..callouts.heard import describe
 from ..callouts.rules import WAVE_OFFS, WELCOME_WIRE, Call
 from ..callouts.voice import Clip, ClipLibrary
+from ..detect.wire import wire_at_stop
 from ..grading import Grade
 from ..geometry import CARRIERS, CarrierPose, DeckFrame, DeckWind, WindProfile
 from ..srs import Modulation, Radio, SrsClient
@@ -59,6 +60,11 @@ KT = 1852.0 / 3600.0
 # so the welcome can name it; checked every WIRE_POLL_S.
 WIRE_WAIT_S = 0.6
 WIRE_POLL_S = 0.1
+# Without DCS's wire, the welcome names our estimate from where the jet stopped (PLAN #25): stopped once it
+# has made no forward progress for STOP_SETTLE_S (a server's copy overshoots, then springs back; an own jet
+# is pulled back a little by the wire). Given up (the plain welcome) STOP_WAIT_S after the trap is detected.
+STOP_SETTLE_S = 0.6
+STOP_WAIT_S = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +236,25 @@ def _gear(plane: ObjectTrack) -> float | None:
 
 
 @dataclass(slots=True)
+class _Stop:
+    """Where a trapped jet's hook got farthest forward along the deck (the stop), updated sample by sample."""
+    frame: DeckFrame
+    own: bool  # the recording PC's own jet (recorded AOA): no server overshoot to correct
+    along: float
+    at: float  # sim time of the farthest forward sample
+    latest: float  # sim time of the latest sample
+
+    def update(self, t: float, along: float) -> None:
+        if along < self.along:
+            self.along, self.at = along, t
+        self.latest = max(self.latest, t)
+
+    @property
+    def stopped(self) -> bool:
+        return self.latest - self.at >= STOP_SETTLE_S
+
+
+@dataclass(slots=True)
 class MadeCall:
     """A call made on a pass, recorded when decided (so a pass sliced right after still has it); a welcome's
     `call` is filled in with the wire once DCS reports it. Also what the pilot said (`by` "pilot": `call` is
@@ -281,6 +306,7 @@ class LiveCallouts:
         self.made: list[MadeCall] = []
         self._tasks: set[asyncio.Task] = set()
         self._welcomes: dict[int, asyncio.Task] = {}  # aircraft id -> its welcome (which may wait for the wire)
+        self._stops: dict[tuple[int, int], _Stop] = {}  # trapped jets, for our wire estimate
         # Per (carrier, aircraft): recent (time, along, lateral) and the deck-relative speed at touchdown.
         self._track: dict[tuple[int, int], list[tuple[float, float, float]]] = {}
         self._touchdown_speed: dict[tuple[int, int], float] = {}
@@ -319,6 +345,8 @@ class LiveCallouts:
             self._groove_seen[key] = sample.time
         else:
             self._groove_seen.pop(key, None)
+        if (stop := self._stops.get(key)) is not None:
+            stop.update(sample.time, pos.along)
         outcome = self._outcome(key, sample.time, pos, frame)
         if outcome is Call.TRAPPED and engine.waved_off:
             outcome = Call.TRAPPED_WAVED_OFF  # landed through our wave-off: a saltier welcome
@@ -331,7 +359,8 @@ class LiveCallouts:
         if event.call in WELCOME_WIRE:
             # Graded now, while the pass is still being tracked (the welcome may wait for the wire).
             grade = self.grade_for(carrier.id, plane.id) if self.grade_for is not None else None
-            welcome = self._welcome(carrier, plane, event, grade, made)  # may wait briefly for DCS's wire
+            stop = self._stops[key] = _Stop(frame, sample.aoa is not None, pos.along, sample.time, sample.time)
+            welcome = self._welcome(carrier, plane, event, grade, made, stop)  # may wait for the wire
         else:
             # Decided now (the groove may have changed by the time the call is spoken).
             side_number = self._side_number(carrier.id, plane, event.time) if event.call not in (Call.BOLTER,) else None
@@ -344,17 +373,29 @@ class LiveCallouts:
         return event
 
     async def _welcome(self, carrier: ObjectTrack, plane: ObjectTrack, event: CallEvent, grade: Grade | None,
-                       made: MadeCall | None = None) -> None:
-        """The trap welcome (plain or salty), naming the wire if DCS reports it within WIRE_WAIT_S, and
+                       made: MadeCall | None = None, stop: _Stop | None = None) -> None:
+        """The trap welcome (plain or salty), naming the wire if DCS reports it within WIRE_WAIT_S, else our
+        estimate once the jet has stopped (within STOP_WAIT_S; DCS's wire still wins if it comes meanwhile), and
         complimenting the landing only if we grade it OK or better."""
-        wire = None
-        if self.wire_for is not None:
-            since = event.time - 20.0  # DCS's events for this landing come after touchdown
-            deadline = time.monotonic() + WIRE_WAIT_S
-            wire = self.wire_for(plane.id, since)
-            while wire is None and time.monotonic() < deadline:
+        since = event.time - 20.0  # DCS's events for this landing come after touchdown
+
+        def dcs_wire() -> int | None:
+            return self.wire_for(plane.id, since) if self.wire_for is not None else None
+
+        wire = dcs_wire()
+        deadline = time.monotonic() + WIRE_WAIT_S
+        while wire is None and self.wire_for is not None and time.monotonic() < deadline:
+            await asyncio.sleep(WIRE_POLL_S)
+            wire = dcs_wire()
+        if wire is None and stop is not None and stop.frame.aircraft.arrest_runout_m is not None \
+                and stop.frame.carrier.runout_measured:
+            deadline = time.monotonic() + STOP_WAIT_S - WIRE_WAIT_S
+            while not stop.stopped and time.monotonic() < deadline:
                 await asyncio.sleep(WIRE_POLL_S)
-                wire = self.wire_for(plane.id, since)
+            wire = dcs_wire()
+            if wire is None and stop.stopped:
+                wire = wire_at_stop(stop.along, stop.frame, stop.own)
+                log.info("wire for %s from where it stopped: %s", plane.pilot or hex(plane.id), wire or "not clear")
         call = WELCOME_WIRE[event.call].get(wire, event.call) if wire is not None else event.call
         if made is not None and call in self.clips:
             made.call = call  # e.g. "welcome aboard, two wire"
@@ -443,6 +484,7 @@ class LiveCallouts:
         self._track.pop(key, None)
         self._touchdown_speed.pop(key, None)
         self._outcome_called.discard(key)
+        self._stops.pop(key, None)  # a welcome still waiting keeps its own reference
         self._live.pop(key, None)
         self._answered = {a for a in self._answered if a[:2] != key}
 
@@ -525,7 +567,7 @@ class LiveCallouts:
             self.made = [c for c in self.made if newest - c.time <= KEEP_CALLS_S]
         return [c.to_dict() for c in self.made if c.aircraft_id == aircraft_id and start <= c.time <= end]
 
-    async def settled(self, aircraft_id: int, timeout: float = 2.0) -> None:
+    async def settled(self, aircraft_id: int, timeout: float = STOP_WAIT_S + 1.0) -> None:
         """Wait (briefly) for this aircraft's welcome to be decided, so its wire is in the calls (normally long
         done when the pass is sliced; not when a recording is replayed at full speed)."""
         task = self._welcomes.pop(aircraft_id, None)

@@ -399,7 +399,7 @@ def _hub_wire_check(args: argparse.Namespace) -> int:
         print(f"Overshoot: mean {statistics.mean(over):.1f} m{spread}, {min(over):.1f} to {max(over):.1f} "
               f"(the correction used: {SERVER_OVERSHOOT_M} m).")
         named = [r for r in known if r.signals.wire is not None]
-        print(f"Named (both signals agree, within {SERVER_MAX_ERROR_M} m): {len(named)} of {len(known)}, "
+        print(f"Named (the corrected stop within {SERVER_MAX_ERROR_M} m of a wire): {len(named)} of {len(known)}, "
               f"{sum(r.signals.wire == r.known for r in named)} right. Stop signal alone right: "
               f"{sum(r.signals.stop_wire == r.known for r in known)}; hook signal alone right: "
               f"{sum(r.signals.hook_wire == r.known for r in known)}.")

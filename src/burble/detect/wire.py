@@ -46,13 +46,27 @@ def estimate_wire(samples: Sequence[PassSample], frame: DeckFrame) -> int | None
     return best + 1 if errors[best] <= MAX_ERROR_M else None
 
 
-# -- the wire from a server's copy of the jet (proposed, under test: PLAN #25) ----------------------------
-# A server's copy overshoots the stop (see above), by 8-17 m on the first five traps measured (mean 12.7).
-# Two signals, used together: the stop point corrected by the mean overshoot, and the next wire forward of
-# where the hook first reached the deck (wrong after a hook skip). `burble hub wire-check` measures both on a
-# hub's traps where the wire is known, to confirm the correction before the live welcome uses it.
+# -- the wire from a server's copy of the jet (PLAN #25) -------------------------------------------------------
+# A server's copy overshoots the stop (see above): on 10 traps with DCS's wire (two pilots, FA-18C and F-14),
+# 11.8-14.4 m, mean 12.8, sd about 0.9 (`burble hub wire-check`). The stop point corrected by that names the wire:
+# right on all 13 traps with a known wire, within 1.7 m on DCS's 10. A second signal, the next wire forward of
+# where the hook first reached deck height, was right on only 8 of 13 (one wire short on every F-14 trap: the
+# server's copy is too coarse to see the hook land, and hooks skip wires), so it's measured but not used.
 SERVER_OVERSHOOT_M = 12.7
 SERVER_MAX_ERROR_M = 4.0
+
+
+def wire_at_stop(stop_along: float, frame: DeckFrame, own: bool) -> int | None:
+    """The wire a trapped jet caught, from the farthest forward point its hook reached: a recording PC's own jet
+    (`own`) as `estimate_wire`, a server's copy corrected by SERVER_OVERSHOOT_M. None if the aircraft's runout or
+    the carrier's gear isn't measured, or the stop isn't clearly at one wire."""
+    runout = frame.aircraft.arrest_runout_m
+    if runout is None or not frame.carrier.runout_measured:
+        return None
+    caught = stop_along + runout + (0.0 if own else SERVER_OVERSHOOT_M)
+    errors = [abs(caught - along) for along in frame.wire_along]
+    best = min(range(len(errors)), key=errors.__getitem__)
+    return best + 1 if errors[best] <= (MAX_ERROR_M if own else SERVER_MAX_ERROR_M) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,10 +79,8 @@ class WireSignals:
 
     @property
     def wire(self) -> int | None:
-        """The wire, when both signals agree and the corrected stop is close to it; else None."""
-        if self.stop_wire == self.hook_wire and abs(self.stop_error_m) <= SERVER_MAX_ERROR_M:
-            return self.stop_wire
-        return None
+        """The wire the live welcome names: the corrected stop, when it's close to a wire; else None."""
+        return self.stop_wire if abs(self.stop_error_m) <= SERVER_MAX_ERROR_M else None
 
 
 def wire_signals(samples: Sequence[PassSample], frame: DeckFrame,

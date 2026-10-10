@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from burble.acmi.stream import serve_recording
-from burble.callouts.rules import Call
+from burble.callouts.rules import WELCOME_WIRE, Call
 from burble.callouts.voice import DIGITS, PHRASES, ClipLibrary, clip_name, variants
 from burble.hub.app import create_app
 from burble.hub.service import Hub
@@ -21,6 +21,14 @@ from burble.srs.opus import tone
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FLAT_LOW_CUT = FIXTURES / "passes" / "20260927-204347_Wrycu_4769s.zip.acmi"  # flown ~2.8 deg low throughout
+# A welcome naming the wire -> the plain welcome (where a test is about the welcome, not the wire).
+PLAIN = {named: welcome for welcome, wires in WELCOME_WIRE.items() for named in wires.values()}
+
+
+def plain(call: Call) -> Call:
+    return PLAIN.get(call, call)
+
+
 CONFIG = {"callouts": {"enabled": True, "srs": {"host": "127.0.0.1", "port": 5002},
                        "frequency_mhz": 127.5, "modulation": "AM",
                        "carriers": {"CVN-75 Harry S. Truman": {"frequency_mhz": 127.6}}}}
@@ -143,10 +151,10 @@ def test_live_calls_are_spoken_and_uploaded(tmp_path, clips):
     assert sink.started  # connected at session start, not on the first call
     said = [call for call, _ in sink.said]
     # The flat, low pass: power calls (escalating), a wave-off, and (as the pilot trapped anyway)
-    # nothing after it but the salty welcome.
+    # nothing after it but the salty welcome, naming the wire from where the jet stopped (no DCS wire here).
     from burble.callouts.rules import POWER_CALLS
     assert said[0] is Call.POWER and Call.POWER_X2 in said
-    assert sum(c in POWER_CALLS for c in said) >= 2 and said[-2:] == [Call.WAVE_OFF, Call.TRAPPED_WAVED_OFF]
+    assert sum(c in POWER_CALLS for c in said) >= 2 and said[-2:] == [Call.WAVE_OFF, Call.TRAPPED_WAVED_OFF_WIRE_2]
     assert all(radio == Radio(127.6, Modulation.AM) for _, radio in sink.said)  # the Truman's frequency
     (row,) = listed
     assert [c["call"] for c in row["calls"]] == [c.value for c in said]
@@ -273,7 +281,7 @@ def srs_server_port(tmp_path_factory):
 ])
 def test_bolter_or_welcome_is_called_once(tmp_path, clips, name, outcome):
     _, _, sink = asyncio.run(run_collector(FIXTURES / f"{name}.zip.acmi", tmp_path / "edge", clips))
-    said = [call for call, _ in sink.said]
+    said = [plain(call) for call, _ in sink.said]
     called = [c for c in said if c in (Call.BOLTER, Call.TRAPPED, Call.TRAPPED_WAVED_OFF)]
     assert called == [outcome] and said[-1] is outcome
 
@@ -324,8 +332,9 @@ class WireHooks:
 @pytest.mark.parametrize(("name", "wire", "expected"), [
     ("20260927-204347_Wrycu_4013s", 2, Call.TRAPPED_WIRE_2),
     ("20260927-204347_Wrycu_4769s", 3, Call.TRAPPED_WAVED_OFF_WIRE_3),  # trapped through our wave-off
-    ("20260927-204347_Wrycu_4013s", None, Call.TRAPPED),  # DCS never reported a wire: the plain welcome
-    ("20260927-204347_Wrycu_4769s", None, Call.TRAPPED_WAVED_OFF),
+    # DCS never reported a wire: our estimate from where the jet stopped (PLAN #25; the hub's estimate agrees).
+    ("20260927-204347_Wrycu_4013s", None, Call.TRAPPED_WIRE_1),
+    ("20260927-204347_Wrycu_4769s", None, Call.TRAPPED_WAVED_OFF_WIRE_2),
 ])
 def test_welcome_names_dcs_wire(tmp_path, clips, monkeypatch, name, wire, expected):
     import burble.agent.callouts as callouts_mod
@@ -337,6 +346,30 @@ def test_welcome_names_dcs_wire(tmp_path, clips, monkeypatch, name, wire, expect
     assert said[-1] is expected and hooks.asked >= 1
     (item,) = agent.outbox.pending()
     assert item.meta()["calls"][-1]["call"] == expected.value  # the trap card shows what was said
+
+
+def test_welcome_names_the_wire_from_the_servers_copy(tmp_path, clips, monkeypatch):
+    """A server's copy of a client's jet, no carrier comms: the stop point, less the server's overshoot, names the
+    wire (DCS's LSO gave this trap wire 2)."""
+    import burble.agent.callouts as callouts_mod
+    monkeypatch.setattr(callouts_mod, "WIRE_WAIT_S", 0.2)
+    _, _, sink = asyncio.run(run_collector(FIXTURES / "wires" / "server-dcs-wire-2.zip.acmi", tmp_path / "edge",
+                                           clips, hooks=WireHooks(None)))
+    assert sink.said[-1][0] is Call.TRAPPED_WIRE_2
+
+
+def test_wire_at_stop():
+    from burble.detect.wire import SERVER_OVERSHOOT_M, wire_at_stop
+    from burble.geometry import AIRCRAFT, CARRIERS, DeckFrame
+    hornet = DeckFrame(CARRIERS["CVN_75"], AIRCRAFT["FA-18C_hornet"])
+    runout = hornet.aircraft.arrest_runout_m
+    wire2 = hornet.wire_along[1]
+    assert wire_at_stop(wire2 - runout + 1.0, hornet, own=True) == 2
+    assert wire_at_stop(wire2 - runout - SERVER_OVERSHOOT_M - 3.0, hornet, own=False) == 2
+    assert wire_at_stop(wire2 - runout - SERVER_OVERSHOOT_M - 6.0, hornet, own=False) is None  # about between wires
+    assert wire_at_stop(wire2 - runout - 6.0, hornet, own=True) is None
+    forrestal = DeckFrame(CARRIERS["Forrestal"], AIRCRAFT["FA-18C_hornet"])
+    assert wire_at_stop(forrestal.wire_along[1] - runout, forrestal, own=True) is None  # its gear isn't measured
 
 
 def test_hook_feed_reads_the_wire_from_dcs_grade(tmp_path):
@@ -371,7 +404,7 @@ def test_only_good_passes_get_a_nice_trap(tmp_path, clips, monkeypatch, path, gl
     # Always pick a complimenting welcome when one is allowed.
     monkeypatch.setattr(voice.random, "choice", lambda clips: next((c for c in clips if voice.is_praise(c.text)), clips[0]))
     _, _, sink = asyncio.run(run_collector(path, tmp_path / "edge", clips))
-    assert sink.said[-1][0] is Call.TRAPPED
+    assert plain(sink.said[-1][0]) is Call.TRAPPED
     assert voice.is_praise(sink.texts[-1]) is praised
 
 
@@ -436,7 +469,7 @@ def test_foul_deck_waves_the_pilot_off(tmp_path, clips, monkeypatch):
                                            tmp_path / "edge", clips))
     said = [call for call, _ in sink.said]
     assert Call.WAVE_OFF_FOUL_DECK in said
-    assert said[said.index(Call.WAVE_OFF_FOUL_DECK) + 1:] in ([], [Call.TRAPPED_WAVED_OFF])  # nothing else after it
+    assert [plain(c) for c in said[said.index(Call.WAVE_OFF_FOUL_DECK) + 1:]] in ([], [Call.TRAPPED_WAVED_OFF])  # nothing else after it
 
 
 class SlotHooks(WireHooks):
@@ -579,7 +612,7 @@ def test_rough_landings_get_a_dig_now_and_then(tmp_path, clips, monkeypatch, rol
     from burble.callouts.voice import PHRASES
     monkeypatch.setattr(callouts_mod.random, "random", lambda: roll)
     _, _, sink = asyncio.run(run_collector(FIXTURES / "live" / "trap-server.zip.acmi", tmp_path / "edge", clips))
-    assert sink.said[-1][0] is Call.TRAPPED
+    assert plain(sink.said[-1][0]) is Call.TRAPPED
     assert any(sink.texts[-1].endswith(d) for d in PHRASES[Call.ROUGH_LANDING]) is dig
 
 
