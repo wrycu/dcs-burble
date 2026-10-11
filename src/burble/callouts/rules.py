@@ -78,6 +78,9 @@ WELCOME_WIRE = {
     Call.TRAPPED: {n: Call[f"TRAPPED_WIRE_{n}"] for n in (1, 2, 3, 4)},
     Call.TRAPPED_WAVED_OFF: {n: Call[f"TRAPPED_WAVED_OFF_WIRE_{n}"] for n in (1, 2, 3, 4)},
 }
+# Calls still made while waiting for the pilot's answer to "call the ball" (Thresholds.ball_wait_s): the big
+# deviations and anything urgent; the rest wait.
+BALL_WAIT_CALLS = WAVE_OFFS | URGENT_CALLS | {Call.EASY_WITH_IT, Call.HIGH, Call.RIGHT_FOR_LINEUP, Call.COME_LEFT}
 LINEUP_CALLS = frozenset({Call.RIGHT_FOR_LINEUP, Call.COME_LEFT, Call.LITTLE_RIGHT, Call.LITTLE_LEFT,
                           Call.DRIFTING_LEFT, Call.DRIFTING_RIGHT})
 
@@ -98,6 +101,9 @@ class Thresholds:
     paddles_contact_m: float = 1.25 * NM
     # ...and "call the ball" inside this, if the pilot hasn't called it (or "Clara").
     call_the_ball_m: float = 0.75 * NM
+    # ...then quiet for this long after saying it (or until the pilot answers), so the pilot can call the ball;
+    # only BALL_WAIT_CALLS are made meanwhile.
+    ball_wait_s: float = 5.0
     # After "Clara": "on glideslope" when steady, this long after the last call (and again as long as it lasts).
     clara_talk_s: float = 2.5
     # Inside this the pilot is at the ramp: no calls at all (too late to act on them).
@@ -296,6 +302,7 @@ class CalloutEngine:
         self.clara_called = False  # ...or "Clara" (no ball in sight): talked down until the ball is called
         self._contact_said = False
         self._call_ball_said = False
+        self._ball_wait_until = float("-inf")  # waiting for the answer to "call the ball" until then
 
     def heard(self, call: str) -> None:
         """What the pilot said (agent/listening.py): "ball" or "clara"."""
@@ -350,7 +357,12 @@ class CalloutEngine:
             if said_until is not None and (s.time - said_until < th.repeat_s or correcting(c, s, th)):
                 continue
             ready.append(c)
+        waiting = s.time < self._ball_wait_until and not (self.ball_called or self.clara_called)
+        if waiting:
+            ready = [c for c in ready if c in BALL_WAIT_CALLS]
         if not ready:
+            if waiting:
+                return None
             return self._talk_down(s, active) if self.clara_called else self._keep_coming(s, active)
         call = min(ready, key=PRIORITY.__getitem__)
         # A wave-off interrupts anything; other calls wait for the previous one to finish.
@@ -405,7 +417,9 @@ class CalloutEngine:
         if (not self._call_ball_said and not self.ball_called and not self.clara_called and inbound
                 and th.wave_off_inside_m < s.along <= th.call_the_ball_m):
             self._call_ball_said = self._contact_said = True
-            return self._say(s, Call.CALL_THE_BALL)
+            event = self._say(s, Call.CALL_THE_BALL)
+            self._ball_wait_until = self._busy_until + th.ball_wait_s
+            return event
         return None
 
     def _talk_down(self, s: GrooveState, active: set[Call]) -> CallEvent | None:

@@ -41,6 +41,25 @@ def test_case_iii_no_call_the_ball_once_the_ball_is_called():
     assert Call.CALL_THE_BALL not in [c for c, _ in fly(engine, 0.9 * NM, 0.2 * NM, t0=100.0)]
 
 
+def test_case_iii_waits_for_the_ball_call():
+    # A little high all the way down: after "call the ball" the LSO waits for the answer before coaching...
+    calls = fly(CalloutEngine(case_iii=True), 1.5 * NM, 0.2 * NM, gs=0.5)
+    names = [c for c, _ in calls]
+    at = names.index(Call.CALL_THE_BALL)
+    assert names[at + 1] is Call.LITTLE_HIGH and calls[at + 1][1] <= calls[at][1] - 0.15  # ~5 s at 70 m/s
+    # ...stops waiting once the ball is called...
+    engine = CalloutEngine(case_iii=True)
+    names = [c for c, _ in fly(engine, 1.5 * NM, 0.72 * NM, gs=0.5)]
+    assert names[-1] is Call.CALL_THE_BALL
+    engine.heard("ball")
+    assert fly(engine, 0.72 * NM, 0.6 * NM, gs=0.5, t0=100.0)[0][0] is Call.LITTLE_HIGH
+    # ...and doesn't wait to call a big deviation.
+    calls = fly(CalloutEngine(case_iii=True), 1.5 * NM, 0.2 * NM, gs=-0.8, gs_rate=-0.1)
+    names = [c for c, _ in calls]
+    at = names.index(Call.CALL_THE_BALL)
+    assert names[at + 1] is Call.POWER and calls[at + 1][1] >= calls[at][1] - 0.05
+
+
 def test_clara_gets_talked_down_until_the_ball():
     engine = CalloutEngine()
     plain = [c for c, _ in fly(engine, 0.75 * NM, 0.1 * NM)]
