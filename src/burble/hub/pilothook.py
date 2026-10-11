@@ -48,7 +48,7 @@ PLACEHOLDER_REFERENCE = "2000-01-01T00:00:00Z"
 
 # The pilot hook's latest version (`VERSION` in pilot-hook/Scripts/Hooks/burble-pilot-hook.lua). The hub tells an
 # older hook in its reply, and the hook logs that an update is available.
-PILOT_HOOK_VERSION = 7  # 7: the settings page shows the queue per hub; 6: names the mission's carrier nearest the approach (for a rebuilt carrier); 5: loads the recorder itself (no Export.lua line); 4: sends to hubs that didn't answer while it was flown (they decide); 3: says whether this hub was the server's when the approach was flown (`here`)
+PILOT_HOOK_VERSION = 8  # 8: remembers which hubs have each file (no resending each session), gives up connecting after 10 s; 7: the settings page shows the queue per hub; 6: names the mission's carrier nearest the approach (for a rebuilt carrier); 5: loads the recorder itself (no Export.lua line); 4: sends to hubs that didn't answer while it was flown (they decide); 3: says whether this hub was the server's when the approach was flown (`here`)
 
 
 class HookUploadError(ValueError):

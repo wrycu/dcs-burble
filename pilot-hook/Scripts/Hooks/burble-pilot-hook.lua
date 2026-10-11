@@ -22,12 +22,13 @@ package.cpath = package.cpath .. ';.\\LuaSocket\\?.dll;'
 local socket = require('socket')
 local lfs = require('lfs')
 
-local VERSION = 7
+local VERSION = 8
 local HUB_SLOTS = 3
 local SCAN_EVERY_S = 2          -- look for new approach files
 local HERE_EVERY_S = 60         -- ask the hubs again whether we're on one of their servers
 local RETRY_S = 30              -- after a network error
 local REQUEST_TIMEOUT_S = 30
+local CONNECT_TIMEOUT_S = 10    -- a hub that doesn't take the connection (e.g. nothing listening, under Wine)
 local GIVE_UP_S = 24 * 3600
 local CALLS_WAIT_S = 90         -- relaying calls: how long other hubs wait for the server's hub to have them
 local CALLS_POLL_S = 10
@@ -35,10 +36,10 @@ local DEBRIEF_EVERY_S = 5       -- after a mission: look for its debrief.log
 local GRADE_AFTER_S = 15        -- DCS's grade can come this long after the approach's last sample
 
 local dir = lfs.writedir() .. 'Logs/burble/'
-local hubs = {}                 -- { url, host, port, path, token, ip, here, answered, here_at, retry_at, problem }
+local hubs = {}                 -- { url, host, port, path, token, ip, here, answered, here_at, retry_at, problem, trying_until }
 local context = {}              -- ucid, name, server, mission, started (this session)
 local previous = nil            -- the last session's context (files written as it ended), kept in session.txt
-local files = {}                -- name -> { done = { [hub index] = true }, here/answered = { [url] = true } | nil, first_seen }
+local files = {}                -- name -> { done = { [hub url] = true }, here/answered = { [url] = true } | nil, first_seen }
 local request                   -- the one HTTP request in flight
 local last_scan, send_to_all = -SCAN_EVERY_S, false
 local last_debrief_check, debrief_seen = -DEBRIEF_EVERY_S, nil
@@ -92,6 +93,8 @@ end
 
 -- An HTTP request driven without blocking: call step() each frame until it returns true.
 local function new_request(hub, method, target, body, on_done, without_token)
+  local finished = on_done
+  on_done = function(...) hub.trying_until = nil return finished(...) end
   if not hub.ip then
     local ip = socket.dns.toip(hub.host)  -- resolved once per hub (when settings are loaded)
     if not ip then on_done(nil, 'cannot resolve ' .. hub.host) return nil end
@@ -115,7 +118,12 @@ local function new_request(hub, method, target, body, on_done, without_token)
     end
     if r.sent < #r.data then
       local _, writable = socket.select(nil, { c }, 0)
-      if not writable or #writable == 0 then return false end
+      if not writable or #writable == 0 then
+        if r.sent == 0 and now() - r.started > CONNECT_TIMEOUT_S then
+          c:close(); r.on_done(nil, 'no connection') return true
+        end
+        return false
+      end
       local last, err, partial = c:send(r.data, r.sent + 1)
       r.sent = last or partial or r.sent
       if err and err ~= 'timeout' then c:close(); r.on_done(nil, err) return true end
@@ -327,6 +335,16 @@ local function upload_body(meta, csv, carrier, calls, here)
     .. '}'
 end
 
+-- This hub has the file (or won't take it): kept in the file too, so a later session doesn't send it again.
+local function mark_done(name, state, hub)
+  state.done[hub.url] = true
+  local urls = {}
+  for url in pairs(state.done) do urls[#urls + 1] = url end
+  table.sort(urls)
+  local f = io.open(dir .. name, 'a')
+  if f then f:write('# done=', table.concat(urls, '|'), '\n') f:close() end
+end
+
 local function move(name, sub)
   pcall(lfs.mkdir, dir .. sub)
   os.rename(dir .. name, dir .. sub .. '/' .. name)
@@ -356,7 +374,7 @@ local function destinations(state)
     for i, hub in ipairs(hubs) do
       local here = is_here(state, hub)
       local wanted = here or is_unknown(state, hub) or (send_to_all and hub.token)
-      if not state.done[i] and wanted and (here == first) then out[#out + 1] = i end
+      if not state.done[hub.url] and wanted and (here == first) then out[#out + 1] = i end
     end
   end
   return out
@@ -452,7 +470,7 @@ local function start_next()
             if status == 200 then
               note(name .. ' -> ' .. hub.url .. ': ' .. (body:match('"text"%s*:%s*"([^"]*)"') or 'sent')
                    .. (calls and ' (with the LSO calls)' or ''))
-              state.done[i] = true
+              mark_done(name, state, hub)
               local latest = tonumber(body:match('"latest"%s*:%s*(%d+)'))
               if body:match('"update"%s*:%s*true') and latest and not update_noted then
                 update_noted = true
@@ -467,12 +485,12 @@ local function start_next()
             elseif status == 403 then
               -- The hub only takes traps flown on its own servers: retrying won't change that.
               note(name .. ' -> ' .. hub.url .. ': not taken (' .. body:sub(1, 200) .. ')')
-              state.done[i] = true
+              mark_done(name, state, hub)
             elseif status == 401 and (tokenless or not hub.token) then
               -- Sent without a token because the hub didn't answer when it was flown: it doesn't know us from
               -- its servers, so it wasn't its server. Nothing more to do there.
               note(name .. ' -> ' .. hub.url .. ': not taken (not flown on its servers, and no pilot token for it)')
-              state.done[i] = true
+              mark_done(name, state, hub)
             elseif status == 401 then
               -- Not accepted (e.g. a wrong pilot token): try again next mission, after the settings are read again.
               note(name .. ' -> ' .. hub.url .. ': refused (' .. status .. ') ' .. body:sub(1, 200)
@@ -480,7 +498,7 @@ local function start_next()
               hub.retry_at, hub.problem = math.huge, 'pilot token refused'
             elseif status and status < 500 then
               note(name .. ' -> ' .. hub.url .. ': refused (' .. status .. ') ' .. body:sub(1, 200))
-              state.done[i] = true  -- won't change by retrying
+              mark_done(name, state, hub)  -- won't change by retrying
             else
               note(name .. ' -> ' .. hub.url .. ': ' .. tostring(status or body) .. '; retrying later')
               hub.retry_at = now() + RETRY_S
@@ -496,7 +514,10 @@ end
 -- Each hub, in order: the approaches it's still owed, and why they're stuck (nil: nothing wrong seen).
 local function hub_status()
   local out = {}
-  for i, hub in ipairs(hubs) do out[i] = { url = hub.url, waiting = 0, problem = hub.problem } end
+  for i, hub in ipairs(hubs) do
+    local trying = hub.trying_until and now() < hub.trying_until
+    out[i] = { url = hub.url, waiting = 0, problem = trying and 'trying now...' or hub.problem }
+  end
   for _, state in pairs(files) do
     for _, i in ipairs(destinations(state)) do out[i].waiting = out[i].waiting + 1 end
   end
@@ -517,6 +538,9 @@ end
 local function retry()
   load_settings()  -- e.g. a pilot token that was just fixed
   for _, hub in ipairs(hubs) do hub.retry_at, hub.here_at = 0, -HERE_EVERY_S end
+  for i, h in ipairs(hub_status()) do  -- shown on the settings page until each hub answers
+    if h.waiting > 0 then hubs[i].trying_until = now() + CONNECT_TIMEOUT_S + REQUEST_TIMEOUT_S end
+  end
   last_scan = -SCAN_EVERY_S
   note('sending now (asked from the settings page)')
 end
@@ -533,7 +557,7 @@ local function scan()
         if not files[name] then
           stamp(name)
           local meta = read_file(dir .. name) or {}
-          files[name] = { done = {}, first_seen = now(), here = meta.here and here_set(meta.here) or nil,
+          files[name] = { done = here_set(meta.done), first_seen = now(), here = meta.here and here_set(meta.here) or nil,
                           answered = meta.answered and here_set(meta.answered) or nil,
                           current = context.started ~= nil and (tonumber(meta.written_at) or 0) >= context.started - 60,
                           ucid = meta.ucid }
@@ -589,8 +613,10 @@ local function add_debrief_grades()
             for _, m in ipairs(marks) do
               if m.t >= first and m.t <= last + GRADE_AFTER_S then
                 local out = io.open(dir .. sub .. name, 'a')
-                if out then out:write('# dcs_grade=', (m.comment:gsub('[\r\n]', ' ')), '\n') out:close() end
+                -- (and to every hub again: no hub has it yet)
+                if out then out:write('# dcs_grade=', (m.comment:gsub('[\r\n]', ' ')), '\n# done=\n') out:close() end
                 if sub ~= '' then os.rename(dir .. sub .. name, dir .. name) end  -- send it again
+                files[name] = nil  -- read afresh
                 added = added + 1
                 break
               end

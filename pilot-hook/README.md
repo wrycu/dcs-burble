@@ -36,7 +36,7 @@ In DCS: **Options > Special > Burble**.
 - The uploader sends it in the background, while you fly and in the menus after the mission. Sent files move
   to `Logs/burble/sent/`. The settings page shows how many are waiting and, for each hub, how many it's still owed
   and whether it's answering (e.g. `localhost:8000: 2 waiting (not answering)`), with a **Send now** button
-  (also after fixing a pilot token). A file stays queued until every hub it's meant for has it.
+  (also after fixing a pilot token; each hub's line says "trying now..." until it answers). A file stays queued until every hub it's meant for has it; the hubs that have it are noted in the file, so they don't get it again.
 - If a hub was down or unreachable while you flew, it still gets the approach later (without your token): it
   takes it if it recognises you from its own servers, and turns it down otherwise.
 - After the mission, DCS's own LSO grade for each trap (from `Logs/debrief.log`, when you used carrier comms) is

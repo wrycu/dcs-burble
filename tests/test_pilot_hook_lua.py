@@ -151,7 +151,11 @@ end
 local function conn_for()
   local c = { sent = '' }
   function c:settimeout() end
-  function c:connect(ip, port) self.port = port return nil, 'timeout' end
+  function c:connect(ip, port)
+    self.port = port
+    self.dead = FLAGS:find('dead2') and port == 80  -- hub2: never takes the connection
+    return nil, 'timeout'
+  end
   function c:send(data, i) self.sent = self.sent .. data:sub(i) return #data end
   function c:receive()
     io.write('<<<REQUEST\n', self.sent, '\nREQUEST>>>\n')
@@ -176,7 +180,11 @@ local function conn_for()
 end
 package.preload['socket'] = function()
   return { gettime = function() return clock end, tcp = conn_for, dns = { toip = function() return '127.0.0.1' end },
-           select = function(r, w) return {}, w end }
+           select = function(r, w)
+             local ready = {}
+             for _, c in ipairs(w or {}) do if not c.dead then ready[#ready + 1] = c end end
+             return {}, ready
+           end }
 end
 log = { INFO = 'INFO', write = function(src, lvl, msg) print('LOG ' .. msg) end }
 local callbacks
@@ -216,9 +224,11 @@ def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool | None,
     """`send_to_all`: None as if never set. `flags`: "elsewhere" (on no hub's server), "ours" (`refuse` answers
     403: it only takes traps from its own servers)."""
     out_dir = tmp_path / "Logs" / "burble"
-    out_dir.mkdir(parents=True)
+    again = out_dir.exists()  # a later DCS session, with what the last one left
+    out_dir.mkdir(parents=True, exist_ok=True)
     # Written during this session (the uploader stamps it with the session's mission, account and server)...
-    shutil.copy(approach, out_dir / approach.name)
+    if not again:
+        shutil.copy(approach, out_dir / approach.name)
     if previous_session is not None:
         # ...or as the previous session ended (a file from before this session started).
         (out_dir / "session.txt").write_text(previous_session)
@@ -232,6 +242,7 @@ def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool | None,
                          capture_output=True, check=True).stdout.decode()  # bytes: keep HTTP's \r\n
     requests = [part.split("\nREQUEST>>>")[0] for part in out.split("<<<REQUEST\n")[1:]]
     run_uploader.log = [line[4:] for line in out.splitlines() if line.startswith("LOG ")]
+    run_uploader.stdout = out
     return requests, out_dir
 
 
@@ -298,7 +309,7 @@ def test_uploader_logs_once_that_a_newer_version_is_out(tmp_path, recorded):
     run_uploader(tmp_path, recorded[0], send_to_all=True)
     sent = [line for line in run_uploader.log if "->" in line]
     updates = [line for line in run_uploader.log if "newer pilot hook" in line]
-    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 7): see http://hub1:8000"]
+    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 8): see http://hub1:8000"]
 
 
 def test_uploader_sends_dcss_own_sun(tmp_path, recorded):
@@ -493,6 +504,29 @@ for n = 1, 200 do clock = clock + 0.1; callbacks.onSimulationFrame() end
     assert len(to_hub2) == 2  # refused once, tried again after "Send now"
     assert (out_dir / "status.txt").read_text().startswith("queued=1")
     assert not (out_dir / "retry.flag").exists()
+
+
+def test_a_hub_that_never_connects_is_given_up_on_and_the_file_isnt_sent_again(tmp_path, recorded):
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=True, flags="dead2")
+    (queued,) = list(out_dir.glob("approach-*.csv"))  # still owed to hub2
+    assert "# done=http://hub1:8000" in queued.read_text()
+    assert "hub=1\tnot answering\thttps://hub2.example.com/lso/" in (out_dir / "status.txt").read_text()
+    # Next session, hub2 is back: only hub2 gets it, and it's done.
+    requests, out_dir = run_uploader(tmp_path, recorded[0], send_to_all=True)
+    posts = [split(r)[1]["Host"] for r in requests if r.startswith("POST")]
+    assert posts == ["hub2.example.com"]
+    assert list((out_dir / "sent").glob("approach-*.csv"))
+
+
+def test_send_now_shows_each_hub_being_tried(tmp_path, recorded):
+    driver = IN_MISSION + """
+BURBLE_PILOT.retry()
+local _, _, hubs = BURBLE_PILOT.status()
+for _, h in ipairs(hubs) do print(string.format('HUB %s %d %s', h.url, h.waiting, h.problem or '-')) end
+"""
+    run_uploader(tmp_path, recorded[0], send_to_all=True, refuse="hub2.example.com", driver=driver)
+    out = run_uploader.stdout
+    assert "HUB https://hub2.example.com/lso/ 1 trying now..." in out and "HUB http://hub1:8000 0 -" in out
 
 
 def test_status_says_what_each_hub_is_still_owed(tmp_path, recorded):
