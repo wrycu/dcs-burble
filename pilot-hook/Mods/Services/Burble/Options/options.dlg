@@ -113,6 +113,24 @@ dialog = {
 				["skin"] = LabelSkin,
 				["type"] = "Static",
 			},
+			["queueHub1Label"] = {
+				["params"] = { ["bounds"] = { ["x"] = 76, ["y"] = 478, ["w"] = 760, ["h"] = 20 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "" },
+				["skin"] = HelpSkin,
+				["type"] = "Static",
+			},
+			["queueHub2Label"] = {
+				["params"] = { ["bounds"] = { ["x"] = 76, ["y"] = 500, ["w"] = 760, ["h"] = 20 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "" },
+				["skin"] = HelpSkin,
+				["type"] = "Static",
+			},
+			["queueHub3Label"] = {
+				["params"] = { ["bounds"] = { ["x"] = 76, ["y"] = 522, ["w"] = 760, ["h"] = 20 },
+					["enabled"] = true, ["visible"] = true, ["tooltip"] = "", ["zindex"] = 0, ["text"] = "" },
+				["skin"] = HelpSkin,
+				["type"] = "Static",
+			},
 			["sendNowButton"] = {
 				["params"] = { ["bounds"] = { ["x"] = 676, ["y"] = 446, ["w"] = 160, ["h"] = 26 },
 					["enabled"] = true, ["visible"] = true, ["tooltip"] = "Try every hub again now", ["zindex"] = 0,

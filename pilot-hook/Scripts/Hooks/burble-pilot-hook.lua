@@ -12,7 +12,8 @@
 -- each frame, in missions and in the menus (DCS's UpdateManager), so what's left when a mission ends is sent
 -- straight away. After a mission, DCS's own grades from debrief.log are added to its approaches and sent again.
 -- Files that were sent go to Logs/burble/sent/; ones no hub took after a day, to unsent/. The queue and a
--- "Send now" button are on the settings page (BURBLE_PILOT.status / .retry, or status.txt and retry.flag).
+-- "Send now" button are on the settings page (BURBLE_PILOT.status / .retry, or status.txt and retry.flag), with
+-- how many approaches each hub is still owed and whether it's answering.
 -- It also runs the recorder (Scripts/burble-pilot-recorder.lua) every frame: no Export.lua line needed.
 
 package.path = package.path .. ';.\\LuaSocket\\?.lua;'
@@ -21,7 +22,7 @@ package.cpath = package.cpath .. ';.\\LuaSocket\\?.dll;'
 local socket = require('socket')
 local lfs = require('lfs')
 
-local VERSION = 6
+local VERSION = 7
 local HUB_SLOTS = 3
 local SCAN_EVERY_S = 2          -- look for new approach files
 local HERE_EVERY_S = 60         -- ask the hubs again whether we're on one of their servers
@@ -34,7 +35,7 @@ local DEBRIEF_EVERY_S = 5       -- after a mission: look for its debrief.log
 local GRADE_AFTER_S = 15        -- DCS's grade can come this long after the approach's last sample
 
 local dir = lfs.writedir() .. 'Logs/burble/'
-local hubs = {}                 -- { url, host, port, path, token, ip, here, answered, here_at, retry_at }
+local hubs = {}                 -- { url, host, port, path, token, ip, here, answered, here_at, retry_at, problem }
 local context = {}              -- ucid, name, server, mission, started (this session)
 local previous = nil            -- the last session's context (files written as it ended), kept in session.txt
 local files = {}                -- name -> { done = { [hub index] = true }, here/answered = { [url] = true } | nil, first_seen }
@@ -393,6 +394,7 @@ local function start_next()
           local here = status == 200 and body:match('"here"%s*:%s*true') ~= nil
           if here ~= hub.here then note(hub.url .. (here and ': you are on one of its servers' or ': not its server')) end
           hub.here, hub.answered = here, hub.answered or status == 200
+          if status then hub.problem = nil end
           if context.started then
             context.here, context.answered = here_list(), answered_list()
             save_session(context)
@@ -407,7 +409,7 @@ local function start_next()
               end
             end
           end
-          if not status then hub.retry_at = now() + RETRY_S end
+          if not status then hub.retry_at, hub.problem = now() + RETRY_S, 'not answering' end
         end)
       end
     end
@@ -446,6 +448,7 @@ local function start_next()
           -- with it is "send to all hubs").
           local tokenless = here_flag == nil and not (send_to_all and hub.token)
           return new_request(hub, 'POST', '/api/v1/pilot-hook/approaches', upload_body(meta, csv, carrier, calls, here_flag), function(status, body)
+            hub.problem = nil
             if status == 200 then
               note(name .. ' -> ' .. hub.url .. ': ' .. (body:match('"text"%s*:%s*"([^"]*)"') or 'sent')
                    .. (calls and ' (with the LSO calls)' or ''))
@@ -474,13 +477,14 @@ local function start_next()
               -- Not accepted (e.g. a wrong pilot token): try again next mission, after the settings are read again.
               note(name .. ' -> ' .. hub.url .. ': refused (' .. status .. ') ' .. body:sub(1, 200)
                    .. '; will try again next mission or on "Send now" (check the pilot token in Options > Special > Burble)')
-              hub.retry_at = math.huge
+              hub.retry_at, hub.problem = math.huge, 'pilot token refused'
             elseif status and status < 500 then
               note(name .. ' -> ' .. hub.url .. ': refused (' .. status .. ') ' .. body:sub(1, 200))
               state.done[i] = true  -- won't change by retrying
             else
               note(name .. ' -> ' .. hub.url .. ': ' .. tostring(status or body) .. '; retrying later')
               hub.retry_at = now() + RETRY_S
+              hub.problem = status and ('hub error ' .. status) or 'not answering'
             end
           end, tokenless)
         end
@@ -489,8 +493,21 @@ local function start_next()
   end
 end
 
+-- Each hub, in order: the approaches it's still owed, and why they're stuck (nil: nothing wrong seen).
+local function hub_status()
+  local out = {}
+  for i, hub in ipairs(hubs) do out[i] = { url = hub.url, waiting = 0, problem = hub.problem } end
+  for _, state in pairs(files) do
+    for _, i in ipairs(destinations(state)) do out[i].waiting = out[i].waiting + 1 end
+  end
+  return out
+end
+
 local function write_status(queued, oldest)
   local text = string.format('queued=%d\noldest=%s\n', queued, oldest and tostring(oldest) or '')
+  for _, h in ipairs(hub_status()) do  -- "hub=2<TAB>not answering<TAB>localhost:8000"
+    text = text .. string.format('hub=%d\t%s\t%s\n', h.waiting, h.problem or '', (h.url:gsub('[\t\r\n]', ' ')))
+  end
   if text == last_status then return end
   last_status = text
   local f = io.open(dir .. 'status.txt', 'w')
@@ -673,7 +690,7 @@ end
 BURBLE_PILOT = {
   status = function()
     local text = last_status or ''
-    return tonumber(text:match('queued=(%d+)')) or 0, tonumber(text:match('oldest=(%d+)'))
+    return tonumber(text:match('queued=(%d+)')) or 0, tonumber(text:match('oldest=(%d+)')), hub_status()
   end,
   retry = retry,
 }

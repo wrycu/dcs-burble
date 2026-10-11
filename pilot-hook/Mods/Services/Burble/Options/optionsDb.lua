@@ -2,9 +2,23 @@ local DbOption = require("Options.DbOption")
 
 -- The queue on the settings page: approaches waiting to be sent, and a "Send now" button. Asks the uploader
 -- hook (Scripts/Hooks/burble-pilot-hook.lua) through BURBLE_PILOT when it shares this Lua state; otherwise
--- counts the files itself and leaves retry.flag for the uploader to find.
+-- counts the files itself (and reads each hub's share from status.txt) and leaves retry.flag for the uploader.
 local lfs = require("lfs")
 local dir = lfs.writedir() .. "Logs/burble/"
+local HUB_LINES = 3
+
+-- Each hub's share of the queue, as the uploader last wrote it to status.txt.
+local function hubs_from_file()
+  local out = {}
+  local f = io.open(dir .. "status.txt", "r")
+  if not f then return out end
+  for line in f:lines() do
+    local waiting, problem, url = line:match("^hub=(%d+)\t([^\t]*)\t(.*)$")
+    if waiting then out[#out + 1] = { url = url, waiting = tonumber(waiting), problem = problem ~= "" and problem or nil } end
+  end
+  f:close()
+  return out
+end
 
 local function queue()
   if BURBLE_PILOT and BURBLE_PILOT.status then
@@ -20,7 +34,14 @@ local function queue()
       end
     end
   end)
-  return queued, oldest
+  return queued, oldest, hubs_from_file()
+end
+
+-- "localhost:8000: 2 waiting (not answering)", "lso.example.com: all sent"
+local function hub_text(hub)
+  local url = hub.url:gsub("^https?://", ""):gsub("/+$", "")
+  if hub.waiting == 0 then return url .. ": all sent" end
+  return string.format("%s: %d waiting%s", url, hub.waiting, hub.problem and (" (" .. hub.problem .. ")") or "")
 end
 
 local function queue_text()
@@ -39,6 +60,12 @@ local updater, last
 local function showDialog(dlg)
   local function refresh()
     if dlg.queueLabel then dlg.queueLabel:setText(queue_text()) end
+    local queued, _, hubs = queue()
+    for i = 1, HUB_LINES do  -- each hub's share, while anything is waiting
+      local label = dlg["queueHub" .. i .. "Label"]
+      local hub = queued > 0 and hubs and hubs[i]
+      if label then label:setText(hub and hub_text(hub) or "") end
+    end
   end
   refresh()
   if dlg.sendNowButton then

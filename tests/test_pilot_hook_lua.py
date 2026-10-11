@@ -298,7 +298,7 @@ def test_uploader_logs_once_that_a_newer_version_is_out(tmp_path, recorded):
     run_uploader(tmp_path, recorded[0], send_to_all=True)
     sent = [line for line in run_uploader.log if "->" in line]
     updates = [line for line in run_uploader.log if "newer pilot hook" in line]
-    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 6): see http://hub1:8000"]
+    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 7): see http://hub1:8000"]
 
 
 def test_uploader_sends_dcss_own_sun(tmp_path, recorded):
@@ -495,6 +495,19 @@ for n = 1, 200 do clock = clock + 0.1; callbacks.onSimulationFrame() end
     assert not (out_dir / "retry.flag").exists()
 
 
+def test_status_says_what_each_hub_is_still_owed(tmp_path, recorded):
+    driver = IN_MISSION + """
+local queued, oldest, hubs = BURBLE_PILOT.status()
+for _, h in ipairs(hubs) do print(string.format('HUB %s %d %s', h.url, h.waiting, h.problem or '-')) end
+"""
+    run_uploader(tmp_path, recorded[0], send_to_all=True, refuse="hub2.example.com", driver=driver)
+    out_dir = tmp_path / "Logs" / "burble"
+    # hub1 took it; hub2 refused the token, so the file waits for it.
+    lines = (out_dir / "status.txt").read_text().splitlines()
+    assert lines[0] == "queued=1"
+    assert lines[2:] == ["hub=0\t\thttp://hub1:8000", "hub=1\tpilot token refused\thttps://hub2.example.com/lso/"]
+
+
 OPTIONS = ROOT / "Mods" / "Services" / "Burble" / "Options" / "optionsDb.lua"
 OPTIONS_STUBS = r"""
 WRITEDIR, SHARED = ...
@@ -508,12 +521,18 @@ package.preload['lfs'] = function()
 end
 package.preload['UpdateManager'] = function() return { add = function() end, delete = function() end } end
 if SHARED == 'yes' then
-  BURBLE_PILOT = { status = function() return 3, os.time() - 600 end, retry = function() print('RETRIED') end }
+  BURBLE_PILOT = { status = function()
+                     return 3, os.time() - 600, { { url = 'http://lso.example.com', waiting = 0 },
+                                                  { url = 'localhost:8000', waiting = 3, problem = 'not answering' } }
+                   end,
+                   retry = function() print('RETRIED') end }
 end
 local db = dofile(OPTIONS_PATH)
 local label = { setText = function(self, text) print('LABEL ' .. text) end }
+local function hub_label(i) return { setText = function(self, text) print('HUB' .. i .. ' ' .. text) end } end
 local button = {}
-db.callbackOnShowDialog({ queueLabel = label, sendNowButton = button })
+db.callbackOnShowDialog({ queueLabel = label, sendNowButton = button, queueHub1Label = hub_label(1),
+                          queueHub2Label = hub_label(2), queueHub3Label = hub_label(3) })
 button:onChange()
 db.callbackOnClose()
 """
@@ -524,11 +543,15 @@ def test_settings_page_shows_the_queue_and_sends_now(tmp_path, recorded, shared)
     out_dir = tmp_path / "Logs" / "burble"
     out_dir.mkdir(parents=True)
     shutil.copy(recorded[0], out_dir / recorded[0].name)
+    (out_dir / "status.txt").write_text("queued=1\noldest=\nhub=1\tnot answering\tlocalhost:8000\n")
     script = f"OPTIONS_PATH = {str(OPTIONS)!r}\n" + OPTIONS_STUBS
     out = subprocess.run([luajit(), "-", f"{tmp_path}/", "yes" if shared else "no"], input=script, capture_output=True,
                          text=True, check=True).stdout
     labels = [line for line in out.splitlines() if line.startswith("LABEL")]
     if shared:  # from the uploader itself
         assert labels[0] == "LABEL 3 approaches waiting to send (oldest: 10 min ago)." and "RETRIED" in out
+        assert out.splitlines()[1:4] == ["HUB1 lso.example.com: all sent", "HUB2 localhost:8000: 3 waiting (not answering)",
+                                         "HUB3 "]
     else:  # counted from the folder; "Send now" leaves a flag for the uploader
         assert labels[0].startswith("LABEL 1 approach waiting to send") and (out_dir / "retry.flag").exists()
+        assert "HUB1 localhost:8000: 1 waiting (not answering)" in out
