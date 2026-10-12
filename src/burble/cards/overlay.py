@@ -16,7 +16,7 @@ from ..grading import grade_name
 from ..grading.grade import GLIDESLOPE_DEG, LINEUP_DEG, POSITIONS
 from .svg import (FT, NM, PAD_L, PLOT_W, STYLE, WIDTH, X_MAX_M, X_MIN_M, Axis, _clip, _distance_axis_view, _f,
                   _poly, _step,
-                  deck_top)
+                  deck_top, lineup_ticks)
 
 # Grade colours (light, dark), shared with the greenie board.
 GRADE_COLORS = {
@@ -140,9 +140,9 @@ def render_overlay(items: list[OverlayPass], uid: str = "ov", title: str = "",
         half = max(reach * 1.15, 3.0)
         if frame is not None and near < ramp:  # the deck is in view: show all of its width
             half = max(half, max(abs(lat) for ends in frame.wire_ends for _, lat in ends) * 1.15)
-    y = Axis(-half, half, TOP_TOP + TOP_H, TOP_TOP)
+    y = Axis(-half, half, TOP_TOP, TOP_TOP + TOP_H)  # seen from above: left of centerline is up
     out.append(f'<text class="tc-text" x="{PAD_L}" y="{TOP_TOP - 6}" font-size="13" font-weight="600">'
-               "Lineup (right of centerline is up)</text>")
+               "Lineup (seen from above)</text>")
     _clip(f"{uid}-top", TOP_TOP, TOP_H, out)
     for cls, dev in (("tc-band3", LINEUP_DEG[2]), ("tc-band2", LINEUP_DEG[1]), ("tc-band1", LINEUP_DEG[0])):
         off = X_MAX_M * math.tan(math.radians(dev))
@@ -155,9 +155,7 @@ def render_overlay(items: list[OverlayPass], uid: str = "ov", title: str = "",
             out.append(_track(item, [(x(s.along), y(s.lateral)) for s in ss], i == 0))
     out.append("</g>")
     _frame(TOP_TOP, TOP_H, x, near, far, out)
-    for m in (-half * 0.8, 0.0, half * 0.8):
-        out.append(f'<text class="tc-muted" x="{PAD_L - 6}" y="{_f(y(m) + 4)}" font-size="11" '
-                   f'text-anchor="end">{m / FT:+.0f} ft</text>')
+    lineup_ticks(y, half, out)
     out.append("</svg>")
     return "\n".join(out)
 

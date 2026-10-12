@@ -393,9 +393,9 @@ def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float],
         half = max(max([abs(s.lateral) for s in samples if near <= s.along <= far] + [0.0]) * 1.15, 3.0)
         if frame is not None and near < frame.carrier.ramp_along_m:
             half = max(half, max(abs(lat) for ends in frame.wire_ends for _, lat in ends) * 1.15)
-    y = Axis(-half, half, top + h, top)  # + lateral (right of centerline) is up: the LSO's view from behind
+    y = Axis(-half, half, top, top + h)  # seen from above, flying left to right: left of centerline is up
     out.append(f'<text class="tc-text" x="{PAD_L}" y="{top - 6}" font-size="13" font-weight="600">'
-               f'Lineup (right of centerline is up)</text>')
+               f'Lineup (seen from above)</text>')
     _clip(f"{uid}-top", top, h, out)
     for cls, dev in (("tc-band3", LINEUP_DEG[2]), ("tc-band2", LINEUP_DEG[1]), ("tc-band1", LINEUP_DEG[0])):
         off = X_MAX_M * math.tan(math.radians(dev))
@@ -414,9 +414,14 @@ def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float],
         _distance_axis(top, h, x, out)
     else:
         _distance_axis_view(top, h, x, view[0], view[1], out)
+    lineup_ticks(y, half, out)
+
+
+def lineup_ticks(y: Axis, half: float, out: list[str]) -> None:
     for m in (-half * 0.8, 0.0, half * 0.8):
+        label = "0 ft" if m == 0 else f"{abs(m) / FT:.0f} ft {'R' if m > 0 else 'L'}"
         out.append(f'<text class="tc-muted" x="{PAD_L - 6}" y="{_f(y(m) + 4)}" font-size="11" '
-                   f'text-anchor="end">{m / FT:+.0f} ft</text>')
+                   f'text-anchor="end">{label}</text>')
 
 
 def _in_view(calls: list[dict], view: tuple[float, float] | None) -> list[dict]:
