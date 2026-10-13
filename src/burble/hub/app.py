@@ -28,6 +28,7 @@ from .accuracy import accuracy_of, flown_elsewhere
 from .db import Pass, Pilot, Source, Upload
 from .pilothook import PILOT_HOOK_VERSION
 from .service import SESSION_DAYS, Hub, IngestError, SignedIn
+from .telemetry import DEFAULT_URLS, Settings as TelemetrySettings, build_report, fetch_usage
 
 MAX_SLICE_BYTES = 20 * 1024 * 1024
 MAX_RECORDING_BYTES = 1024 * 1024 * 1024  # a whole session's Tacview recording (backfill)
@@ -473,7 +474,14 @@ def create_app(hub: Hub) -> FastAPI:
                     new_token: tuple[str, str] | None = None, status: int = 200) -> HTMLResponse:
         _admin(request)
         return HTMLResponse(pages.admin_page(hub.admin_pilots(q), hub.server_agents(), q, done, error, new_token,
-                                             css=hub.custom_css()), status_code=status)
+                                             css=hub.custom_css(), telemetry=_telemetry_info()), status_code=status)
+
+    def _telemetry_info() -> dict:
+        t = TelemetrySettings(hub)
+        view = t.view()
+        return {"enabled": t.enabled(), "acknowledged": t.acknowledged(), "urls": t.urls(), "default": DEFAULT_URLS,
+                "status": t.status(), "report": json.dumps(build_report(hub), indent=2),
+                "view": view[0] if view else None}
 
     def _admin_step(request: Request, step, done: str, q: str = ""):
         _admin(request)
@@ -554,6 +562,42 @@ def create_app(hub: Hub) -> FastAPI:
                                     status_code=303)
         return _admin_step(request, lambda: hub.set_config(name, parsed, kind="server"),
                            f"Configuration for {name} saved; its agent applies it when the next mission starts.")
+
+    @app.post("/admin/telemetry")
+    def admin_telemetry(request: Request, on: Annotated[str, Form()]):
+        enabled = on == "1"
+        return _admin_step(request, lambda: TelemetrySettings(hub).set_enabled(enabled),
+                           "Usage reports stay on. Thanks!" if enabled else "Usage reports are off; nothing is sent.")
+
+    @app.post("/admin/telemetry/urls")
+    def admin_telemetry_urls(request: Request, urls: Annotated[str, Form()] = "",
+                             default: Annotated[str, Form()] = ""):
+        given = None if default else urls.split()
+        return _admin_step(request, lambda: TelemetrySettings(hub).set_urls(given),
+                           "Usage reports go to the project's receiver again." if default else
+                           "Addresses for usage reports saved.")
+
+    @app.post("/admin/telemetry/view")
+    def admin_telemetry_view(request: Request, url: Annotated[str, Form()] = "", key: Annotated[str, Form()] = "",
+                             clear: Annotated[str, Form()] = ""):
+        if clear:
+            return _admin_step(request, lambda: TelemetrySettings(hub).set_view(None), "Usage page disconnected.")
+        return _admin_step(request, lambda: TelemetrySettings(hub).set_view(url, key),
+                           "Receiver connected: see the Usage page.")
+
+    @app.get("/admin/usage", response_class=HTMLResponse)
+    def admin_usage(request: Request):
+        if getattr(request.state, "pilot", None) is None:
+            return RedirectResponse(f"/signin?next={quote('/admin/usage', safe='')}", status_code=303)
+        _admin(request)
+        try:
+            stats, error = fetch_usage(hub), None
+        except LookupError:
+            stats, error = None, None
+        except RuntimeError as exc:
+            stats, error = None, str(exc)
+        view = TelemetrySettings(hub).view()
+        return HTMLResponse(pages.usage_page(stats, view[0] if view else None, error))
 
     @app.post("/admin/appearance")
     def admin_appearance(request: Request, css: Annotated[str, Form()] = ""):

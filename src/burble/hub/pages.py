@@ -13,6 +13,7 @@ from ..cards.overlay import GRADE_COLORS
 from ..cards.theme import COLOR_VARS, FONT_VAR, GRADE_VARS, MAX_CSS, safe_css
 from ..geometry import airframe
 from ..grading import grade_name, grade_short
+from ..telemetry.pages import STYLE as USAGE_STYLE, usage_body
 from .accuracy import Accuracy
 from .db import Pass, Upload
 
@@ -41,6 +42,10 @@ table.board td.num { padding: 4px 8px; text-align: right; font-variant-numeric: 
 .cell.night { position: relative; }
 .token-once { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
 .token-once code { word-break: break-all; font-size: 13px; }
+.notice { border: 1px solid #bf8700; border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; }
+.notice .actions { margin-top: 6px; }
+.admin pre { font-size: 12px; overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+.admin ul { margin: 4px 0 8px; padding-left: 20px; }
 form.inline { display: flex; gap: 6px; align-items: center; margin: 0; }
 form.inline input { width: 9em; }
 .cell.night::after, .legend span.night-dot { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px;
@@ -781,7 +786,7 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
 
 
 def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None, error: str | None = None,
-               new_token: tuple[str, str] | None = None, css: str = "") -> str:
+               new_token: tuple[str, str] | None = None, css: str = "", telemetry: dict | None = None) -> str:
     """For admins (pilots with the role, signed in): pilots (admin role, password reset, removal, other names,
     pilot tokens) and server agents (adding one, their configuration). `new_token`: (what, token), shown once."""
     me = CURRENT_PILOT.get()
@@ -849,14 +854,92 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
                  '<input name="name" required maxlength="100" placeholder="e.g. server1">'
                  '<button type="submit">Add a server agent</button></form>'
                  '<p class="sub">Its server agent token is shown once, here.</p>')
+    tel = telemetry or {}
+    usage_link = ' · <a href="/admin/usage">Usage</a>' if tel.get("view") else ""
     body = ('<h1>Admin</h1><p class="sub">Regrading and the wire check are run on the hub\'s machine '
-            "(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).</p>"
-            f'{note}<div class="admin"><div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}'
+            f"(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).{usage_link}</p>"
+            f'{note}{_telemetry_notice(tel)}<div class="admin"><div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}'
             '<p class="sub">Only a pilot with a password can be an admin; resetting an admin\'s password removes the '
             'role. A pilot with passes can\'t be removed.</p></div>'
             f'<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Server agents</h2>{agents_table}'
-            f"{add_agent}</div>{_appearance(css)}</div>")
+            f"{add_agent}</div>{_appearance(css)}{_telemetry_panel(tel) if telemetry else ''}</div>")
     return _page("Admin", body)
+
+
+def _telemetry_notice(tel: dict) -> str:
+    """Until an admin has seen it: that usage reports are on, with what's sent and how to turn them off."""
+    if not tel or not tel.get("enabled") or tel.get("acknowledged"):
+        return ""
+    return ('<div class="notice admin"><strong>This hub sends anonymous usage counts to the burble project once a '
+            'day.</strong> Counts only: no pilot names, UCIDs, IP addresses or tracks. '
+            '<a href="#usage-reports">What\'s sent</a><div class="actions">'
+            '<form method="post" action="/admin/telemetry"><input type="hidden" name="on" value="1">'
+            '<button type="submit">Keep sending</button></form>'
+            '<form method="post" action="/admin/telemetry"><input type="hidden" name="on" value="0">'
+            '<button type="submit">Turn off</button></form></div></div>')
+
+
+def _telemetry_panel(tel: dict) -> str:
+    """Usage reports: on/off, where they go (and how each last went), the report as sent now, what is and isn't
+    in it; and connecting a receiver for the Usage page."""
+    from .telemetry import NEVER_SENT, WHAT_IS_SENT
+
+    on = tel["enabled"]
+    toggle = ('<form method="post" action="/admin/telemetry">'
+              f'<input type="hidden" name="on" value="{"0" if on else "1"}">'
+              f'<button type="submit"{" class=danger" if on else ""}>{"Turn off" if on else "Turn on"}</button></form>')
+    rows = []
+    for url in tel["urls"]:
+        st = tel["status"].get(url)
+        when = (_when(datetime.fromisoformat(st["at"])) + (": sent" if st["ok"] else f": {st['message']}")
+                if st else "not sent yet")
+        rows.append(f"<li><code>{escape(url)}</code> <span class=\"sub\">({escape(when)})</span></li>")
+    where = f"<ul>{''.join(rows)}</ul>" if rows else '<p class="sub">No addresses: nothing is sent.</p>'
+    is_default = tel["urls"] == tel["default"]
+    urls_form = ('<details><summary>Change where reports go</summary>'
+                 '<form method="post" action="/admin/telemetry/urls">'
+                 f'<textarea name="urls" spellcheck="false" style="min-height:4em">{escape(chr(10).join(tel["urls"]))}'
+                 '</textarea><p class="sub">One address per line: a usage receiver (<code>burble telemetry serve</code>), '
+                 'e.g. your community\'s own beside the project\'s. The report goes to each.</p>'
+                 '<div class="actions"><button type="submit">Save addresses</button>'
+                 + ("" if is_default else '<button type="submit" name="default" value="1">Back to the project\'s</button>')
+                 + "</div></form></details>")
+    view = tel.get("view")
+    view_form = (f'<p>Showing stats from <code>{escape(view)}</code> on the <a href="/admin/usage">Usage page</a>.</p>'
+                 '<form method="post" action="/admin/telemetry/view"><button type="submit" name="clear" value="1">'
+                 "Disconnect</button></form>" if view else
+                 '<p class="sub">Connect a usage receiver to see the stats it has gathered on a Usage page here. '
+                 "Its API key comes from <code>burble telemetry new-key NAME</code> on the receiver's machine "
+                 "(or use its password).</p>"
+                 '<form method="post" action="/admin/telemetry/view" class="actions">'
+                 '<input name="url" required placeholder="https://telemetry.example.com" style="width:18em">'
+                 '<input name="key" type="password" required placeholder="API key or password" autocomplete="off">'
+                 '<button type="submit">Connect</button></form>')
+    sent = "".join(f"<li>{escape(x)}</li>" for x in WHAT_IS_SENT)
+    never = "".join(f"<li>{escape(x)}</li>" for x in NEVER_SENT)
+    state = ("<strong>On</strong>: once a day, to the addresses below." if on else
+             "<strong>Off</strong>: nothing is sent.")
+    return ('<div class="panel" id="usage-reports" style="margin-top:12px"><h2 style="margin-top:0">Usage reports</h2>'
+            f'<p>{state} They help the burble project see how many hubs run it and how they\'re used.</p>'
+            f'<div class="actions">{toggle}</div>'
+            f"<h3>What's sent</h3><ul>{sent}</ul><h3>What's never sent</h3><ul>{never}</ul>"
+            f"<h3>Where it goes</h3>{where}{urls_form}"
+            f'<details><summary>The report as it would be sent now</summary><pre>{escape(tel["report"])}</pre></details>'
+            f"<h3>Usage page</h3>{view_form}</div>")
+
+
+def usage_page(stats: dict | None, view: str | None, error: str | None) -> str:
+    """Admins' Usage page: the stats of the receiver they connected (fetched from its /api/v1/usage)."""
+    if view is None:
+        content = ('<div class="panel"><p>No usage receiver connected. Connect one under "Usage reports" on the '
+                   '<a href="/admin#usage-reports">admin page</a>.</p></div>')
+    elif error:
+        content = (f'<div class="panel"><p class="error">{escape(error)}</p><p>Check the address and key under '
+                   '"Usage reports" on the <a href="/admin#usage-reports">admin page</a>.</p></div>')
+    else:
+        content = f'<div class="panel">{usage_body(stats)}</div>'
+    source = f'<p class="sub">From <code>{escape(view)}</code> · <a href="/admin">Admin</a></p>' if view else ""
+    return _page("Usage", f"<style>{USAGE_STYLE}</style><h1>Usage</h1>{source}{content}")
 
 
 def _appearance(css: str) -> str:

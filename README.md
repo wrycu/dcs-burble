@@ -20,6 +20,29 @@ How it works
 - Provides a hub, with a greenie board and trap sheets
 - Stores Tacview recordings for regrading, rewatching, or whatever you want!
 
+## Usage reports
+
+A hub sends anonymous usage counts to the Burble project once a day, so we can see how many hubs run Burble
+and how they're used. **It's on unless you turn it off**: on the admin page ("Usage reports") or with
+`burble hub telemetry off`. The admin page says so until an admin has chosen, and shows the exact report.
+
+What's sent:
+- a random id the hub makes for itself, so its reports can be told apart (not based on its address or anything else)
+- the hub's version
+- for each of the last 30 days: how many landings, how many pilots landed, how many landings had a server
+  report, a pilot's report (pilot hook or uploaded recording) or both, and how many got live LSO calls
+- how many pilots landed in the last 30 days
+- the server agents used in the last 30 days: how many make live calls over SRS and how many only collect,
+  and their versions
+- the pilot hooks seen in the last 30 days: how many, and their versions
+
+What's never sent: pilot names, UCIDs or IP addresses; the hub's address or name; mission, server or carrier
+names; the tracks, grades or calls themselves, or anything else about a landing.
+
+`burble hub telemetry show` prints the report without sending it. Reports go to `https://telemetry.wrycu.com`
+by default; a community can add its own receiver (`burble telemetry serve`, which runs without a hub) or
+replace ours, and connect a hub's admin pages to a receiver to see its stats.
+
 ## Credits
 
 - [DCS-gRPC/lso](https://github.com/DCS-gRPC/lso): carrier and aircraft reference data (wire

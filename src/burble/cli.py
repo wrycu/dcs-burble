@@ -281,7 +281,99 @@ def _hub_serve(args: argparse.Namespace) -> int:
     if args.discord_board_webhook or args.discord_traps_webhook:
         from .hub.discord import Discord
         Discord(hub, args.discord_board_webhook, args.discord_traps_webhook, args.public_url or "")
+    from .hub.telemetry import Telemetry
+    Telemetry(hub)  # usage reports, once a day while on (see `burble hub telemetry`)
     uvicorn.run(create_app(hub), host=args.host, port=args.port)
+    return 0
+
+
+def _hub_telemetry(args: argparse.Namespace) -> int:
+    from .hub.telemetry import NEVER_SENT, WHAT_IS_SENT, Settings, build_report
+
+    hub = _hub(args)
+    settings = Settings(hub)
+    action = args.telemetry_command
+    try:
+        if action == "show":
+            print(json.dumps(build_report(hub), indent=2))
+            return 0
+        if action in ("on", "off"):
+            settings.set_enabled(action == "on")
+        elif action == "urls":
+            if args.default or args.urls or args.none:
+                settings.set_urls(None if args.default else [] if args.none else args.urls)
+        elif action == "view":
+            settings.set_view(None if args.clear else args.url, "" if args.clear else args.key)
+            print("Usage page disconnected" if args.clear else
+                  f"the admins' Usage page now shows {args.url}'s stats")
+            return 0
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"usage reports: {'on' if settings.enabled() else 'off'}")
+    print("sent to: " + (", ".join(settings.urls()) or "nowhere"))
+    print("what's sent:\n" + "\n".join(f"  - {x}" for x in WHAT_IS_SENT))
+    print("never sent:\n" + "\n".join(f"  - {x}" for x in NEVER_SENT))
+    return 0
+
+
+def _telemetry_store(args: argparse.Namespace):
+    from .telemetry.store import Store
+    return Store(args.data_dir)
+
+
+def _telemetry_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from .telemetry.app import create_app
+
+    uvicorn.run(create_app(_telemetry_store(args)), host=args.host, port=args.port)
+    return 0
+
+
+def _telemetry_set_password(args: argparse.Namespace) -> int:
+    import getpass
+
+    password = getpass.getpass("New password for the Usage page and API: ")
+    if getpass.getpass("Again: ") != password:
+        print("error: the passwords differ", file=sys.stderr)
+        return 1
+    try:
+        _telemetry_store(args).set_password(password)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print("password set")
+    return 0
+
+
+def _telemetry_new_key(args: argparse.Namespace) -> int:
+    try:
+        key = _telemetry_store(args).new_key(args.name)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"API key {args.name!r} (shown once, keep it secret; give it to a hub under Admin > Usage reports):")
+    print(key)
+    return 0
+
+
+def _telemetry_revoke_key(args: argparse.Namespace) -> int:
+    try:
+        _telemetry_store(args).revoke_key(args.name)
+    except LookupError as exc:
+        print(f"error: {exc.args[0]}", file=sys.stderr)
+        return 1
+    print(f"API key {args.name!r} revoked")
+    return 0
+
+
+def _telemetry_keys(args: argparse.Namespace) -> int:
+    keys = _telemetry_store(args).keys()
+    for k in keys:
+        print(f"{k.name}\t(made {k.created_at:%Y-%m-%d})")
+    if not keys:
+        print("no API keys (make one with `burble telemetry new-key NAME`)")
     return 0
 
 
@@ -647,6 +739,43 @@ def main(argv: list[str] | None = None) -> int:
     set_config.add_argument("name")
     set_config.add_argument("file")
     set_config.set_defaults(func=_hub_set_config)
+    tel = hub_sub.add_parser("telemetry", help="usage reports: anonymous counts sent once a day (on unless turned off)")
+    tel_sub = tel.add_subparsers(dest="telemetry_command")
+    tel.set_defaults(func=_hub_telemetry, telemetry_command="status")
+    tel_sub.add_parser("status", help="on or off, where reports go, what is and isn't sent").set_defaults(
+        func=_hub_telemetry)
+    tel_sub.add_parser("show", help="print the report as it would be sent now (sends nothing)").set_defaults(
+        func=_hub_telemetry)
+    tel_sub.add_parser("on", help="send usage reports").set_defaults(func=_hub_telemetry)
+    tel_sub.add_parser("off", help="send nothing").set_defaults(func=_hub_telemetry)
+    tel_urls = tel_sub.add_parser("urls", help="where reports go (each address gets one); no arguments: show them")
+    tel_urls.add_argument("urls", nargs="*", metavar="URL", help="usage receivers, e.g. https://telemetry.wrycu.com")
+    tel_urls.add_argument("--default", action="store_true", help="back to the project's receiver")
+    tel_urls.add_argument("--none", action="store_true", help="no addresses (sends nothing)")
+    tel_urls.set_defaults(func=_hub_telemetry)
+    tel_view = tel_sub.add_parser("view", help="show a usage receiver's stats on the admins' Usage page")
+    tel_view.add_argument("url", nargs="?", help="the receiver's address")
+    tel_view.add_argument("key", nargs="?", help="its API key (`burble telemetry new-key`) or password")
+    tel_view.add_argument("--clear", action="store_true", help="disconnect it")
+    tel_view.set_defaults(func=_hub_telemetry)
+
+    telemetry = sub.add_parser("telemetry", help="run a usage report receiver (without a hub)")
+    telemetry.add_argument("--data-dir", default=os.environ.get("BURBLE_TELEMETRY_DIR", "telemetry"),
+                           help="where its database (telemetry.db) lives [$BURBLE_TELEMETRY_DIR]")
+    telemetry_sub = telemetry.add_subparsers(dest="receiver_command", required=True)
+    t_serve = telemetry_sub.add_parser("serve", help="take hubs' reports; the Usage page at / (with the password)")
+    t_serve.add_argument("--host", default="127.0.0.1")
+    t_serve.add_argument("--port", type=int, default=8100)
+    t_serve.set_defaults(func=_telemetry_serve)
+    telemetry_sub.add_parser("set-password", help="set the password for the Usage page (and the API)").set_defaults(
+        func=_telemetry_set_password)
+    t_key = telemetry_sub.add_parser("new-key", help="make an API key for /api/v1/usage (e.g. for a hub's Usage page)")
+    t_key.add_argument("name", help="what it's for, e.g. the hub's name")
+    t_key.set_defaults(func=_telemetry_new_key)
+    t_revoke = telemetry_sub.add_parser("revoke-key", help="revoke an API key")
+    t_revoke.add_argument("name")
+    t_revoke.set_defaults(func=_telemetry_revoke_key)
+    telemetry_sub.add_parser("keys", help="list the API keys").set_defaults(func=_telemetry_keys)
 
     voice = sub.add_parser("voice", help="LSO voice clips")
     voice_sub = voice.add_subparsers(dest="voice_command", required=True)
