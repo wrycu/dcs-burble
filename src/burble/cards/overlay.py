@@ -1,6 +1,6 @@
 """Several passes' tracks overlaid on one card (glideslope and lineup), coloured by grade.
 
-Uses the trap card's axes, bands and groove positions (`cards.svg`), so a pilot's habits show as a
+Uses the trap card's axes, bands, and groove positions (`cards.svg`), so a pilot's habits show as a
 bundle of lines: where they cluster off the ideal is what keeps happening.
 """
 

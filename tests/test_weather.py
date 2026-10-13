@@ -1,4 +1,4 @@
-"""The wind and weather a pass was flown in: from the server hook, onto the pass, the trap card and the pass page."""
+"""The wind and weather a pass was flown in: from the server hook, onto the pass, the trap card, and the pass page."""
 
 import math
 from pathlib import Path

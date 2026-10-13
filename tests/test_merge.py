@@ -1,6 +1,6 @@
 """Two reports of one landing: the server's (carrier, 4.8 Hz, no AOA) and the pilot's own Tacview
 (own jet only, ~8 Hz, real AOA). Hub combines them into one landing graded from the pilot's
-track against the server's carrier, keeping the server's DCS grade, wire and live calls."""
+track against the server's carrier, keeping the server's DCS grade, wire, and live calls."""
 
 import asyncio
 from pathlib import Path

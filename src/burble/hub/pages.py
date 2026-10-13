@@ -46,6 +46,11 @@ table.board td.num { padding: 4px 8px; text-align: right; font-variant-numeric: 
 .notice .actions { margin-top: 6px; }
 .admin pre { font-size: 12px; overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
 .admin ul { margin: 4px 0 8px; padding-left: 20px; }
+dialog.modal { max-width: min(640px, calc(100vw - 32px)); background: var(--card); color: var(--text);
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; }
+dialog.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog.modal h3 { margin: 8px 0 4px; }
+button.link { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-decoration: underline; cursor: pointer; }
 form.inline { display: flex; gap: 6px; align-items: center; margin: 0; }
 form.inline input { width: 9em; }
 .cell.night::after, .legend span.night-dot { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px;
@@ -255,7 +260,7 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
 
 
 def card_title(p: Pass) -> str:
-    """The trap card's title line: the mission, the pilot's side number and the livery, when known."""
+    """The trap card's title line: the mission, the pilot's side number, and the livery, when known."""
     modex = p.pilot.modex if p.pilot else None
     return " · ".join(x for x in (p.mission, f"#{modex}" if modex else None, p.livery) if x)
 
@@ -866,13 +871,16 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
     return _page("Admin", body)
 
 
+_OPEN_SENT = """onclick="document.getElementById('whats-sent').showModal()\""""
+
+
 def _telemetry_notice(tel: dict) -> str:
     """Until an admin has seen it: that usage reports are on, with what's sent and how to turn them off."""
     if not tel or not tel.get("enabled") or tel.get("acknowledged"):
         return ""
     return ('<div class="notice admin"><strong>This hub sends anonymous usage counts to the burble project once a '
-            'day.</strong> Counts only: no pilot names, UCIDs, IP addresses or tracks. '
-            '<a href="#usage-reports">What\'s sent</a><div class="actions">'
+            'day.</strong> Counts only: no pilot names, UCIDs, IP addresses, or tracks. '
+            f'<button type="button" class="link" {_OPEN_SENT}>What\'s sent</button><div class="actions">'
             '<form method="post" action="/admin/telemetry"><input type="hidden" name="on" value="1">'
             '<button type="submit">Keep sending</button></form>'
             '<form method="post" action="/admin/telemetry"><input type="hidden" name="on" value="0">'
@@ -880,7 +888,7 @@ def _telemetry_notice(tel: dict) -> str:
 
 
 def _telemetry_panel(tel: dict) -> str:
-    """Usage reports: on/off, where they go (and how each last went), the report as sent now, what is and isn't
+    """Usage reports: on/off, where they go (and how each last went), the report as sent now, and what is and isn't
     in it; and connecting a receiver for the Usage page."""
     from .telemetry import NEVER_SENT, WHAT_IS_SENT
 
@@ -921,10 +929,13 @@ def _telemetry_panel(tel: dict) -> str:
              "<strong>Off</strong>: nothing is sent.")
     return ('<div class="panel" id="usage-reports" style="margin-top:12px"><h2 style="margin-top:0">Usage reports</h2>'
             f'<p>{state} They help the burble project see how many hubs run it and how they\'re used.</p>'
-            f'<div class="actions">{toggle}</div>'
-            f"<h3>What's sent</h3><ul>{sent}</ul><h3>What's never sent</h3><ul>{never}</ul>"
-            f"<h3>Where it goes</h3>{where}{urls_form}"
+            f'<div class="actions">{toggle}<button type="button" {_OPEN_SENT}>What\'s sent</button></div>'
+            '<dialog class="modal" id="whats-sent"><h2 style="margin-top:0">What\'s sent</h2>'
+            f"<p class=\"sub\" style=\"margin:0\">All of it about the last 30 days.</p><ul>{sent}</ul>"
+            f"<h3>What's never sent</h3><ul>{never}</ul>"
             f'<details><summary>The report as it would be sent now</summary><pre>{escape(tel["report"])}</pre></details>'
+            '<form method="dialog" class="actions" style="margin-top:8px"><button>Close</button></form></dialog>'
+            f"<h3>Where it goes</h3>{where}{urls_form}"
             f"<h3>Usage page</h3>{view_form}</div>")
 
 
@@ -949,7 +960,7 @@ def _appearance(css: str) -> str:
             '<p class="sub">CSS added to every page of this board. The Discord images (the greenie board, and the '
             "colour beside each landing's post) can't use CSS rules, so they take only the theme variables set on "
             f"<code>:root</code>: {names}. Discord's images are dark, so values set for dark mode "
-            "(<code>@media (prefers-color-scheme: dark)</code>) win there. Colours as #hex, rgb() or names.</p>"
+            "(<code>@media (prefers-color-scheme: dark)</code>) win there. Colours as #hex, rgb(), or names.</p>"
             '<form method="post" action="/admin/appearance">'
             f'<textarea name="css" spellcheck="false" maxlength="{MAX_CSS}" '
             'placeholder=":root { --bg: #101820; --card: #18242f; --grade-ok: #00c853; }">'

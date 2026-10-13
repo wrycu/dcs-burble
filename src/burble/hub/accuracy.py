@@ -1,4 +1,4 @@
-"""How far a landing's grade, wire and calls can be trusted (PLAN #31, docs/accuracy-scores.png): which parts
+"""How far a landing's grade, wire, and calls can be trusted (PLAN #31, docs/accuracy-scores.png): which parts
 reported it (a server agent, the pilot hook, an uploaded recording, DCS's LSO through carrier comms), and from
 those four scores, each Full / High / Medium / Low / None:
 

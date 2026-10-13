@@ -1,7 +1,7 @@
 """Write standalone ACMI slices: a time window of a recording, limited to chosen objects.
 
 ACMI stores only what changed, so a slice can't just copy lines from the middle of a
-recording. It starts with the header, the global properties and the complete current
+recording. It starts with the header, the global properties, and the complete current
 state of every included object, then copies the original lines for those objects
 unchanged. Times stay as in the source (mission time), so DCS events still line up.
 """

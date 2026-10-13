@@ -312,7 +312,7 @@ def _hub_telemetry(args: argparse.Namespace) -> int:
         return 1
     print(f"usage reports: {'on' if settings.enabled() else 'off'}")
     print("sent to: " + (", ".join(settings.urls()) or "nowhere"))
-    print("what's sent:\n" + "\n".join(f"  - {x}" for x in WHAT_IS_SENT))
+    print("what's sent (all about the last 30 days):\n" + "\n".join(f"  - {x}" for x in WHAT_IS_SENT))
     print("never sent:\n" + "\n".join(f"  - {x}" for x in NEVER_SENT))
     return 0
 
@@ -694,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
                           "(shown, the default), or only when a viewer picks \"All servers\" (hidden; also left off "
                           "Discord) [$BURBLE_OTHER_SERVERS]")
     hub_sub = hub.add_subparsers(dest="hub_command", required=True)
-    serve = hub_sub.add_parser("serve", help="serve the API, greenie board and pass pages")
+    serve = hub_sub.add_parser("serve", help="serve the API, greenie board, and pass pages")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--public-url", default=os.environ.get("BURBLE_PUBLIC_URL"),
@@ -742,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:
     tel = hub_sub.add_parser("telemetry", help="usage reports: anonymous counts sent once a day (on unless turned off)")
     tel_sub = tel.add_subparsers(dest="telemetry_command")
     tel.set_defaults(func=_hub_telemetry, telemetry_command="status")
-    tel_sub.add_parser("status", help="on or off, where reports go, what is and isn't sent").set_defaults(
+    tel_sub.add_parser("status", help="on or off, where reports go, and what is and isn't sent").set_defaults(
         func=_hub_telemetry)
     tel_sub.add_parser("show", help="print the report as it would be sent now (sends nothing)").set_defaults(
         func=_hub_telemetry)
@@ -795,7 +795,7 @@ def main(argv: list[str] | None = None) -> int:
     upload.add_argument("--dcs-log", metavar="PATH",
                         help="the DCS server's dcs.log with the burble server hook's events of the recordings' mission "
                              "(e.g. a server agent's session archive): pilots checked, DCS's grades and wires, "
-                             "liveries and when each pass was flown, as the agent does live")
+                             "liveries, and when each pass was flown, as the agent does live")
     upload.add_argument("--pilot", help="only this pilot's passes")
     upload.add_argument("--dry-run", action="store_true", help="list the passes, don't upload")
     upload.set_defaults(func=_upload)

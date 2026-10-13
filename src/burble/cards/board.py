@@ -1,6 +1,6 @@
 """The greenie board as an image (SVG, dark): for Discord, where the board is one message kept up to date.
 
-Laid out like the website's board (a section per airframe when there's more than one): each pilot's passes, average and trap rate, then their latest landings as
+Laid out like the website's board (a section per airframe when there's more than one): each pilot's passes, average, and trap rate, then their latest landings as
 squares in the grade's colour with its short label, oldest first, night landings dotted, and a legend.
 """
 

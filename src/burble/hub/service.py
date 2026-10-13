@@ -500,7 +500,7 @@ class Hub:
         return Recording(recording.globals, objects, recording.first_frame), new_id
 
     def _same_landing(self, a: Pass, b: Pass, s: Session | None = None) -> bool:
-        """Two reports of the same landing: same pilot, aircraft and mission (checked by the caller),
+        """Two reports of the same landing: same pilot, aircraft, and mission (checked by the caller),
         overlapping in mission time, and the aircraft in the same place at the same moments."""
         wa, wb = _mission_window(a, self._reference_time(a, s)), _mission_window(b, self._reference_time(b, s))
         if wa is None or wb is None or not (wa[0] < wb[1] and wb[0] < wa[1]):
@@ -1433,7 +1433,7 @@ _LAN = tuple(ipaddress.ip_network(n) for n in (
 
 
 def _is_lan(address: str | None) -> bool:
-    """A LAN (private), loopback or link-local address."""
+    """A LAN (private), loopback, or link-local address."""
     try:
         ip = ipaddress.ip_address(_ip(address) or "")
     except ValueError:

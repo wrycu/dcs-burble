@@ -103,7 +103,7 @@ def test_admins_see_the_notice_until_they_choose(hub):
     viper = client_for(hub, "Viper", "viper password")
     page = viper.get("/admin").text
     assert "sends anonymous usage counts to the burble project" in page and "Keep sending" in page
-    assert 'id="usage-reports"' in page and "What's never sent" in page and "pilot names, UCIDs" in page
+    assert 'id="usage-reports"' in page and 'id="whats-sent"' in page and "What's never sent" in page and "pilot names, UCIDs" in page
     viper.post("/admin/telemetry", data={"on": "1"})
     page = viper.get("/admin").text
     assert "Keep sending" not in page and "<strong>On</strong>" in page and Settings(hub).enabled()

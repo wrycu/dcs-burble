@@ -278,7 +278,7 @@ local function here_set(text)
 end
 
 -- The session an approach file was flown in, written into the file when the uploader first sees it (so
--- one uploaded in a later session still names its own mission, server and account).
+-- one uploaded in a later session still names its own mission, server, and account).
 local function stamp(name)
   local path = dir .. name
   local meta = read_file(path)

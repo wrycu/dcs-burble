@@ -47,7 +47,7 @@ def estimate_wire(samples: Sequence[PassSample], frame: DeckFrame) -> int | None
 
 
 # -- the wire from a server's copy of the jet (PLAN #25) -------------------------------------------------------
-# A server's copy overshoots the stop (see above): on 10 traps with DCS's wire (two pilots, FA-18C and F-14),
+# A server's copy overshoots the stop (see above): on 10 traps with DCS's wire (two pilots, FA-18C, and F-14),
 # 11.8-14.4 m, mean 12.8, sd about 0.9 (`burble hub wire-check`). The stop point corrected by that names the wire:
 # right on all 13 traps with a known wire, within 1.7 m on DCS's 10. A second signal, the next wire forward of
 # where the hook first reached deck height, was right on only 8 of 13 (one wire short on every F-14 trap: the

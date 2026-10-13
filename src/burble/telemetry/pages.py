@@ -55,7 +55,7 @@ def _weekly_chart(weekly: list[dict]) -> str:
 
 
 def usage_body(stats: dict) -> str:
-    """The page's content (no page shell): the totals, versions, landings per week and each install."""
+    """The page's content (no page shell): the totals, versions, landings per week, and each install."""
     inst, tot, ver = stats["installs"], stats["totals"], stats["versions"]
     tracks = tot["tracks"]
     tiles = [(inst["last_30d"], "hubs reporting (30 days)"), (inst["last_7d"], "hubs reporting (7 days)"),

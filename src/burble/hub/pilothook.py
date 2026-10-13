@@ -4,7 +4,7 @@ The pilot hook sends one upload per approach (JSON), with the jet's samples as C
 in DCS's Lua). Columns, one row per frame (or whatever rate the hook sends):
 
     t        DCS model time, seconds: on a multiplayer client this is the *mission* time (the server's)
-    x, y, z  DCS map coordinates, meters (x north, y up, z east): Tacview's v, altitude and u
+    x, y, z  DCS map coordinates, meters (x north, y up, z east): Tacview's v, altitude, and u
     heading, pitch, bank  radians (heading relative to the map grid, as Tacview's `heading`)
     aoa      angle of attack, degrees
     lat, lon degrees

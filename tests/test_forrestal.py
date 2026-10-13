@@ -1,4 +1,4 @@
-"""The Forrestal (CV-59): its own deck geometry, and a pass on it detected, graded and drawn.
+"""The Forrestal (CV-59): its own deck geometry, and a pass on it detected, graded, and drawn.
 
 The recording is a real Nimitz-class trap (Wrycu on the Truman) with the carrier renamed to the
 Forrestal and raised so its (lower) deck is where the Nimitz's was: the same flight, measured against

@@ -1,6 +1,6 @@
 """Decide LSO calls from live groove estimates.
 
-The phrase set, escalation and hold times follow DCS's own LSO (its phrases and ED's trigger
+The phrase set, escalation, and hold times follow DCS's own LSO (its phrases and ED's trigger
 notes in `Scripts/Speech/common_events.lua`). The deviation bands are ours (angles seen from
 the aim point), tuned against recorded passes; ED's notes give degrees that can't be the same
 measure (e.g. "high" at 5 degrees above the glidepath).

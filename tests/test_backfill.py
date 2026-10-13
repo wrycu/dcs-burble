@@ -1,4 +1,4 @@
-"""Backfill: whole Tacview recordings uploaded to hub, sliced and merged with known landings."""
+"""Backfill: whole Tacview recordings uploaded to hub, sliced, and merged with known landings."""
 
 import io
 import time

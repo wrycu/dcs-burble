@@ -249,7 +249,7 @@ def create_app(hub: Hub) -> FastAPI:
                                password: Annotated[str | None, Form(description="without a token: the pilot's password, "
                                                                                 "if they've set one")] = None,
                                authorization: Annotated[str | None, Header()] = None):
-        """Backfill: a whole recording's passes are sliced, graded and merged with the known landings (in
+        """Backfill: a whole recording's passes are sliced, graded, and merged with the known landings (in
         the background; follow `status_url`, or the uploader's `page`). With a source's token: every pass.
         Without (unless the server requires tokens): one pilot's passes, picked from the pilots in the file
         (automatically if there's only one; otherwise POST it to `choose_url` with the `key`)."""

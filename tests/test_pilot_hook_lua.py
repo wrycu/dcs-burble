@@ -226,7 +226,7 @@ def run_uploader(tmp_path: Path, approach: Path, send_to_all: bool | None,
     out_dir = tmp_path / "Logs" / "burble"
     again = out_dir.exists()  # a later DCS session, with what the last one left
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Written during this session (the uploader stamps it with the session's mission, account and server)...
+    # Written during this session (the uploader stamps it with the session's mission, account, and server)...
     if not again:
         shutil.copy(approach, out_dir / approach.name)
     if previous_session is not None:

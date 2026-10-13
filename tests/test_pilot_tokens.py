@@ -175,7 +175,7 @@ def test_joining_the_board_before_flying_here(hub):
     token = hub.create_pilot_token("Goose", "goose password", "my PC")  # tokens straight away
     hub.ingest(hub.authenticate(token).id, *report(OWN, "Goose"))
     assert board_pilots(hub)["Goose"] == 1
-    # Taken, unclaimed and invalid names.
+    # Taken, unclaimed, and invalid names.
     r = client.post("/join", data={"name": "Goose", "password": "another one", "confirm": "another one"})
     assert r.status_code == 400 and "already taken" in r.text
     r = client.post("/join", data={"name": "Wrycu", "password": "first password", "confirm": "first password"})

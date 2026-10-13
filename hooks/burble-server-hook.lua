@@ -259,7 +259,7 @@ local function log_carriers()
   end
 end
 
--- Everyone connected (not the server itself): UCID (DCS account id), IP address and name, so the hub can
+-- Everyone connected (not the server itself): UCID (DCS account id), IP address, and name, so the hub can
 -- recognise a pilot hook sent from a player on this server. Logged on every connect and disconnect, and
 -- once a minute (so a server agent that restarts mid-mission learns it again).
 local PLAYERS_EVERY_S = 60

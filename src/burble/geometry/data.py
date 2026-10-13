@@ -62,7 +62,7 @@ NIMITZ = CarrierInfo(
     ),
 )
 
-# CV-59 Forrestal (in DCS with the F-14 module, usable by everyone): deck angle, deck height and wires
+# CV-59 Forrestal (in DCS with the F-14 module, usable by everyone): deck angle, deck height, and wires
 # from lso, which match DCS's CoreMods/aircraft/F14/Entry/CV-59-Forrestal_RunwaysAndRoutes.lua (landing
 # strip azimuth 350.58 = 9.42 deg, deck at 18.46 m). Not yet checked against a flight:
 # - the ramp: DCS gives no ramp position. Its ICLS localizer (at the stern) sits 15.5 m further forward
@@ -90,7 +90,7 @@ FORRESTAL = CarrierInfo(
 FA18C = AircraftInfo(
     name="FA-18C",
     hook=(-2.240897, -7.237348),
-    # The carrier's lens: 3.5 deg for every aircraft (DCS's carrier data, GlideslopeBasicAngle and the ICLS;
+    # The carrier's lens: 3.5 deg for every aircraft (DCS's carrier data, GlideslopeBasicAngle, and the ICLS;
     # the Supercarrier Operations Guide's IFLOLS section). The guide's LSO says 3.6 for Case I but 3.5 for
     # Case III ("Inside 3/4 Mile"); 3.6 until grading v7. Under review (PLAN #35).
     glideslope=3.5,

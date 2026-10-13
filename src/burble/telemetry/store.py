@@ -1,5 +1,5 @@
 """The receiver's database (`telemetry.db`, its own SQLite file; none of the hub's tables): every report received,
-each install's days (one row per day, replaced when a newer report covers it), API keys and the password.
+each install's days (one row per day, replaced when a newer report covers it), API keys, and the password.
 And the stats worked out from them (`usage`), for the Usage page and `/api/v1/usage`."""
 
 from __future__ import annotations

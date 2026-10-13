@@ -13,7 +13,7 @@ from .opus import SAMPLE_RATE
 
 
 def load_wav(path: str | Path) -> array:
-    """Read a 16-bit PCM WAV, downmix to mono and resample (linear) to 16 kHz."""
+    """Read a 16-bit PCM WAV, downmix to mono, and resample (linear) to 16 kHz."""
     with wave.open(str(path), "rb") as wav:
         if wav.getsampwidth() != 2:
             raise ValueError("only 16-bit PCM WAV files are supported")
