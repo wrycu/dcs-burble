@@ -24,6 +24,15 @@ How it works
 
 A hub sends anonymous usage counts to the Burble project once a day. This can be disabled in the settings.
 
+## AI Disclosure
+I designed this architecture based on my knowledge of DCS 
+and the ecosystem. AI has been tasked with implementing specific 
+features under my direction. All functionality is thoroughly tested
+before any commits are made. 
+
+In short: while AI has been involved in the development of this project,
+I do not feel it was "vibe coded." Take that how you will, though!
+
 ## Credits
 
 - [DCS-gRPC/lso](https://github.com/DCS-gRPC/lso): carrier and aircraft reference data (wire
