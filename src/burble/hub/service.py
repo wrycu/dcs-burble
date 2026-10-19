@@ -36,6 +36,7 @@ from .db import (Grade, Pass, Pilot, PilotAlias, PlayerSeen, Setting, Slice, Sou
 from .pilothook import HookUploadError, hook_reports, parse_upload
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
 from .storage import SliceStore
+from .voice import CallVoice
 
 START_TIME_TOLERANCE_S = 0.5
 log = logging.getLogger(__name__)
@@ -179,6 +180,9 @@ class Hub:
         self.password_failures = FailureLimiter()
         self.engine = make_engine(database_url)
         self.sessions: sessionmaker[Session] = make_sessionmaker(self.engine)
+        self.data_dir = Path(data_dir)
+        # The voice the replay page's LSO calls are spoken in (`hub serve --voice-model`); None: the browser's own.
+        self.voice: CallVoice | None = None
         self.store = SliceStore(Path(data_dir) / "slices")
         self.uploads_dir = Path(data_dir) / "uploads"
         self.uploads_dir.mkdir(parents=True, exist_ok=True)

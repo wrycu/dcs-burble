@@ -78,9 +78,54 @@ def test_replay_page_and_data(client, token):
     assert data["track"]["t"] and data["carrier"]["wires"] and data["grade"]["grade"]
     script = client.get("/static/replay.js")
     assert script.status_code == 200 and script.headers["content-type"].startswith("text/javascript")
+    # Never a stale copy after the hub is updated or given a voice.
+    assert script.headers["cache-control"] == "no-cache"
+    assert client.get(f"/passes/{pass_id}/replay.json").headers["cache-control"] == "no-cache"
     assert client.get("/passes/999/replay.json").status_code == 404
     # three.js is served by the hub, not a CDN.
     assert "cdn" not in page.text and "/static/three-0.169.0/three.module.min.js" in page.text
     three = client.get("/static/three-0.169.0/three.module.min.js")
     assert three.status_code == 200 and "immutable" in three.headers["cache-control"]
     assert client.get("/static/../app.py").status_code == 404 and client.get("/static/nope.js").status_code == 404
+
+
+def test_what_the_lso_said():
+    from burble.callouts.voice import spoken_text
+
+    assert spoken_text({"call": "power", "time": 1}) == "Power."
+    assert spoken_text({"call": "roger ball", "text": "Roger ball, 25 knots."}) == "Roger ball, 25 knots."
+    assert spoken_text({"call": "welcome aboard, two wire"}) == "Welcome aboard, two wire."
+    assert spoken_text({"call": "something new"}) == "Something new."  # a call this version doesn't know
+
+
+def test_call_audio_in_the_hubs_voice(client, token, hub, tmp_path):
+    pass_id = upload(client, token, PASS_FILES[0]).json()["pass_id"]
+    from burble.hub.db import Pass
+
+    with hub.sessions() as s:
+        s.get(Pass, pass_id).calls = [{"time": 3300.0, "along": 300.0, "call": "power"},
+                                      {"time": 3290.0, "along": 500.0, "call": "ball", "by": "pilot", "text": "Hornet ball, 5.2"},
+                                      {"time": 3290.0, "along": 500.0, "call": "roger ball", "text": "Roger ball, 20 knots."}]
+        s.commit()
+    # Without a voice: the text to speak (the browser's voice), no audio.
+    calls = client.get(f"/passes/{pass_id}/replay.json").json()["calls"]
+    assert [(c["by"], c.get("say"), "audio" in c) for c in calls] == [
+        ("pilot", None, False), ("lso", "Roger ball, 20 knots.", False), ("lso", "Power.", False)]
+    assert client.get(f"/passes/{pass_id}/calls/1.wav").status_code == 404
+
+    said = []
+
+    class Voice:  # stands in for Piper
+        def wav(self, text):
+            said.append(text)
+            path = tmp_path / "said.wav"
+            path.write_bytes(b"RIFF....WAVE")
+            return path
+
+    hub.voice = Voice()
+    calls = client.get(f"/passes/{pass_id}/replay.json").json()["calls"]
+    assert [c.get("audio") for c in calls] == [None, f"/passes/{pass_id}/calls/1.wav", f"/passes/{pass_id}/calls/2.wav"]
+    r = client.get(f"/passes/{pass_id}/calls/2.wav")
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/wav" and said == ["Power."]
+    assert client.get(f"/passes/{pass_id}/calls/0.wav").status_code == 404  # the pilot's own call
+    assert client.get(f"/passes/{pass_id}/calls/9.wav").status_code == 404

@@ -437,7 +437,8 @@ def replay_page(p: Pass) -> str:
             f'<select id="replay-speed" aria-label="Speed">'
             + "".join(f'<option value="{v}"{" selected" if v == "1" else ""}>{v}×</option>'
                       for v in ("0.25", "0.5", "1", "2", "4"))
-            + '</select><button type="button" id="replay-restart">From the start</button>'
+            + '</select><button type="button" id="replay-sound" aria-pressed="true" hidden>Sound on</button>'
+            '<button type="button" id="replay-restart">From the start</button>'
             f'<button type="button" id="replay-groove">From the groove</button></div>'
             f'<div class="replay-bar"><span class="group" id="replay-views"></span>'
             f'<label><input type="checkbox" data-guide="glidepath" checked> Glide path</label>'

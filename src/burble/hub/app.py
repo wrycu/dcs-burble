@@ -19,7 +19,8 @@ from starlette.concurrency import run_in_threadpool
 
 from ..cards import render_card
 from ..cards.overlay import render_overlay
-from ..cards.replay import replay_data
+from ..cards.replay import ordered_calls, replay_data
+from ..callouts.voice import spoken_text
 from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M, wind_text
 from ..geometry import airframe
 from ..grading import grade_pass
@@ -810,7 +811,23 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(404, f"replay unavailable: {exc}") from exc
         data = replay_data(recording, result, grade_pass(result), p.calls, night=bool(p.night),
                            title=pages.card_title(p))
-        return JSONResponse(data, headers={"Cache-Control": "max-age=300"})
+        if hub.voice is not None:
+            for i, call in enumerate(data["calls"]):
+                if "say" in call:
+                    call["audio"] = f"/passes/{p.id}/calls/{i}.wav"
+        # Checked every time: it changes with the hub's settings (the voice) as well as the pass.
+        return JSONResponse(data, headers={"Cache-Control": "no-cache"})
+
+    @app.get("/passes/{pass_id}/calls/{index}.wav")
+    def pass_call_audio(pass_id: int, index: int) -> FileResponse:
+        """One of the LSO's calls on the pass (by its place in the replay's list), in the hub's voice."""
+        if hub.voice is None:
+            raise HTTPException(404, "this hub has no voice (hub serve --voice-model)")
+        calls = ordered_calls(_get(pass_id).calls)
+        if not 0 <= index < len(calls) or calls[index].get("by") == "pilot":
+            raise HTTPException(404, "no such call")
+        path = hub.voice.wav(spoken_text(calls[index]))
+        return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/static/{name:path}")
     def static_file(name: str) -> FileResponse:
@@ -819,8 +836,9 @@ def create_app(hub: Hub) -> FastAPI:
         if not path.is_file() or not path.is_relative_to(STATIC_DIR.resolve()):
             raise HTTPException(404, "no such file")
         media = "text/javascript" if path.suffix == ".js" else "text/plain"
-        # three.js's folder is named by its version, so it never changes; the replay's own script may.
-        cache = "max-age=31536000, immutable" if name.startswith("three-") else "max-age=300"
+        # three.js's folder is named by its version, so it never changes; the replay's own script (about 30 KB) is
+        # fetched every time, so a hub restarted with a new version serves it at once.
+        cache = "max-age=31536000, immutable" if name.startswith("three-") else "no-cache"
         return FileResponse(path, media_type=media, headers={"Cache-Control": cache})
 
     @app.get("/passes/{pass_id}/acmi")

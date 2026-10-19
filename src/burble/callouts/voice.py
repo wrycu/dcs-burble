@@ -133,6 +133,18 @@ def variants(call: Call) -> tuple[str, ...]:
     return (text,) if isinstance(text, str) else text
 
 
+def spoken_text(call: dict) -> str:
+    """What the LSO said for a recorded call (`{"call", "text"?}`, as the server agent records them): its text when it
+    has one ("Roger ball, 25 knots."), else the call's first phrasing (which variant was said isn't recorded)."""
+    if call.get("text"):
+        return call["text"]
+    try:
+        return variants(Call(call["call"]))[0]
+    except (ValueError, KeyError):
+        text = str(call.get("call", ""))
+        return text[:1].upper() + text[1:] + "."
+
+
 def clip_name(call: Call, variant: int = 0) -> str:
     return call.name.lower() + (f"_{variant + 1}" if variant else "") + ".wav"
 

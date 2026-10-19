@@ -79,9 +79,9 @@ const scene = new THREE.Scene();
 const sky = new THREE.Color(night ? 0x070b14 : 0x9cc3e4);
 scene.background = sky;
 scene.fog = new THREE.Fog(sky, 2500, 16000);
-scene.add(new THREE.HemisphereLight(night ? 0x334466 : 0xddeeff, night ? 0x0a0f18 : 0x3a4a5a, night ? 0.5 : 1.6));
-const sun = new THREE.DirectionalLight(0xffffff, night ? 0.15 : 2.2);
-sun.position.set(-400, 800, -300);
+scene.add(new THREE.HemisphereLight(night ? 0x334466 : 0xddeeff, night ? 0x0a0f18 : 0x3a4a5a, night ? 0.5 : 2.0));
+const sun = new THREE.DirectionalLight(0xffffff, night ? 0.15 : 2.0);
+sun.position.set(300, 1000, 500);  // high and astern, so a jet in the groove is lit as the LSO sees it
 scene.add(sun);
 
 const sea = (() => {
@@ -224,105 +224,130 @@ function body(profile, sx, sy) {
   return g;
 }
 
-const SHAPES = {
-  // Sizes in meters from the aircraft origin (DCS's, near the center of gravity): x right, y up,
-  // forward. The wheels sit 1.8 m below it (the jets rest that high above the deck).
+// The jets, in landing configuration (gear, hook, and flaps down), from their published dimensions: the Hornet
+// 17.1 m long and 12.3 m across its wingtip rails, the Tomcat 19.1 m long and 19.5 m across with its wings
+// forward (20 degrees, as they are for landing). Meters from the aircraft origin (DCS's, near the center of
+// gravity): x right, y up, forward. The wheels sit 1.8 m below it (the jets rest that high above the deck).
+const JETS = {
   hornet: {
-    color: 0xa3a9ae, eye: [0, 0.75, 3.6],
-    fuselage: [[8.6, 0], [7.6, 0.35], [5.6, 0.7], [3.4, 0.9], [1, 1.1], [-3, 1.15], [-6, 1.0], [-8.2, 0.8], [-8.6, 0.7]],
-    fuselageScale: [1.25, 0.8],
-    canopy: { at: [0, 0.62, 3.4], size: [0.5, 0.45, 1.6] },
-    wing: [[1.1, 1.4], [6.15, -1.9], [6.15, -3.3], [1.1, -3.4]],
-    lex: [[0.8, 5.4], [2.0, 1.4], [1.1, 1.0], [0.8, 1.0]],
-    stab: [[0.9, -5.6], [3.4, -7.7], [3.4, -8.6], [0.9, -8.3]],
-    fins: { x: 1.3, y: 0.6, cant: 20, points: [[0, -3.6], [2.6, -6.3], [2.6, -7.5], [0, -6.9]] },
-    nozzles: { x: 0.55, f: -8.3, r: 0.45 },
-    intakes: { x: 1.05, y: -0.55, from: -1, to: 2.6, size: [0.7, 0.7] },
-    noseGear: 5.6, mainGear: { x: 1.55, f: -0.6 },
-    navLights: [6.15, 0.1, -2.6],
+    color: 0x9da3a9, radome: 0x7c8288, eye: [0, 0.8, 3.7], noseGear: 5.6, mainGear: { x: 1.6, f: -0.6 },
+    navLights: [6.0, 0.05, -2.3],
+    build({ add, both, flap, mat, dark, glass, radome }) {
+      const nose = [[8.7, 0], [8.2, 0.22], [7.2, 0.45], [6.0, 0.62], [4.8, 0.75], [3.5, 0.85], [2, 0.95], [0, 1.05],
+        [-3, 1.1], [-5.5, 1.05], [-7.5, 0.9], [-8.4, 0.8]];
+      add(body(nose, 1.15, 0.85), mat);
+      add(body(nose.filter(([f]) => f >= 6.4).map(([f, r]) => [f, r * 1.02]), 1.15, 0.85), radome);
+      add(new THREE.SphereGeometry(1, 20, 12), glass, [0, 0.72, 3.7]).scale.set(0.48, 0.5, 1.7);
+      // The leading-edge extensions, from beside the cockpit to the wing root, over the intakes.
+      both(plate([[0.55, 6.6], [0.9, 5.0], [1.6, 2.8], [2.25, 1.0], [2.3, 0.2], [0.6, 0.2]], 0.12), mat, [0, 0.25, 0]);
+      both(new THREE.BoxGeometry(0.75, 0.85, 3.2), mat, [1.35, -0.45, 0]);
+      both(plate([[1.3, 0.5], [6.0, -1.9], [6.0, -2.75], [1.3, -2.7]], 0.16), mat, [0, 0.05, 0]);
+      both(flap(1.4, -2.7, 3.9, -2.72, 0.85, 40), mat, [0, 0.05, 0]);  // flaps
+      both(flap(3.9, -2.72, 5.9, -2.75, 0.65, 25), mat, [0, 0.05, 0]);  // drooped ailerons
+      const rail = new THREE.CylinderGeometry(0.07, 0.07, 2.8, 8).rotateX(Math.PI / 2);
+      both(rail, dark, [6.05, 0.05, -1.6]);
+      both(plate([[1.1, -5.7], [3.4, -7.4], [3.4, -8.3], [1.1, -8.4]], 0.1), mat, [0, -0.15, 0]);
+      both(fin([[0, -3.2], [2.7, -5.7], [2.7, -6.8], [0, -6.6]], 20), mat, [1.4, 0.5, 0]);
+      both(nozzle(0.5), dark, [0.62, -0.1, -8.6]);
+    },
   },
   tomcat: {
-    color: 0xb3b7ba, eye: [0, 0.85, 5.3],
-    fuselage: [[9.6, 0], [8.6, 0.35], [6.6, 0.7], [4.6, 0.95], [2, 1.05], [-2, 0.9], [-5, 0.6], [-6, 0.3]],
-    fuselageScale: [1.0, 0.85],
-    canopy: { at: [0, 0.7, 5.0], size: [0.5, 0.5, 1.8] },
-    pancake: [[2.6, 1.5], [2.6, -8.6], [-2.6, -8.6], [-2.6, 1.5]],
-    nacelles: { x: 1.65, from: 3.0, to: -9.2, r: 0.62 },
-    glove: [[1.0, 6.0], [3.4, 0.4], [3.4, -1.6], [1.0, -1.0]],
-    wing: [[3.2, 0.2], [9.75, -2.4], [9.75, -3.5], [3.2, -2.2]],
-    stab: [[2.0, -6.9], [4.6, -8.6], [4.6, -9.4], [2.0, -9.2]],
-    fins: { x: 1.65, y: 0.6, cant: 5, points: [[0, -4.6], [2.7, -7.3], [2.7, -8.3], [0, -8.4]] },
-    nozzles: { x: 1.65, f: -9.4, r: 0.55 },
-    noseGear: 6.6, mainGear: { x: 2.5, f: -1.4 },
-    navLights: [9.75, 0.1, -3.0],
+    color: 0xb7bcc0, radome: 0x8f969c, eye: [0, 0.95, 5.9], noseGear: 6.8, mainGear: { x: 2.5, f: -1.0 },
+    navLights: [9.75, 0.2, -2.8],
+    build({ add, both, flap, mat, dark, glass, radome }) {
+      const nose = [[9.9, 0], [9.4, 0.25], [8.4, 0.5], [7.0, 0.75], [5.5, 0.9], [4.0, 1.0], [2.5, 1.0], [1, 0.9], [-1, 0.7]];
+      add(body(nose, 1.0, 0.9), mat);
+      add(body(nose.filter(([f]) => f >= 8).map(([f, r]) => [f, r * 1.02]), 1.0, 0.9), radome);
+      add(new THREE.SphereGeometry(1, 20, 12), glass, [0, 0.8, 5.0]).scale.set(0.5, 0.52, 2.3);  // two seats
+      // The flat "pancake" between the engines, the fixed gloves, and the engine nacelles with box intakes.
+      add(plate([[2.4, 0.8], [2.4, -7.6], [1.0, -9.6], [-1.0, -9.6], [-2.4, -7.6], [-2.4, 0.8]], 0.55), mat, [0, 0.05, 0]);
+      both(plate([[0.8, 7.0], [1.6, 4.5], [2.9, 0.6], [2.9, -1.4], [0.8, -1.0]], 0.3), mat, [0, 0.2, 0]);
+      both(new THREE.CylinderGeometry(0.62, 0.62, 11, 16).rotateX(Math.PI / 2), mat, [1.75, -0.45, -3.1]);
+      both(new THREE.BoxGeometry(1.0, 1.35, 1.6), mat, [1.85, -0.3, 3.0]);
+      // Wings forward, with the full-span flaps down.
+      both(plate([[2.9, 0.3], [9.75, -2.2], [9.75, -3.4], [2.9, -2.6]], 0.16), mat, [0, 0.2, 0]);
+      both(flap(3.2, -2.63, 9.5, -3.36, 0.75, 35), mat, [0, 0.2, 0]);
+      both(plate([[2.2, -7.2], [4.8, -8.8], [4.8, -9.6], [2.2, -9.7]], 0.1), mat, [0, -0.2, 0]);
+      both(fin([[0, -4.2], [2.9, -7.0], [2.9, -8.0], [0, -8.3]], 5), mat, [1.75, 0.45, 0]);
+      both(fin([[0, -5.6], [0.8, -6.3], [0.8, -7.3], [0, -7.3]], 165), mat, [1.75, -1.0, 0]);  // ventral fins
+      both(nozzle(0.58), dark, [1.75, -0.45, -9.1]);
+    },
   },
 };
 
+function fin(points, cant) {
+  // A fin from [height, forward] points, standing up and canted outward (to the right) by `cant` degrees.
+  return plate(points, 0.12).rotateZ(Math.PI / 2 - cant * DEG);
+}
+
+function nozzle(r) {
+  return new THREE.CylinderGeometry(r, r * 1.05, 1.1, 16).rotateX(Math.PI / 2);
+}
+
+function flap(x0, te0, x1, te1, chord, down) {
+  // A flap hinged on the wing's trailing edge from (x0, te0) to (x1, te1) [span, forward], `down` degrees.
+  const g = plate([[0, 0], [x1 - x0, te1 - te0], [x1 - x0, te1 - te0 - chord], [0, -chord]], 0.08);
+  const hinge = new THREE.Vector3(x1 - x0, 0, -(te1 - te0)).normalize();
+  g.applyMatrix4(new THREE.Matrix4().makeRotationAxis(hinge, down * DEG));
+  return g.translate(x0, 0, -te0);
+}
+
+function mirror(geom) {
+  // The geometry's mirror image across the jet's centerline, its triangles turned back to face outward.
+  const g = geom.clone().scale(-1, 1, 1);
+  const index = g.getIndex();
+  if (index) {
+    const a = index.array;
+    for (let i = 0; i < a.length; i += 3) [a[i + 1], a[i + 2]] = [a[i + 2], a[i + 1]];
+  } else {
+    for (const attr of Object.values(g.attributes)) {
+      const n = attr.itemSize, a = attr.array;
+      for (let i = 0; i < attr.count; i += 3) {
+        for (let k = 0; k < n; k++) [a[(i + 1) * n + k], a[(i + 2) * n + k]] = [a[(i + 2) * n + k], a[(i + 1) * n + k]];
+      }
+    }
+  }
+  return g;
+}
+
 function buildJet(kind, hook) {
-  const S = SHAPES[kind] ?? SHAPES.hornet;
+  const J = JETS[kind] ?? JETS.hornet;
   const g = new THREE.Group();
-  const mat = new THREE.MeshLambertMaterial({ color: S.color });
-  const dark = new THREE.MeshLambertMaterial({ color: 0x3a3d40 });
+  // Double-sided for the thin surfaces (flaps, fins) seen edge-on and from below.
+  const material = (color, extra = {}) => new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide, ...extra });
+  const mat = material(J.color), dark = material(0x34373a), radome = material(J.radome);
+  const glass = material(0x1a2733, { transparent: true, opacity: 0.85 });
   const add = (geom, m = mat, [x, y, f] = [0, 0, 0]) => {
     const mesh = new THREE.Mesh(geom, m);
     mesh.position.set(x, y, -f);
     g.add(mesh);
     return mesh;
   };
-  add(body(S.fuselage, ...S.fuselageScale));
-  const canopy = add(new THREE.SphereGeometry(1, 16, 10),
-    new THREE.MeshLambertMaterial({ color: 0x1a2733, transparent: true, opacity: 0.85 }), S.canopy.at);
-  canopy.scale.set(...S.canopy.size);
-  add(plate(S.wing, 0.18), mat, [0, 0.05, 0]);
-  add(plate(mirrored(S.wing), 0.18), mat, [0, 0.05, 0]);
-  add(plate(S.stab, 0.12), mat, [0, -0.05, 0]);
-  add(plate(mirrored(S.stab), 0.12), mat, [0, -0.05, 0]);
-  if (S.lex) { add(plate(S.lex, 0.1), mat, [0, 0.15, 0]); add(plate(mirrored(S.lex), 0.1), mat, [0, 0.15, 0]); }
-  if (S.glove) { add(plate(S.glove, 0.3), mat, [0, 0.05, 0]); add(plate(mirrored(S.glove), 0.3), mat, [0, 0.05, 0]); }
-  if (S.pancake) add(plate(S.pancake, 0.7), mat, [0, -0.05, 0]);
-  if (S.nacelles) {
-    const n = S.nacelles;
-    for (const side of [-1, 1]) {
-      const c = new THREE.CylinderGeometry(n.r, n.r * 0.9, n.from - n.to, 14);
-      c.rotateX(Math.PI / 2);
-      add(c, mat, [side * n.x, -0.35, (n.from + n.to) / 2]);
-    }
-  }
-  if (S.intakes) {
-    const k = S.intakes;
-    for (const side of [-1, 1]) add(new THREE.BoxGeometry(k.size[0], k.size[1], k.to - k.from), mat,
-      [side * k.x, k.y, (k.from + k.to) / 2]);
-  }
-  for (const side of [-1, 1]) {
-    const f = S.fins;
-    const fin = new THREE.Mesh(plate(f.points, 0.12).rotateZ(Math.PI / 2 - side * f.cant * DEG), mat);
-    fin.position.set(side * f.x, f.y, 0);
-    g.add(fin);
-    const noz = new THREE.CylinderGeometry(S.nozzles.r, S.nozzles.r * 1.05, 1.2, 14);
-    noz.rotateX(Math.PI / 2);
-    add(noz, dark, [side * S.nozzles.x, -0.1, S.nozzles.f]);
-  }
+  // A part on the right, and its mirror image on the left.
+  const both = (geom, m, [x, y, f]) => {
+    add(geom, m, [x, y, f]);
+    add(mirror(geom), m, [-x, y, f]);
+  };
+  J.build({ add, both, flap, mat, dark, glass, radome });
   // Gear down and the hook, to the hook point the grading uses.
   const strut = (x, f, top, wheel) => {
     add(new THREE.CylinderGeometry(0.08, 0.08, top - (-1.8 + wheel)), dark, [x, (top + (-1.8 + wheel)) / 2, f]);
-    const w = new THREE.CylinderGeometry(wheel, wheel, 0.3, 16);
-    w.rotateZ(Math.PI / 2);
-    add(w, dark, [x, -1.8 + wheel, f]);
+    add(new THREE.CylinderGeometry(wheel, wheel, 0.3, 16).rotateZ(Math.PI / 2), dark, [x, -1.8 + wheel, f]);
   };
-  strut(0, S.noseGear, -0.6, 0.25);
-  for (const side of [-1, 1]) strut(side * S.mainGear.x, S.mainGear.f, -0.5, 0.4);
+  strut(0, J.noseGear, -0.6, 0.25);
+  for (const side of [-1, 1]) strut(side * J.mainGear.x, J.mainGear.f, -0.5, 0.4);
   const [hy, hz] = hook, from = new THREE.Vector3(0, -0.5, -(hz + 1.2)), to = new THREE.Vector3(0, hy, -hz);
   const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, from.distanceTo(to)), dark);
   rod.position.copy(from).add(to).multiplyScalar(0.5);
   rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), to.clone().sub(from).normalize());
   g.add(rod);
   // Lights: red port, green starboard wingtips, and the approach light on the nose gear (AOA).
-  const [lx, ly, lf] = S.navLights;
+  const [lx, ly, lf] = J.navLights;
   const light = (color, at, r = 0.15) => add(new THREE.SphereGeometry(r, 8, 6), new THREE.MeshBasicMaterial({ color }), at);
   light(0xff2020, [-lx, ly, lf]);
   light(0x20ff40, [lx, ly, lf]);
-  const indexer = light(0xffa020, [0, -0.9, S.noseGear], night ? 0.35 : 0.22);
-  return { group: g, indexer, eye: S.eye };
+  const indexer = light(0xffa020, [0, -0.9, J.noseGear], night ? 0.35 : 0.22);
+  return { group: g, indexer, eye: J.eye };
 }
 
 const jet = buildJet(data.aircraft.model, data.aircraft.hook);
@@ -477,6 +502,56 @@ function updateHud(t) {
   hud.time.textContent = `${t.toFixed(1)} / ${duration.toFixed(1)} s`;
 }
 
+// -- the LSO's voice ----------------------------------------------------------------------------
+
+// Each LSO call is spoken as the replay passes it: in the hub's voice when it has one (`audio`), else the
+// browser's. Browsers only play sound after a click on the page, so the button says when it's waiting for one.
+const sound = { on: true, blocked: false, playing: new Set() };
+try { sound.on = localStorage.getItem('burble-replay-sound') !== 'off'; } catch (e) {}
+const soundBtn = $('#replay-sound');
+const clips = data.calls.map((c) => {
+  if (!c.audio) return null;
+  const a = new Audio(c.audio);
+  a.preload = 'auto';  // asks the hub to render it now, not when it's due
+  a.addEventListener('ended', () => sound.playing.delete(a));
+  return a;
+});
+// The browser's own voice, if it has one (Firefox on Linux often has none without speech-dispatcher).
+const speech = 'speechSynthesis' in window ? window.speechSynthesis : null;
+const hasVoice = () => clips.some(Boolean) || (speech != null && speech.getVoices().length > 0);
+speech?.addEventListener?.('voiceschanged', () => showSound());  // the list loads after the page
+
+function showSound() {
+  soundBtn.setAttribute('aria-pressed', sound.on);
+  soundBtn.textContent = !sound.on ? 'Sound off' : sound.blocked ? 'Sound on (click to allow)' : 'Sound on';
+  soundBtn.hidden = !data.calls.some((c) => c.say) || !hasVoice();
+}
+
+function hush() {
+  for (const a of sound.playing) a.pause();
+  sound.playing.clear();
+  speech?.cancel();
+}
+
+function say(i) {
+  const call = data.calls[i];
+  if (!sound.on || !call.say) return;
+  const clip = clips[i];
+  if (clip) {
+    clip.currentTime = 0;
+    clip.playbackRate = THREE.MathUtils.clamp(speed, 0.5, 4);
+    sound.playing.add(clip);
+    clip.play().then(() => { if (sound.blocked) { sound.blocked = false; showSound(); } }).catch((e) => {
+      sound.playing.delete(clip);
+      if (e.name === 'NotAllowedError') { sound.blocked = true; showSound(); }
+    });
+  } else if (speech) {
+    const u = new SpeechSynthesisUtterance(call.say);
+    u.rate = THREE.MathUtils.clamp(speed * 1.1, 0.5, 2);
+    speech.speak(u);
+  }
+}
+
 // -- playback -----------------------------------------------------------------------------------
 
 let t = 0, playing = true, speed = 1, last = performance.now();
@@ -488,11 +563,13 @@ const playBtn = $('#replay-play');
 function setPlaying(p) {
   playing = p;
   playBtn.textContent = p ? 'Pause' : 'Play';
+  if (!p) hush();
 }
 
 function seek(to) {
   t = THREE.MathUtils.clamp(to, 0, duration);
   chase.pos = null;
+  hush();
 }
 
 function resize() {
@@ -507,8 +584,10 @@ function frame(now) {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
   if (playing) {
-    t += dt * speed;
-    if (t >= duration) { t = duration; setPlaying(false); }
+    const before = t;
+    t = Math.min(t + dt * speed, duration);
+    data.calls.forEach((c, i) => { if (before < c.t && c.t <= t) say(i); });
+    if (t >= duration) setPlaying(false);
   }
   scrub.value = t;
   const j = jetAt(t);
@@ -547,6 +626,14 @@ playBtn.addEventListener('click', () => {
 });
 scrub.addEventListener('input', () => seek(parseFloat(scrub.value)));
 $('#replay-speed').addEventListener('change', (e) => { speed = parseFloat(e.target.value); });
+soundBtn.addEventListener('click', () => {
+  // While blocked, this click is what lets the browser play sound: keep it on.
+  sound.on = sound.blocked ? true : !sound.on;
+  sound.blocked = false;
+  if (!sound.on) hush();
+  try { localStorage.setItem('burble-replay-sound', sound.on ? 'on' : 'off'); } catch (e) {}
+  showSound();
+});
 $('#replay-restart').addEventListener('click', () => { seek(0); setPlaying(true); });
 $('#replay-groove').addEventListener('click', () => { seek(Math.max(data.pass[0] - 1, 0)); setPlaying(true); });
 for (const box of document.querySelectorAll('[data-guide]')) {
@@ -570,6 +657,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 seek(Math.max(data.pass[0] - 1, 0));
+showSound();
 setView('plat');
 setPlaying(true);
 root.classList.add('ready');

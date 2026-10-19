@@ -11,6 +11,7 @@ import math
 import statistics
 
 from ..acmi import Recording
+from ..callouts.voice import spoken_text
 from ..detect import PassResult
 from ..detect.passes import CarrierTimeline
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
@@ -44,6 +45,11 @@ def _calls_offset(result: PassResult, calls: list[dict]) -> float:
     offsets = [min(samples, key=lambda s: abs(s.along - c["along"])).time - c["time"]
                for c in calls if "along" in c and "time" in c and near <= c["along"] <= far]
     return statistics.median(offsets) if offsets else 0.0
+
+
+def ordered_calls(calls: list[dict] | None) -> list[dict]:
+    """A pass's recorded calls in the order said, as the replay lists them (its call audio is by this index)."""
+    return [c for c in sorted(calls or [], key=_said_order) if "time" in c]
 
 
 def replay_data(recording: Recording, result: PassResult, grade: GradeResult | None = None,
@@ -89,7 +95,7 @@ def replay_data(recording: Recording, result: PassResult, grade: GradeResult | N
         ax, az = frame.axis
         return [_r(frame.aim[0] - along * ax + lateral * az, 2), _r(frame.aim[1] - along * az - lateral * ax, 2)]
 
-    calls = sorted(calls or [], key=_said_order)
+    calls = ordered_calls(calls)
     offset = _calls_offset(result, calls)
     if abs(offset) <= CALLS_OFFSET_MAX_S:
         offset = 0.0
@@ -120,6 +126,7 @@ def replay_data(recording: Recording, result: PassResult, grade: GradeResult | N
         },
         "track": track,
         "groove": groove,
-        "calls": [{"t": _r(c["time"] + offset - start, 2), "text": call_label(c), "by": c.get("by", "lso")}
-                  for c in calls if "time" in c],
+        # `say`: what the LSO said, to be spoken (the pilot's calls are shown, not spoken).
+        "calls": [{"t": _r(c["time"] + offset - start, 2), "text": call_label(c), "by": c.get("by", "lso"),
+                   **({} if c.get("by") == "pilot" else {"say": spoken_text(c)})} for c in calls],
     }
