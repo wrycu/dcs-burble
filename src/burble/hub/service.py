@@ -399,14 +399,21 @@ class Hub:
     def load_pass(self, p: Pass, reports: list[Pass] | None = None, s: Session | None = None) -> PassResult:
         """Rebuild the landing from its stored slices: the most detailed aircraft track among its
         reports, graded against the carrier in this (gradable) report, plus DCS's grade and wire."""
+        return self.load_pass_recording(p, reports, s)[0]
+
+    def load_pass_recording(self, p: Pass, reports: list[Pass] | None = None,
+                            s: Session | None = None) -> tuple[PassResult, Recording]:
+        """`load_pass`, with the recording the result was found in (the best track and the carrier, rebuilt or
+        not: the result's `aircraft_id` and `carrier_id` are its objects), e.g. for the replay."""
         if p.is_rebuilt:
-            result = self._rebuilt_pass(p)
-            if result is None:
+            rebuilt = self._rebuilt_pass(p)
+            if rebuilt is None:
                 raise IngestError("the carrier could not be rebuilt from the jet's track")
+            result, recording = rebuilt
             result.dcs_grade = LsoGrade.parse(p.dcs_grade) if p.dcs_grade else None
             result.wire = p.wire
             result.track_source = p.source.name if p.source is not None else None
-            return result
+            return result, recording
         if p.is_dcs_only:
             raise IngestError("graded by DCS's LSO only (no report of this landing has the carrier: the server "
                               "doesn't share other objects with pilots)")
@@ -430,7 +437,7 @@ class Hub:
         result.track_source = best.source.name if best.source is not None else None
         result.weather = next(((r.slice.sidecar or {}).get("weather") for r in reports
                                if (r.slice.sidecar or {}).get("weather")), None)
-        return result
+        return result, recording
 
     @staticmethod
     def _rebuilt_carrier(p: Pass) -> tuple[str, str] | None:
@@ -444,8 +451,9 @@ class Hub:
             return None
         return ctype, f"{named.get('unit') or ctype} (rebuilt from the jet)"[:100]
 
-    def _rebuilt_pass(self, p: Pass) -> PassResult | None:
-        """The trap in `p`'s own-jet track, against the carrier rebuilt from it (placed by DCS's wire if known)."""
+    def _rebuilt_pass(self, p: Pass) -> tuple[PassResult, Recording] | None:
+        """The trap in `p`'s own-jet track, against the carrier rebuilt from it (placed by DCS's wire if known),
+        and the recording with that carrier added."""
         carrier = self._rebuilt_carrier(p)
         if carrier is None:
             return None
@@ -458,22 +466,24 @@ class Hub:
             return None
         carrier_id = max(recording.objects) + 1
         objects = {**recording.objects, carrier_id: ObjectTrack(carrier_id, {"Name": carrier[0]}, rebuilt.samples)}
-        traps = [c for c in find_passes(Recording(recording.globals, objects, recording.first_frame))
+        recording = Recording(recording.globals, objects, recording.first_frame)
+        traps = [c for c in find_passes(recording)
                  if c.aircraft_id == p.aircraft_id and c.outcome is Outcome.TRAP
                  and abs(c.end_time - rebuilt.stop_time) <= REBUILT_STOP_S]
         if not traps:
             return None
         result = min(traps, key=lambda c: abs(c.end_time - rebuilt.stop_time))
         result.wire_estimate = None  # it would only read back the wire the carrier was placed by
-        return result
+        return result, recording
 
     def _promote_track(self, s: Session, row: Pass) -> bool:
         """An own-jet track no report with the carrier joined: a landing graded against the carrier rebuilt from
         the jet (a trap), else by DCS's grade alone (if it has one). False: neither (it keeps waiting)."""
         try:
-            result = self._rebuilt_pass(row)
+            rebuilt = self._rebuilt_pass(row)
         except (OSError, ValueError, KeyError):
-            result = None
+            rebuilt = None
+        result = rebuilt[0] if rebuilt is not None else None
         elevation = (row.slice.sidecar or {}).get("sun_elevation")
         if result is not None:
             row.kind, (row.carrier_type, row.carrier_unit) = "rebuilt", self._rebuilt_carrier(row)

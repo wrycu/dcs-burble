@@ -366,11 +366,89 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
                 f'data-reset="card-zoom-reset">{card_svg}</div><script>{ZOOM_SCRIPT}</script>')
     else:
         card = f'<p class="empty-state">{escape(error or "")}</p>'
-    body = (f'<p class="sub"><a href="/">← Greenie board</a> · <a href="/passes/{p.id}/acmi">Download ACMI</a></p>'
+    replay = f' · <a href="/passes/{p.id}/replay">Replay in 3D</a>' if card_svg else ""
+    body = (f'<p class="sub"><a href="/">← Greenie board</a>{replay} · <a href="/passes/{p.id}/acmi">Download ACMI</a></p>'
             f"<h1>{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}</h1>"
             f'<dl class="facts">{dl}</dl>{_accuracy(accuracy) if accuracy else ""}{card}')
     return _page(f"{p.pilot.name} {g.grade if g else ''}", body)
 
+
+# three.js for the replay, served by the hub (static/; MIT licence alongside it).
+THREE_DIR = "/static/three-0.169.0"
+
+REPLAY_STYLE = """
+[hidden] { display: none !important; }
+.replay { position: relative; background: #000; border-radius: 12px; overflow: hidden; }
+.replay canvas { display: block; width: 100%; height: min(70vh, 640px); min-height: 320px; touch-action: none; }
+.replay .loading { position: absolute; inset: 0; display: grid; place-items: center; color: #ccc; }
+.replay.ready .loading { display: none; }
+.replay .hud { position: absolute; top: 10px; left: 10px; display: grid; grid-template-columns: max-content max-content;
+  gap: 0 10px; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.55); color: #f0f3f6;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; }
+.replay .hud dt { color: #aab4be; }
+.replay .hud dd { margin: 0; }
+.replay .ballbox { position: absolute; top: 10px; right: 10px; width: 22px; height: 140px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55); pointer-events: none; }
+.replay .ballbox::before, .replay .ballbox::after { content: ""; position: absolute; top: calc(50% - 2px);
+  width: 14px; height: 4px; background: #3fdc5a; border-radius: 2px; }
+.replay .ballbox::before { right: 100%; margin-right: 2px; }
+.replay .ballbox::after { left: 100%; margin-left: 2px; }
+.replay .ball { position: absolute; left: 3px; width: 16px; height: 16px; margin-top: -8px; border-radius: 50%;
+  background: #ffa020; box-shadow: 0 0 8px #ffa020; }
+.replay .ball.low { background: #ff3030; box-shadow: 0 0 8px #ff3030; }
+.replay .call { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px);
+  padding: 4px 12px; border-radius: 6px; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 16px;
+  text-align: center; pointer-events: none; }
+.replay .crosshair { display: none; position: absolute; inset: 0; pointer-events: none; }
+.replay.plat .crosshair { display: block; }
+.replay .crosshair::before, .replay .crosshair::after { content: ""; position: absolute; background: rgba(255, 255, 255, 0.7); }
+.replay .crosshair::before { left: 0; right: 0; top: 50%; height: 1px; }
+.replay .crosshair::after { top: 0; bottom: 0; left: 50%; width: 1px; }
+.replay-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
+.replay-bar button, .replay-bar select { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card); color: var(--text); }
+.replay-bar button[aria-pressed="true"] { border-color: var(--text); font-weight: 600; }
+.replay-bar input[type=range] { flex: 1 1 200px; }
+.replay-bar .time { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 9em; }
+.replay-bar .group { display: flex; flex-wrap: wrap; gap: 4px; }
+.replay-bar label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+"""
+
+
+def replay_page(p: Pass) -> str:
+    """The 3D replay of a landing (static/replay.js draws it from /passes/{id}/replay.json)."""
+    g = p.grade
+    imports = json.dumps({"imports": {"three": f"{THREE_DIR}/three.module.min.js",
+                                      "three/addons/controls/OrbitControls.js": f"{THREE_DIR}/OrbitControls.js"}})
+    hud = "".join(f'<dt>{label}</dt><dd id="hud-{key}">–</dd>'
+                  for key, label in (("range", "Range"), ("gs", "Glideslope"), ("lineup", "Lineup"), ("aoa", "AOA")))
+    body = (f'<p class="sub"><a href="/passes/{p.id}">← The pass</a> · <a href="/">Greenie board</a></p>'
+            f"<h1>{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}"
+            f'{" · " + escape(g.text) if g and g.text else ""}</h1>'
+            f'<p class="sub">{escape(_when(p.occurred_at))} · {escape(p.aircraft_type)} · '
+            f'{escape(p.carrier_unit or p.carrier_type)}{" · wire " + escape(_wire(p)) if p.wire else ""}</p>'
+            f'<div class="replay" id="replay" data-src="/passes/{p.id}/replay.json">'
+            f'<canvas aria-label="3D replay of the pass"></canvas><div class="crosshair"></div>'
+            f'<dl class="hud">{hud}</dl><div class="ballbox" id="hud-ballbox" hidden><div class="ball" id="hud-ball"></div></div>'
+            f'<div class="call" id="hud-call" hidden></div><div class="loading">Loading the replay…</div></div>'
+            f'<div class="replay-bar"><button type="button" id="replay-play">Pause</button>'
+            f'<input type="range" id="replay-scrub" min="0" value="0" aria-label="Time">'
+            f'<span class="time" id="replay-time"></span>'
+            f'<select id="replay-speed" aria-label="Speed">'
+            + "".join(f'<option value="{v}"{" selected" if v == "1" else ""}>{v}×</option>'
+                      for v in ("0.25", "0.5", "1", "2", "4"))
+            + '</select><button type="button" id="replay-restart">From the start</button>'
+            f'<button type="button" id="replay-groove">From the groove</button></div>'
+            f'<div class="replay-bar"><span class="group" id="replay-views"></span>'
+            f'<label><input type="checkbox" data-guide="glidepath" checked> Glide path</label>'
+            f'<label><input type="checkbox" data-guide="path" checked> Path flown</label></div>'
+            f'<p class="sub" id="replay-hint"></p>'
+            f'<p class="sub">Space plays and pauses, the arrow keys step a second (with Shift, five), 1–6 pick the '
+            f"camera, and the mouse wheel zooms. The jet and ship are simple stand-in models; positions are from "
+            f"the landing's best track, smoothed between samples.</p>"
+            f'<script type="importmap">{imports}</script>'
+            f'<script type="module" src="/static/replay.js"></script>')
+    return _page(f"Replay: {p.pilot.name} {g.grade if g else ''}", f"<style>{REPLAY_STYLE}</style>{body}")
 
 
 UPLOAD_SCRIPT = """
