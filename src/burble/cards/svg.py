@@ -104,7 +104,8 @@ _DARK = """
 THEMED = {".tc": (("font-family", "--font"),), ".tc-bg": (("fill", "--card"),), ".tc-text": (("fill", "--text"),),
           ".tc-ideal": (("stroke", "--text"),), ".tc-muted": (("fill", "--muted"),),
           ".tc-grid": (("stroke", "--border"),), ".tc-rule": (("stroke", "--border"),),
-          ".tc-call": (("fill", "--card"), ("stroke", "--text")), ".tc-call-label": (("fill", "--text"),)}
+          ".tc-call": (("fill", "--card"), ("stroke", "--text")), ".tc-call-label": (("fill", "--text"),),
+          ".tc-now": (("fill", "--text"), ("stroke", "--card"))}
 
 
 def _with_variables(css: str) -> str:
@@ -288,10 +289,12 @@ def _call_markers(calls: list[dict], samples: list[PassSample], x: Axis, y_of, t
         ly = (free or fits or candidates)[0]
         placed.append((lx - half, ly - size, lx + half, ly + 2))
         tip = ly + 3 if ly < cy else ly - size
+        out.append(f'<g class="tc-mark" data-along="{call["along"]:.1f}">')
         out.append(f'<line class="tc-axis" x1="{_f(cx)}" y1="{_f(cy)}" x2="{_f(lx)}" y2="{_f(tip)}"/>')
         out.append(f'<circle class="tc-call" cx="{_f(cx)}" cy="{_f(cy)}" r="4"/>')
         out.append(f'<text class="tc-call-label" x="{_f(lx)}" y="{_f(ly)}" font-size="{size}" '
                    f'text-anchor="middle">{escape(label)}</text>')
+        out.append("</g>")
 
 
 def _wrap(prefix: str, items: list[str], size: float, width: float) -> list[list[str]]:
@@ -383,8 +386,11 @@ def deck_top(frame: DeckFrame, x: Axis, y: Axis, out: list[str], caught: int | N
 
 def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float], uid: str, out: list[str],
               calls: list[dict], frame: DeckFrame | None = None, wire: int | None = None,
-              view: tuple[float, float] | None = None) -> None:
-    top, h = TOP_TOP, TOP_H
+              view: tuple[float, float] | None = None, top: float = TOP_TOP, live: bool = False) -> float:
+    """The lineup plot; returns its half-width (meters either side of the centerline). `live`: for the replay page
+    (render_lineup), the track drawn faintly with the part flown so far over it (`{uid}-reveal`, which the page
+    widens as the jet flies), and a marker for the jet (`{uid}-now`)."""
+    h = TOP_H
     if view is None:
         reach = max([abs(s.lateral) for s in samples if s.along > 0] + [0.0])
         half = min(max(reach * 1.1, X_MAX_M * math.tan(math.radians(LINEUP_DEG[2])) * 1.2), 200.0)
@@ -403,10 +409,18 @@ def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float],
     if frame is not None:
         deck_top(frame, x, y, out, wire)
     out.append(f'<line class="tc-ideal" x1="{_f(x(X_MIN_M))}" y1="{_f(y(0))}" x2="{_f(x(X_MAX_M))}" y2="{_f(y(0))}"/>')
-    for cls, run in _runs(samples, on_speed):
-        out.append(f'<polyline class="tc-track tc-{cls}" points="{_poly([(x(s.along), y(s.lateral)) for s in run])}"/>')
+    runs = [(cls, _poly([(x(s.along), y(s.lateral)) for s in run])) for cls, run in _runs(samples, on_speed)]
+    if live:
+        out.extend(f'<polyline class="tc-track tc-{cls} tc-ghost" points="{points}"/>' for cls, points in runs)
+        out.append(f'<clipPath id="{uid}-reveal"><rect id="{uid}-reveal-rect" x="{PAD_L}" y="{_f(top)}" width="0" '
+                   f'height="{_f(h)}"/></clipPath><g clip-path="url(#{uid}-reveal)">')
+    out.extend(f'<polyline class="tc-track tc-{cls}" points="{points}"/>' for cls, points in runs)
+    if live:
+        out.append("</g>")
     _call_markers(_in_view([c for c in calls if c["call"] in LINEUP_VALUES], view), samples, x,
                   lambda s: y(s.lateral), top, h, out)
+    if live:
+        out.append(f'<circle class="tc-now" id="{uid}-now" r="6" visibility="hidden"/>')
     out.append("</g>")
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top + h}" x2="{PAD_L + PLOT_W}" y2="{top + h}"/>')
     out.append(f'<line class="tc-axis" x1="{PAD_L}" y1="{top}" x2="{PAD_L}" y2="{top + h}"/>')
@@ -415,6 +429,7 @@ def _top_view(samples: list[PassSample], x: Axis, on_speed: tuple[float, float],
     else:
         _distance_axis_view(top, h, x, view[0], view[1], out)
     lineup_ticks(y, half, out)
+    return half
 
 
 def lineup_ticks(y: Axis, half: float, out: list[str]) -> None:
@@ -578,3 +593,39 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
                    f'{lead}{text}</text>')
     out.append("</svg>")
     return "\n".join(out)
+
+
+# The replay page's lineup plot: the track flown so far over a faint copy of the whole, and the jet's marker.
+_LIVE = """
+.tc-ghost { stroke-opacity: 0.22; }
+.tc-mark.tc-hidden { display: none; }
+.tc-now { fill: #1f2328; stroke: #ffffff; stroke-width: 2; }
+@media (prefers-color-scheme: dark) { .tc-now { fill: #e6edf3; stroke: #0d1117; } }
+"""
+LINEUP_TOP = 30
+
+
+def render_lineup(p: PassResult, calls: list[dict] | None = None, uid: str = "lineup") -> str:
+    """The trap card's lineup plot on its own, for the replay page to follow the jet along (static/replay.js). The
+    root carries the plot's scales: x from `data-far` (at `data-pad-l`) to `data-near` (`data-plot-w` wide), and y
+    from `data-half` meters left of the centerline (at `data-top`) to as far right (`data-h` down)."""
+    aircraft = AIRCRAFT[p.aircraft_type]
+    frame = DeckFrame(CARRIERS[p.carrier_type], aircraft)
+    near, far = X_MIN_M, X_MAX_M
+    margin = (far - near) * 0.05
+    samples = [s for s in p.samples if near - margin <= s.along <= far + margin]
+    x = Axis(far, near, PAD_L, PAD_L + PLOT_W)
+    height = LINEUP_TOP + TOP_H + 24
+    body: list[str] = []
+    half = _top_view(samples, x, aircraft.on_speed_aoa, uid, body, sorted(calls or [], key=_said_order), frame,
+                     p.wire if p.wire is not None else p.wire_estimate, top=LINEUP_TOP, live=True)
+    return "\n".join([
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="tc" viewBox="0 0 {WIDTH} {height}" width="{WIDTH}" '
+        f'height="{height}" role="img" aria-label="Lineup: {escape(p.pilot)}" data-near="{near:.1f}" '
+        f'data-far="{far:.1f}" data-pad-l="{PAD_L}" data-plot-w="{PLOT_W}" data-half="{half:.2f}" '
+        f'data-top="{LINEUP_TOP}" data-h="{TOP_H}">',
+        f"<style>{STYLE}{_with_variables(_LIVE)}</style>",
+        f'<rect class="tc-bg" width="{WIDTH}" height="{height}" rx="10"/>',
+        *body,
+        "</svg>",
+    ])

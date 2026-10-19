@@ -553,6 +553,37 @@ function updateHud(t) {
   hud.time.textContent = `${t.toFixed(1)} / ${duration.toFixed(1)} s`;
 }
 
+// -- the lineup plot ----------------------------------------------------------------------------
+
+// The trap card's lineup plot below the replay (cards.svg.render_lineup): the track is drawn as far as the jet
+// has flown, the jet's marker on it, and each lineup call shown once the jet gets to where it was made.
+const lineupSvg = $('#replay-lineup svg');
+const lineup = lineupSvg && (() => {
+  const d = lineupSvg.dataset, num = (k) => parseFloat(d[k]);
+  return {
+    reveal: lineupSvg.querySelector('#lineup-reveal-rect'), now: lineupSvg.querySelector('#lineup-now'),
+    marks: [...lineupSvg.querySelectorAll('.tc-mark')].map((el) => ({ el, along: parseFloat(el.dataset.along) })),
+    near: num('near'), far: num('far'), left: num('padL'), width: num('plotW'),
+    half: num('half'), top: num('top'), h: num('h'),
+  };
+})();
+
+function updateLineup(t) {
+  if (!lineup) return;
+  const L = lineup, end = groove.t[groove.t.length - 1];
+  const along = t > end ? -Infinity : linear(groove.t, groove.along, t) ?? Infinity;  // before the groove: not there yet
+  const px = (a) => L.left + (L.far - a) / (L.far - L.near) * L.width;
+  L.reveal.setAttribute('width', Math.max(0, Math.min(px(along), L.left + L.width) - L.left));
+  for (const m of L.marks) m.el.classList.toggle('tc-hidden', m.along < along);
+  const lateral = linear(groove.t, groove.lateral, t);
+  const shown = lateral != null && along <= L.far && along >= L.near;
+  L.now.setAttribute('visibility', shown ? 'visible' : 'hidden');
+  if (shown) {
+    L.now.setAttribute('cx', px(along));
+    L.now.setAttribute('cy', L.top + (THREE.MathUtils.clamp(lateral, -L.half, L.half) + L.half) / (2 * L.half) * L.h);
+  }
+}
+
 // -- the LSO's voice ----------------------------------------------------------------------------
 
 // Each LSO call is spoken as the replay passes it: in the hub's voice when it has one (`audio`), else the
@@ -657,6 +688,7 @@ function frame(now) {
   camera.updateProjectionMatrix();
   if (view === 'plat') updatePlat(t, pos);
   updateHud(t);
+  updateLineup(t);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

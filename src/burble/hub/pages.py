@@ -420,11 +420,13 @@ REPLAY_STYLE = """
 .replay-bar .time { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 9em; }
 .replay-bar .group { display: flex; flex-wrap: wrap; gap: 4px; }
 .replay-bar label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+.lineup { margin-top: 10px; }
 """
 
 
-def replay_page(p: Pass) -> str:
-    """The 3D replay of a landing (static/replay.js draws it from /passes/{id}/replay.json)."""
+def replay_page(p: Pass, lineup_svg: str | None = None) -> str:
+    """The 3D replay of a landing (static/replay.js draws it from /passes/{id}/replay.json), with the trap card's
+    lineup plot (`lineup_svg`, cards.render_lineup) below it, which follows the jet."""
     g = p.grade
     imports = json.dumps({"imports": {"three": f"{THREE_DIR}/three.module.min.js",
                                       "three/addons/controls/OrbitControls.js": f"{THREE_DIR}/OrbitControls.js"}})
@@ -459,6 +461,7 @@ def replay_page(p: Pass) -> str:
             f'<div class="replay-bar"><span class="group" id="replay-views"></span>'
             f'<label><input type="checkbox" data-guide="glidepath" checked> Glide path</label>'
             f'<label><input type="checkbox" data-guide="path" checked> Path flown</label></div>'
+            + (f'<div class="panel card lineup" id="replay-lineup">{lineup_svg}</div>' if lineup_svg else "") +
             f'<p class="sub" id="replay-hint"></p>'
             f'<p class="sub">Space plays and pauses, the arrow keys step a second (with Shift, five), 1–6 pick the '
             f"camera, and the mouse wheel zooms. The jet and ship are simple stand-in models; positions are from "

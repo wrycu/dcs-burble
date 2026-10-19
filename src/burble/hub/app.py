@@ -17,7 +17,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
 
-from ..cards import render_card
+from ..cards import render_card, render_lineup
 from ..cards.overlay import render_overlay
 from ..cards.replay import ordered_calls, replay_data
 from ..callouts.voice import spoken_text
@@ -797,7 +797,11 @@ def create_app(hub: Hub) -> FastAPI:
         p = _get(pass_id)
         if p.merged_into_id is not None:
             return RedirectResponse(f"/passes/{p.merged_into_id}/replay", status_code=307)
-        return pages.replay_page(p)
+        try:
+            lineup = render_lineup(hub.load_pass(p), p.calls)
+        except (IngestError, OSError):
+            lineup = None  # the replay's data says why (replay.json)
+        return pages.replay_page(p, lineup)
 
     @app.get("/passes/{pass_id}/replay.json")
     def pass_replay_data(pass_id: int) -> Response:

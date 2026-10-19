@@ -2,6 +2,7 @@ import math
 from pathlib import Path
 
 from burble.acmi import load_recording
+from burble.cards import render_lineup
 from burble.cards.replay import LEAD_S, TAIL_S, replay_data
 from burble.detect import find_passes
 from burble.geometry import AIRCRAFT, CARRIERS, DeckFrame
@@ -84,6 +85,9 @@ def test_replay_page_and_data(client, token):
     assert page.status_code == 200 and f'data-src="/passes/{pass_id}/replay.json"' in page.text
     assert '<script type="importmap">' in page.text and "/static/replay.js" in page.text
     assert 'class="platframe"' in page.text and 'id="plat-distance"' in page.text  # the PLAT monitor's overlay
+    # The trap card's lineup plot below it, with the scales and parts the page moves.
+    assert 'id="replay-lineup"' in page.text and 'data-half="' in page.text
+    assert 'id="lineup-reveal-rect"' in page.text and 'id="lineup-now"' in page.text
     data = client.get(f"/passes/{pass_id}/replay.json").json()
     assert data["track"]["t"] and data["carrier"]["wires"] and data["grade"]["grade"]
     script = client.get("/static/replay.js")
@@ -139,3 +143,13 @@ def test_call_audio_in_the_hubs_voice(client, token, hub, tmp_path):
     assert r.status_code == 200 and r.headers["content-type"] == "audio/wav" and said == ["Power."]
     assert client.get(f"/passes/{pass_id}/calls/0.wav").status_code == 404  # the pilot's own call
     assert client.get(f"/passes/{pass_id}/calls/9.wav").status_code == 404
+
+
+def test_lineup_plot_for_the_replay():
+    _, p = _replay("trap-server.zip.acmi")
+    calls = [{"time": p.start_time + 5, "along": p.samples[10].along, "call": "come left", "by": "lso"}]
+    svg = render_lineup(p, calls)
+    ghosts = svg.count(' tc-ghost"')
+    assert ghosts and svg.count('class="tc-track') == 2 * ghosts  # the whole track faintly, the flown part over it
+    assert 'clip-path="url(#lineup-reveal)"' in svg and f'data-along="{calls[0]["along"]:.1f}"' in svg
+    assert "Glideslope" not in svg  # the lineup plot only
