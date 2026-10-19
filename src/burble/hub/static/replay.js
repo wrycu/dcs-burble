@@ -81,7 +81,7 @@ scene.background = sky;
 scene.fog = new THREE.Fog(sky, 2500, 16000);
 scene.add(new THREE.HemisphereLight(night ? 0x334466 : 0xddeeff, night ? 0x0a0f18 : 0x3a4a5a, night ? 0.5 : 2.0));
 const sun = new THREE.DirectionalLight(0xffffff, night ? 0.15 : 2.0);
-sun.position.set(300, 1000, 500);  // high and astern, so a jet in the groove is lit as the LSO sees it
+sun.position.set(200, 1000, -300);  // high and a little ahead: a jet in the groove faces the ship, lit as the LSO sees it
 scene.add(sun);
 
 const sea = (() => {
@@ -377,6 +377,9 @@ const LSO_EYE = deckPoint(36, -26, 1.7);
 const VULTURES = new THREE.Vector3(33, 18, 0);
 const chase = { pos: null };
 
+// The PLAT camera's vertical field of view: 10 degrees across a 4:3 (1274 x 928) picture.
+const PLAT_FOV = 2 * Math.atan(Math.tan(5 * DEG) * 928 / 1274) / DEG;
+
 function aimFov(camPos, target, frame, zoom) {
   const dist = camPos.distanceTo(target);
   return THREE.MathUtils.clamp(2 * Math.atan(frame / 2 / dist) / DEG / zoom, 0.5, 70);
@@ -385,14 +388,18 @@ function aimFov(camPos, target, frame, zoom) {
 const CAMERAS = {
   plat: {
     label: 'PLAT', key: '1',
-    hint: 'The deck camera at the aim point, looking up the glide path: the crosshair is the hook’s ideal glideslope and lineup.',
+    hint: 'The deck camera at the aim point looking up the glide path, as the LSO\u2019s PLAT monitor shows it: the '
+      + 'crosshair\u2019s centre is the hook\u2019s ideal glideslope and centerline. Top: date, time, C (deck clear), '
+      + 'the hull number, wind over the deck (kt). Bottom: closing speed (kt), W once waved off, range (ft), sink rate (ft/s).',
     update(j, pos) {
       const g = C.glideslope * DEG, [ax, az] = C.axis;
       const eye = deckPoint(0, 0, 0.3);
       camera.position.copy(eye);
       camera.up.set(0, 1, 0);
       camera.lookAt(eye.clone().add(new THREE.Vector3(-ax * Math.cos(g), Math.sin(g), az * Math.cos(g))));
-      camera.fov = aimFov(eye, pos, 40, this.zoom);
+      // A fixed lens, about 10 degrees across the 4:3 picture (the crosshair's 1-degree gap is a tenth of its
+      // width on the monitor), so the jet starts small and grows as it comes in; the wheel zooms.
+      camera.fov = THREE.MathUtils.clamp(PLAT_FOV / this.zoom, 0.5, 70);
     },
     zoom: 1,
   },
@@ -460,6 +467,50 @@ function setView(name) {
   for (const b of document.querySelectorAll('[data-view]')) b.setAttribute('aria-pressed', b.dataset.view === name);
   $('#replay-hint').textContent = CAMERAS[name].hint;
   root.classList.toggle('plat', name === 'plat');
+}
+
+// -- the PLAT monitor ---------------------------------------------------------------------------
+
+// Laid out as the carrier's deck camera monitor (and DCS's Supercarrier) shows it: the picture in grey (CSS), a
+// crosshair with a gap one degree wide around the jet, and the camera's data overlaid (the page's .platframe).
+const plat = Object.fromEntries(['date', 'time', 'status', 'hull', 'wind', 'speed', 'waveoff', 'distance', 'sink',
+  'left', 'right', 'top', 'bottom'].map((k) => [k, $(`#plat-${k}`)]));
+const PLAT_ASPECT = 1274 / 928;
+const hullNumber = C.type === 'Stennis' ? '74' : C.type === 'Forrestal' ? '59' : (C.type.match(/\d+/) || ['XX'])[0];
+const clockStart = data.clock ? Date.parse(`${data.clock}Z`) : null;  // read as given, shown as given
+const waveoffAt = data.calls.find((c) => /^wave off/i.test(c.say || ''))?.t ?? Infinity;
+const digits = (n, width) => String(Math.max(0, Math.floor(n))).padStart(width, '0').slice(-width);
+
+function place(el, x, y, w, h) {
+  Object.assign(el.style, { left: `${x}px`, top: `${y}px`, width: `${Math.max(0, w)}px`, height: `${Math.max(0, h)}px` });
+}
+
+function updatePlat(t, pos) {
+  if (clockStart != null) {
+    const d = new Date(clockStart + t * 1000), two = (n) => String(n).padStart(2, '0');
+    plat.date.textContent = `${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())}-${two(d.getUTCFullYear() % 100)}`;
+    plat.time.textContent = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}:${two(d.getUTCSeconds())}`;
+  }
+  plat.status.textContent = 'C';
+  plat.hull.textContent = hullNumber;
+  plat.wind.textContent = data.deck_wind_kt == null ? '' : digits(data.deck_wind_kt, 2);
+  // Closing speed and sink rate, relative to the ship.
+  const a = jetAt(t - 0.1), b = jetAt(t + 0.1);
+  plat.speed.textContent = digits(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) / 0.2 * 1.94384, 3);
+  plat.sink.textContent = digits(-(b.y - a.y) / 0.2 * M_TO_FT, 2);
+  const dist = camera.position.distanceTo(pos);
+  plat.distance.textContent = digits(Math.floor(dist * M_TO_FT / 100) * 100, 5);
+  plat.waveoff.textContent = t >= waveoffAt ? 'W' : '';
+  // The crosshair is fixed on the picture, as on the monitor: the camera looks up the hook's glide path, so its centre
+  // is the hook's ideal glideslope and centerline (a jet on it shows its hook in the gap, its body a little above).
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  const pxPerTan = (H / 2) / Math.tan(camera.fov * DEG / 2);
+  const gateW = 2 * Math.tan(0.5 * DEG) * pxPerTan, gateH = gateW / PLAT_ASPECT;
+  const fw = Math.min(W, H * PLAT_ASPECT), cx = fw / 2, cy = H / 2, sz = Math.max(2, H * 0.0035);
+  place(plat.left, 0, cy - sz / 2, cx - gateW / 2, sz);
+  place(plat.right, cx + gateW / 2, cy - sz / 2, fw - cx - gateW / 2, sz);
+  place(plat.top, cx - sz / 2, 0, sz, cy - gateH / 2);
+  place(plat.bottom, cx - sz / 2, cy + gateH / 2, sz, H - cy - gateH / 2);
 }
 
 // -- the HUD ------------------------------------------------------------------------------------
@@ -596,13 +647,15 @@ function frame(now) {
   const pos = jet.group.position;
   sea.tex.offset.y = (C.speed * (data.start + t) / sea.tile) % 1;
   const n = index(track.t, t) + 1;
-  pathGeom.setDrawRange(0, showGuides.path ? n + 1 : 0);
-  glidepath.visible = showGuides.glidepath;
+  const monitor = view === 'plat';  // the deck camera's monitor shows neither line
+  pathGeom.setDrawRange(0, showGuides.path && !monitor ? n + 1 : 0);
+  glidepath.visible = showGuides.glidepath && !monitor;
   resize();
   jet.group.visible = view !== 'cockpit';  // the stand-in canopy and wings would fill the view
   CAMERAS[view].update(j, pos);
   if (view === 'free') controls.update();
   camera.updateProjectionMatrix();
+  if (view === 'plat') updatePlat(t, pos);
   updateHud(t);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);

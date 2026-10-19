@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from datetime import datetime, timedelta
 
 from ..acmi import Recording
 from ..callouts.voice import spoken_text
@@ -16,7 +17,7 @@ from ..detect import PassResult
 from ..detect.passes import CarrierTimeline
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
 from ..grading import GradeResult, grade_name
-from .svg import _said_order, call_label
+from .svg import KT, _said_order, call_label
 
 # The replay starts this long before the pass (its detection, about 1.5 nm out) and ends this long after.
 LEAD_S = 8.0
@@ -45,6 +46,18 @@ def _calls_offset(result: PassResult, calls: list[dict]) -> float:
     offsets = [min(samples, key=lambda s: abs(s.along - c["along"])).time - c["time"]
                for c in calls if "along" in c and "time" in c and near <= c["along"] <= far]
     return statistics.median(offsets) if offsets else 0.0
+
+
+def _clock(recording: Recording, at: float) -> str | None:
+    """The mission's date and time at `at` (Tacview's ReferenceTime plus the recording's clock), for the PLAT view; None
+    when the recording doesn't know it (the pilot hook's files count from a stand-in date, 2000-01-01)."""
+    try:
+        reference = datetime.fromisoformat(recording.globals.get("ReferenceTime", "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if reference.year <= 2000:
+        return None
+    return (reference + timedelta(seconds=at)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def ordered_calls(calls: list[dict] | None) -> list[dict]:
@@ -82,10 +95,10 @@ def replay_data(recording: Recording, result: PassResult, grade: GradeResult | N
     a, b = timeline.at(start), timeline.at(end)
     speed = math.hypot(b.u - a.u, b.v - a.v) / (end - start) if end > start else 0.0
 
-    groove = {k: [] for k in ("t", "along", "lateral", "glideslope", "aoa")}
+    groove = {k: [] for k in ("t", "along", "lateral", "glideslope", "aoa", "speed")}
     for s in result.samples:
         for key, value, places in (("t", s.time - start, 3), ("along", s.along, 1), ("lateral", s.lateral, 2),
-                                   ("glideslope", s.glideslope_deviation, 2)):
+                                   ("glideslope", s.glideslope_deviation, 2), ("speed", s.ground_speed, 2)):
             groove[key].append(_r(value, places))
         groove["aoa"].append(None if s.aoa is None else _r(s.aoa + (aircraft.derived_aoa_offset if s.aoa_derived
                                                                      else 0.0), 2))
@@ -106,6 +119,8 @@ def replay_data(recording: Recording, result: PassResult, grade: GradeResult | N
         "pass": [_r(result.start_time - start, 3), _r(result.end_time - start, 3)],
         "outcome": str(result.outcome),
         "night": night,
+        "clock": _clock(recording, start),  # the mission's date and time when the replay starts
+        "deck_wind_kt": None if result.deck_wind is None else round(result.deck_wind.speed / KT),
         "grade": None if grade is None else {"grade": grade.grade, "name": grade_name(grade.grade),
                                              "text": grade.text},
         "wire": result.wire_label,

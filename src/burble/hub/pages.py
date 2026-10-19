@@ -399,11 +399,19 @@ REPLAY_STYLE = """
 .replay .call { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px);
   padding: 4px 12px; border-radius: 6px; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 16px;
   text-align: center; pointer-events: none; }
-.replay .crosshair { display: none; position: absolute; inset: 0; pointer-events: none; }
-.replay.plat .crosshair { display: block; }
-.replay .crosshair::before, .replay .crosshair::after { content: ""; position: absolute; background: rgba(255, 255, 255, 0.7); }
-.replay .crosshair::before { left: 0; right: 0; top: 50%; height: 1px; }
-.replay .crosshair::after { top: 0; bottom: 0; left: 50%; width: 1px; }
+/* The PLAT view, as the carrier's deck camera monitor shows it (and DCS's Supercarrier draws it): a grey 4:3 picture,
+   a black crosshair with a gap around the jet, and the camera's data in big typewriter digits. */
+.replay .platframe { display: none; position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%);
+  aspect-ratio: 1274 / 928; max-width: 100%; container-type: size; pointer-events: none;
+  box-shadow: 0 0 0 100vmax #0b0d0c;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.35) 100%),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.04) 0 1px, transparent 1px 3px); }
+.replay.plat .platframe { display: block; }
+.replay.plat canvas { filter: grayscale(1) contrast(0.8) brightness(1.12) blur(0.4px); }
+.replay.plat .hud, .replay.plat .ballbox { display: none; }
+.replay .platframe span { position: absolute; color: #141414; font: 7.6cqh/1 "Courier New", Courier, monospace;
+  white-space: pre; text-shadow: 0 0 1px rgba(0, 0, 0, 0.4); }
+.replay .platframe .line { position: absolute; background: #161616; }
 .replay-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
 .replay-bar button, .replay-bar select { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer;
   border: 1px solid var(--border); background: var(--card); color: var(--text); }
@@ -428,7 +436,15 @@ def replay_page(p: Pass) -> str:
             f'<p class="sub">{escape(_when(p.occurred_at))} · {escape(p.aircraft_type)} · '
             f'{escape(p.carrier_unit or p.carrier_type)}{" · wire " + escape(_wire(p)) if p.wire else ""}</p>'
             f'<div class="replay" id="replay" data-src="/passes/{p.id}/replay.json">'
-            f'<canvas aria-label="3D replay of the pass"></canvas><div class="crosshair"></div>'
+            f'<canvas aria-label="3D replay of the pass"></canvas>'
+            # Laid out as on the deck camera's monitor (positions in a 1274 x 928 picture, as DCS's Supercarrier has them).
+            '<div class="platframe" aria-hidden="true">'
+            + "".join(f'<span id="plat-{k}" style="left:{x}%;top:{y}%"></span>'
+                      for k, x, y in (("date", 15.5, 1.1), ("time", 15.5, 8.6), ("status", 63.4, 1.1), ("hull", 76.8, 1.1),
+                                      ("wind", 69.1, 8.6), ("speed", 15.5, 85.3), ("waveoff", 37.9, 85.3),
+                                      ("distance", 50.0, 85.3), ("sink", 76.8, 85.3)))
+            + "".join(f'<div class="line" id="plat-{k}"></div>' for k in ("left", "right", "top", "bottom"))
+            + '</div>'
             f'<dl class="hud">{hud}</dl><div class="ballbox" id="hud-ballbox" hidden><div class="ball" id="hud-ball"></div></div>'
             f'<div class="call" id="hud-call" hidden></div><div class="loading">Loading the replay…</div></div>'
             f'<div class="replay-bar"><button type="button" id="replay-play">Pause</button>'

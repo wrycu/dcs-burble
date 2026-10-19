@@ -36,6 +36,15 @@ def test_track_is_in_the_carriers_frame():
     # The landing area's points sit where the deck frame puts them.
     assert math.isclose(frame.deck_point(*carrier["ramp"])[0], CARRIERS[p.carrier_type].ramp_along_m, abs_tol=0.05)
     assert carrier["caught"] == p.wire_estimate and 10 < carrier["speed"] < 20
+    # For the PLAT monitor: the mission's clock (Tacview's ReferenceTime + the replay's start), the closing speed.
+    assert data["clock"].startswith("2016-06-21T05:") and len(data["groove"]["speed"]) == len(p.samples)
+    assert 50 < data["groove"]["speed"][len(p.samples) // 2] < 90  # m/s relative to the ship, in the groove
+
+
+def test_no_clock_without_a_real_date():
+    """The pilot hook's files count from a stand-in date (2000-01-01): the PLAT monitor shows no date or time."""
+    data, _ = _replay("trap-pilot-hook.zip.acmi")
+    assert data["clock"] is None
 
 
 def test_heading_is_unwrapped_and_calls_are_on_the_replays_clock():
@@ -74,6 +83,7 @@ def test_replay_page_and_data(client, token):
     page = client.get(f"/passes/{pass_id}/replay")
     assert page.status_code == 200 and f'data-src="/passes/{pass_id}/replay.json"' in page.text
     assert '<script type="importmap">' in page.text and "/static/replay.js" in page.text
+    assert 'class="platframe"' in page.text and 'id="plat-distance"' in page.text  # the PLAT monitor's overlay
     data = client.get(f"/passes/{pass_id}/replay.json").json()
     assert data["track"]["t"] and data["carrier"]["wires"] and data["grade"]["grade"]
     script = client.get("/static/replay.js")
