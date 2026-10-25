@@ -30,6 +30,9 @@ DEFAULT_RADIUS_NM = 10.0
 MAX_ALT_M = 10000 * FT  # above the deck
 # A carrier with nothing around it is still sent this often, so the hub knows it's there.
 CARRIER_EVERY_S = 5.0
+# With nothing else to send, an update with no carriers this often (wall clock), so the hub knows the agent is
+# connected to its mission (and from its mission time, whether that's running or paused).
+HEARTBEAT_S = 5.0
 # The ship's speed is measured over this long (shorter spans are noisy).
 SHIP_SPEED_S = 10.0
 # The hub has said no (e.g. an older hub without the live view): don't ask again for this long.
@@ -220,9 +223,12 @@ class LiveSender:
         self.clock = clock  # monotonic seconds
         self._refused_until = -math.inf
         self._failing: str | None = None  # why the last update failed
+        self._sent_at = -math.inf  # when the hub last took an update
 
     async def send_once(self) -> bool:
         batch = self.feed.batch()
+        if batch is None and self.clock() - self._sent_at >= HEARTBEAT_S:
+            batch = {"now": round(self.feed.now, 3), "carriers": []}  # still here
         if batch is None or self.clock() < self._refused_until:
             return False
         try:
@@ -241,6 +247,7 @@ class LiveSender:
         if self._failing is not None:
             log.info("live view: hub taking updates again")
         self._failing = None
+        self._sent_at = self.clock()
         return True
 
     def _failed(self, why: str) -> None:

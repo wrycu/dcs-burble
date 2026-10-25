@@ -873,9 +873,12 @@ def create_app(hub: Hub) -> FastAPI:
             return None
         return RedirectResponse(f"/signin?next={quote(request.url.path, safe='/')}", status_code=303)
 
+    def _agent_names() -> list[str]:
+        return [a.name for a in hub.server_agents()]
+
     @app.get("/live", response_class=HTMLResponse)
     def live_index(request: Request):
-        return _signed_in_page(request) or pages.live_index_page(live.live())
+        return _signed_in_page(request) or pages.live_index_page(live.status(_agent_names()))
 
     @app.get("/live/say.wav")
     def live_say(request: Request, text: str) -> FileResponse:
@@ -885,6 +888,19 @@ def create_app(hub: Hub) -> FastAPI:
         if hub.voice is None or not live.may_say(text):
             raise HTTPException(404, "no such call")
         return FileResponse(hub.voice.wav(text), media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
+
+    @app.get("/live/{agent}", response_class=HTMLResponse)
+    def live_server(request: Request, agent: str):
+        """A server's own live page: straight to its carrier's view when it has one live."""
+        if (signin := _signed_in_page(request)) is not None:
+            return signin
+        if agent not in _agent_names():
+            raise HTTPException(404, "no such server agent")
+        (status,) = live.status([agent])
+        if len(status.carriers) == 1:
+            return RedirectResponse(f"/live/{quote(agent, safe='')}/{quote(status.carriers[0].unit, safe='')}",
+                                    status_code=303)
+        return pages.live_server_page(status)
 
     @app.get("/live/{agent}/{unit}", response_class=HTMLResponse)
     def live_view(request: Request, agent: str, unit: str):

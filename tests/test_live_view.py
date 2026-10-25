@@ -294,3 +294,66 @@ def test_the_sender_logs_each_new_reason_it_cant_send(caplog):
         "live view: hub not taking updates (All connection attempts failed); dropping updates meanwhile",
         "live view: hub refused an update (401 invalid token); dropping updates meanwhile",
         "live view: hub taking updates again"]
+
+
+def test_each_server_agents_status():
+    now = [100.0]
+    broker = LiveBroker(clock=lambda: now[0])
+    broker.publish("server1", batch(10.0))  # a carrier: live
+    broker.publish("server2", {"now": 50.0, "carriers": []})  # a heartbeat: mission running, no carrier
+    broker.publish("server3", {"now": 70.0, "carriers": []})
+    now[0] = 110.0
+    broker.publish("server2", {"now": 60.0, "carriers": []})
+    broker.publish("server3", {"now": 70.0, "carriers": []})  # its clock isn't moving
+    now[0] = 120.0
+    statuses = broker.status(["server4", "server3", "server2", "server1"])
+    assert [(a.agent, a.status) for a in statuses] == [
+        ("server1", "live"), ("server2", "running"), ("server3", "paused"), ("server4", "silent")]
+    assert [c.unit for c in statuses[0].carriers] == ["CVN-75 Harry S. Truman"]
+    assert statuses[3].heard is None and statuses[2].heard is not None
+    now[0] = 110.0 + STALE_S + 1  # nothing from anyone since
+    assert {a.status for a in broker.status(["server1", "server2", "server3"])} == {"silent"}
+
+
+def test_the_sender_sends_a_heartbeat_when_theres_nothing_else():
+    posted = []
+
+    def answer(request):
+        posted.append(request.read())
+        return httpx.Response(200, json={"carriers": 0})
+
+    async def run():
+        feed = LiveFeed()
+        feed.now = 42.0
+        clock = [0.0]
+        async with httpx.AsyncClient(transport=httpx.MockTransport(answer), base_url="http://hub") as client:
+            sender = LiveSender(feed, client, clock=lambda: clock[0])
+            sent = [await sender.send_once()]  # nothing yet: a heartbeat
+            clock[0] = 4.0
+            sent.append(await sender.send_once())  # too soon for another
+            clock[0] = 5.0
+            sent.append(await sender.send_once())
+            return sent
+
+    assert asyncio.run(run()) == [True, False, True]
+    assert posted == [b'{"now":42.0,"carriers":[]}'] * 2
+
+
+def test_live_lists_every_server_agent(hub):
+    token = hub.add_source("server1")
+    hub.add_source("server2")
+    hub.register_pilot("Goose", "goose password")
+    client = TestClient(create_app(hub))
+    client.post("/api/v1/live", json=batch(10.0), headers={"Authorization": f"Bearer {token}"})
+    assert client.get("/live/server1", follow_redirects=False).status_code == 303  # signing in first
+    client.post("/signin", data={"name": "Goose", "password": "goose password"})
+    index = client.get("/live").text
+    assert index.index('href="/live/server1"') < index.index('href="/live/server2"')
+    assert "No live data since the hub started" in index
+    # A server with one carrier live goes straight to it; one with none shows its status.
+    r = client.get("/live/server1", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/live/server1/CVN-75%20Harry%20S.%20Truman"
+    page = client.get("/live/server2").text
+    assert "<h1>server2</h1>" in page and "No live data" in page
+    assert client.get("/live/nobody").status_code == 404
+    assert 'Live from <a href="/live/server1">server1</a>' in client.get(r.headers["location"]).text

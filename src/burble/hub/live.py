@@ -14,6 +14,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from ..callouts.voice import spoken_text
 from ..cards.replay import aircraft_data, carrier_data
@@ -22,11 +23,32 @@ from ..geometry import CARRIERS
 
 KEEP_S = 90.0  # mission seconds of traffic kept for a viewer who opens the page
 STALE_S = 60.0  # a carrier not heard of in this long (wall clock) is off the list of live carriers
+# An agent's mission clock that hasn't moved in this long (wall clock) is paused (a dedicated server with no
+# players pauses); the agent's heartbeat comes every 5 s.
+PAUSED_AFTER_S = 15.0
 # Mission time going back more than this is a new mission (DCS can reuse the carrier's object id).
 RESTART_S = 5.0
 QUEUE_MAX = 400  # updates waiting for a slow viewer (about 100 s of them); past this, it's disconnected
 # The texts the LSO said recently, which the hub's voice may render for viewers (not just any text).
 SPOKEN_MAX = 500
+
+
+@dataclass(slots=True)
+class AgentState:
+    """What the hub has heard from one server agent's live view since it started."""
+    heard_at: float  # monotonic
+    heard_wall: datetime
+    now: float = 0.0  # the newest mission time
+    moved_at: float = 0.0  # monotonic, when the mission time last moved on
+
+
+@dataclass(slots=True)
+class AgentStatus:
+    """One server agent on the /live overview."""
+    agent: str
+    status: str  # live | running | paused | silent
+    carriers: list[Channel]  # live now
+    heard: datetime | None  # last heard, since the hub started
 
 
 @dataclass(slots=True)
@@ -58,11 +80,13 @@ class LiveBroker:
     def __init__(self, clock=time.monotonic) -> None:
         self.clock = clock
         self.channels: dict[tuple[str, str], Channel] = {}
+        self.agents: dict[str, AgentState] = {}
         self.spoken: dict[str, None] = {}  # insertion-ordered set
 
     def publish(self, agent: str, batch: dict) -> int:
         """A server agent's batch (`agent.livefeed.LiveFeed.batch`); returns how many carriers it updated."""
         now = float(batch.get("now") or 0.0)
+        self._heard(agent, now)
         count = 0
         for entry in batch.get("carriers") or []:
             unit, carrier_type = str(entry.get("unit") or ""), str(entry.get("type") or "")
@@ -120,6 +144,29 @@ class LiveBroker:
         fresh = [c for c in self.channels.values() if now - c.seen_at <= STALE_S]
         return sorted(fresh, key=lambda c: (-len(c.pilots), c.agent, c.unit))
 
+    def status(self, agents: list[str]) -> list[AgentStatus]:
+        """Each of these server agents (the hub's, by name) as the /live overview shows it: live ones first, then
+        running, paused, and the silent ones."""
+        now = self.clock()
+        live: dict[str, list[Channel]] = {}
+        for channel in self.live():
+            live.setdefault(channel.agent, []).append(channel)
+        out = []
+        for name in agents:
+            state = self.agents.get(name)
+            heard = state is not None and now - state.heard_at <= STALE_S
+            if live.get(name):
+                status = "live"
+            elif heard and now - state.moved_at <= PAUSED_AFTER_S:
+                status = "running"
+            elif heard:
+                status = "paused"
+            else:
+                status = "silent"
+            out.append(AgentStatus(name, status, live.get(name, []), state.heard_wall if state else None))
+        order = {"live": 0, "running": 1, "paused": 2, "silent": 3}
+        return sorted(out, key=lambda a: (order[a.status], a.agent.lower()))
+
     def get(self, agent: str, unit: str) -> Channel | None:
         return self.channels.get((agent, unit))
 
@@ -140,6 +187,15 @@ class LiveBroker:
             yield queue
         finally:
             channel.viewers.discard(queue)
+
+    def _heard(self, agent: str, now: float) -> None:
+        state = self.agents.get(agent)
+        clock = self.clock()
+        if state is None:
+            state = self.agents[agent] = AgentState(clock, datetime.now(UTC), now, clock)
+        elif now != state.now:  # moving on, or back (a new mission)
+            state.now, state.moved_at = now, clock
+        state.heard_at, state.heard_wall = clock, datetime.now(UTC)
 
     def _reset(self, agent: str, unit: str, carrier_type: str, carrier_id, old: Channel | None) -> Channel:
         channel = Channel(agent, unit, carrier_type, carrier_id, self.clock())

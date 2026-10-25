@@ -466,6 +466,7 @@ LIVE_STYLE = """
 .replay-bar button[aria-pressed="mixed"] { border-style: dashed; border-color: var(--text); }
 .live-status { color: var(--muted); }
 .live-graded { margin: 8px 0; padding-left: 1.2em; }
+tr.muted td, .muted { color: var(--muted); }
 """
 
 
@@ -490,30 +491,83 @@ def _scene_overlays(loading: str) -> str:
             f'<div class="call" id="hud-call" hidden></div><div class="loading">{escape(loading)}</div>')
 
 
-def live_index_page(channels) -> str:
-    """The carriers with a live view now (hub.live.LiveBroker.live)."""
-    if channels:
+LIVE_STATUS = {
+    "live": "Live",
+    "running": "Mission running, no carrier",
+    "paused": "Mission paused (a dedicated server pauses with no players)",
+    "silent": "No live data",
+}
+
+
+def _live_url(agent: str, unit: str | None = None) -> str:
+    return f"/live/{quote(agent, safe='')}" + (f"/{quote(unit, safe='')}" if unit else "")
+
+
+def _ago(when: datetime) -> str:
+    seconds = (datetime.now(when.tzinfo) - when).total_seconds()
+    if seconds < 90:
+        return "just now"
+    if seconds < 5400:
+        return f"{round(seconds / 60)} min ago"
+    if seconds < 36 * 3600:
+        return f"{round(seconds / 3600)} h ago"
+    return _when(when)
+
+
+def _live_status(a) -> str:
+    """A server agent's status (hub.live.AgentStatus) in words."""
+    text = escape(LIVE_STATUS[a.status])
+    if a.status == "silent":
+        text += (" since the hub started" if a.heard is None
+                 else f' <span class="muted">· last heard {escape(_ago(a.heard))}</span>')
+    return text
+
+
+def _live_carriers(a) -> str:
+    """Links to a server's live carriers, with who's around each."""
+    return "<br>".join(
+        f'<a href="{_live_url(c.agent, c.unit)}">{escape(c.unit)}</a> · {len(c.pilots)} aircraft'
+        + (f'<span class="muted"> ({", ".join(escape(p) for p in sorted(c.pilots.values(), key=str.lower))})</span>'
+           if c.pilots else "")
+        for c in a.carriers) or "–"
+
+
+def live_index_page(agents) -> str:
+    """Every server agent on the hub and its live view (hub.live.LiveBroker.status)."""
+    if agents:
         rows = "".join(
-            f'<tr><td><a href="/live/{quote(c.agent, safe="")}/{quote(c.unit, safe="")}">{escape(c.unit)}</a></td>'
-            f"<td>{escape(c.agent)}</td><td>{len(c.pilots)}</td>"
-            f'<td>{", ".join(escape(p) for p in sorted(c.pilots.values(), key=str.lower)) or "–"}</td></tr>'
-            for c in channels)
-        table = (f'<div class="scroll-x"><table class="board"><thead><tr><th>Carrier</th><th>Server</th>'
-                 f"<th>Aircraft</th><th>Around it</th></tr></thead><tbody>{rows}</tbody></table></div>")
+            f'<tr class="{"" if a.status == "live" else "muted"}"><td><a href="{_live_url(a.agent)}">'
+            f"{escape(a.agent)}</a></td><td>{_live_status(a)}</td><td>{_live_carriers(a)}</td></tr>"
+            for a in agents)
+        table = (f'<div class="scroll-x"><table class="board"><thead><tr><th>Server</th><th>Status</th>'
+                 f"<th>Carriers</th></tr></thead><tbody>{rows}</tbody></table></div>")
     else:
-        table = ('<p class="sub">No carriers are live right now. A carrier shows here while a server agent is '
-                 "connected to a mission with one.</p>")
+        table = '<p class="sub">This hub has no server agents, so there\'s nothing to watch live.</p>'
     body = (f'<p class="sub"><a href="/">← Greenie board</a></p><h1>Live</h1>'
-            f'<p class="sub">Watch the carriers on this hub\'s servers as it happens, from the LSO\'s view.</p>{table}'
+            f'<p class="sub">Watch the carriers on this hub\'s servers as it happens, from the LSO\'s view. A server '
+            f"shows its carriers while its server agent is connected to a mission with one.</p>{table}"
             '<script>setTimeout(() => location.reload(), 15000);</script>')
-    return _page("Live", body)
+    return _page("Live", f"<style>{LIVE_STYLE}</style>{body}")
+
+
+def live_server_page(a) -> str:
+    """One server agent's live view (hub.live.AgentStatus) when it isn't exactly one carrier to go straight to."""
+    if a.carriers:
+        what = (f'<div class="scroll-x"><table class="board"><thead><tr><th>Carriers</th></tr></thead>'
+                f"<tbody><tr><td>{_live_carriers(a)}</td></tr></tbody></table></div>")
+    else:
+        what = f'<p class="sub">{_live_status(a)}. This page refreshes itself; a carrier shows here once one is live.</p>'
+    body = (f'<p class="sub"><a href="/live">← Live</a> · <a href="/">Greenie board</a></p>'
+            f"<h1>{escape(a.agent)}</h1>{what}"
+            '<script>setTimeout(() => location.reload(), 15000);</script>')
+    return _page(f"Live: {a.agent}", f"<style>{LIVE_STYLE}</style>{body}")
 
 
 def live_page(agent: str, unit: str, voice: bool = False) -> str:
     """One carrier's live view (static/live.js draws it from /live/{agent}/{unit}/events)."""
-    src = f"/live/{quote(agent, safe='')}/{quote(unit, safe='')}/events"
+    src = _live_url(agent, unit) + "/events"
     body = (f'<p class="sub"><a href="/live">← Live</a> · <a href="/">Greenie board</a></p>'
-            f"<h1>{escape(unit)}</h1><p class=\"sub\">Live from {escape(agent)} · "
+            f'<h1>{escape(unit)}</h1><p class="sub">Live from <a href="{_live_url(agent)}">{escape(agent)}</a> · '
             f'<span class="live-status" id="live-status">Connecting…</span></p>'
             f'<div class="replay" id="live" data-src="{escape(src)}" data-voice="{1 if voice else 0}">'
             f'<canvas aria-label="Live 3D view of the carrier"></canvas><div class="labels"></div>'
