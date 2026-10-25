@@ -2,6 +2,7 @@
 
 # No `from __future__ import annotations` here: FastAPI must see the real annotation
 # objects to resolve dependencies defined inside create_app().
+import asyncio
 import json
 from urllib.parse import quote, urlsplit
 import secrets
@@ -12,7 +13,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
+                               StreamingResponse)
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
@@ -23,11 +25,12 @@ from ..cards.replay import ordered_calls, replay_data
 from ..callouts.voice import spoken_text
 from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M, wind_text
 from ..geometry import airframe
-from ..grading import grade_pass
+from ..grading import grade_name, grade_pass
 from ..grading.trends import DEFAULT_PASSES
 from . import pages
 from .accuracy import accuracy_of, flown_elsewhere
 from .db import Pass, Pilot, Source, Upload
+from .live import LiveBroker, sse
 from .pilothook import PILOT_HOOK_VERSION
 from .service import SESSION_DAYS, Hub, IngestError, SignedIn
 from .telemetry import DEFAULT_URLS, Settings as TelemetrySettings, build_report, fetch_usage
@@ -39,6 +42,9 @@ MAX_RECORDING_BYTES = 1024 * 1024 * 1024  # a whole session's Tacview recording 
 MAX_DEBRIEF_BYTES = 50 * 1024 * 1024
 BOARD_COLUMNS = 20
 MIN_ZOOM_M = 15.0  # the narrowest stretch the overlay zooms to
+MAX_LIVE_BYTES = 1024 * 1024  # one live view batch (a quarter second of a busy pattern is a few KB)
+LIVE_KEEPALIVE_S = 15.0  # a comment down each live view's stream this often, so proxies keep it open
+LIVE_WAIT_S = 2.0  # a live view opened before its carrier is on: how often to look for it
 
 
 def _view(near: float | None, far: float | None) -> tuple[float, float] | None:
@@ -81,6 +87,7 @@ def _safe_next(url: str | None) -> str | None:
 
 def create_app(hub: Hub) -> FastAPI:
     app = FastAPI(title="Burble hub", docs_url="/api/docs", redoc_url=None)
+    live = app.state.live = LiveBroker()
     # Uploaded recordings are processed one at a time, off the request threads.
     uploads = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload")
 
@@ -97,6 +104,8 @@ def create_app(hub: Hub) -> FastAPI:
     @app.middleware("http")
     async def signed_in(request: Request, call_next):
         """Who the browser is signed in as (`request.state.pilot`, and the bar on every page)."""
+        if request.url.path == "/api/v1/live":
+            return await call_next(request)  # a server agent, a few times a second: no sign-in or page to show
         token = request.cookies.get(SESSION_COOKIE)
         if token and request.method == "POST" and _cross_site(request):
             return PlainTextResponse("forms from other sites aren't accepted here", status_code=403)
@@ -168,6 +177,11 @@ def create_app(hub: Hub) -> FastAPI:
             result = hub.ingest(source.id, data, meta)
         except (json.JSONDecodeError, IngestError) as exc:
             raise HTTPException(400, str(exc)) from exc
+        if result.created and isinstance(meta.get("pass"), dict):
+            info = meta["pass"]
+            live.announce(source.name, info.get("carrier_unit"), info.get("aircraft_id"),
+                          {"pilot": info.get("pilot"), "pass_id": result.pass_id, "url": f"/passes/{result.pass_id}",
+                           "grade": result.grade, "name": grade_name(result.grade), "text": result.text})
         body = {"pass_id": result.pass_id, "created": result.created, "grade": result.grade, "text": result.text,
                 "url": f"/passes/{result.pass_id}"}
         # 201 for a new pass, 200 when this pass was already uploaded (nothing changes).
@@ -832,6 +846,91 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(404, "no such call")
         path = hub.voice.wav(spoken_text(calls[index]))
         return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
+
+    # -- the live LSO view (hub.live) --------------------------------------------------------------
+
+    @app.post("/api/v1/live")
+    async def live_update(request: Request, source: Annotated[Source, Depends(source_from_token)]) -> dict:
+        """A server agent's quarter second of traffic around its carriers (agent.livefeed)."""
+        if source.kind != "server":
+            raise HTTPException(403, "only server agents send to the live view")
+        raw = await request.body()
+        if len(raw) > MAX_LIVE_BYTES:
+            raise HTTPException(413, "update too large")
+        try:
+            batch = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(400, f"invalid JSON: {exc}") from exc
+        if not isinstance(batch, dict):
+            raise HTTPException(400, "expected an object")
+        try:
+            return {"carriers": live.publish(source.name, batch)}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(400, f"bad update: {exc}") from exc
+
+    def _signed_in_page(request: Request) -> RedirectResponse | None:
+        if getattr(request.state, "pilot", None):
+            return None
+        return RedirectResponse(f"/signin?next={quote(request.url.path, safe='/')}", status_code=303)
+
+    def _agent_names() -> list[str]:
+        return [a.name for a in hub.server_agents()]
+
+    @app.get("/live", response_class=HTMLResponse)
+    def live_index(request: Request):
+        return _signed_in_page(request) or pages.live_index_page(live.status(_agent_names()))
+
+    @app.get("/live/say.wav")
+    def live_say(request: Request, text: str) -> FileResponse:
+        """A call said on a live view lately, in the hub's voice."""
+        if not getattr(request.state, "pilot", None):
+            raise HTTPException(401, "sign in to watch")
+        if hub.voice is None or not live.may_say(text):
+            raise HTTPException(404, "no such call")
+        return FileResponse(hub.voice.wav(text), media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
+
+    @app.get("/live/{agent}", response_class=HTMLResponse)
+    def live_server(request: Request, agent: str):
+        """A server's own live page: straight to its carrier's view when it has one live."""
+        if (signin := _signed_in_page(request)) is not None:
+            return signin
+        if agent not in _agent_names():
+            raise HTTPException(404, "no such server agent")
+        (status,) = live.status([agent])
+        if len(status.carriers) == 1:
+            return RedirectResponse(f"/live/{quote(agent, safe='')}/{quote(status.carriers[0].unit, safe='')}",
+                                    status_code=303)
+        return pages.live_server_page(status)
+
+    @app.get("/live/{agent}/{unit}", response_class=HTMLResponse)
+    def live_view(request: Request, agent: str, unit: str):
+        return _signed_in_page(request) or pages.live_page(agent, unit, voice=hub.voice is not None)
+
+    @app.get("/live/{agent}/{unit}/events")
+    async def live_events(request: Request, agent: str, unit: str) -> StreamingResponse:
+        """The carrier's traffic as server-sent events: `carrier` (the ship, then again for a new mission), `update`
+        (each batch, the last KEEP_S of them first), and `graded` (a pass from it was graded)."""
+        if not getattr(request.state, "pilot", None):
+            raise HTTPException(401, "sign in to watch")
+
+        async def stream():
+            yield "retry: 3000\n\n"
+            while (channel := live.get(agent, unit)) is None:  # not on yet (or the server is between missions)
+                yield ": waiting\n\n"
+                await asyncio.sleep(LIVE_WAIT_S)
+            async with live.watch(channel) as queue:
+                while True:
+                    try:
+                        event, data = await asyncio.wait_for(queue.get(), LIVE_KEEPALIVE_S)
+                    except TimeoutError:
+                        yield ": keep-alive\n\n"
+                        continue
+                    if event is None:
+                        return  # fell too far behind; the browser reconnects and starts over
+                    yield sse(event, data)
+
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/static/{name:path}")
     def static_file(name: str) -> FileResponse:

@@ -286,7 +286,8 @@ def _hub_serve(args: argparse.Namespace) -> int:
         Discord(hub, args.discord_board_webhook, args.discord_traps_webhook, args.public_url or "")
     from .hub.telemetry import Telemetry
     Telemetry(hub)  # usage reports, once a day while on (see `burble hub telemetry`)
-    uvicorn.run(create_app(hub), host=args.host, port=args.port)
+    # Live views keep their connections open: on a restart, close them after a few seconds rather than wait.
+    uvicorn.run(create_app(hub), host=args.host, port=args.port, timeout_graceful_shutdown=5)
     return 0
 
 
@@ -810,8 +811,11 @@ def main(argv: list[str] | None = None) -> int:
 
     def agent_args(p: argparse.ArgumentParser, mode: str) -> None:
         p.add_argument("--work-dir", default="agent", help="session archive and upload outbox")
-        p.add_argument("--tacview-host", default="127.0.0.1")
-        p.add_argument("--tacview-port", type=int, default=TACVIEW_PORT)
+        p.add_argument("--tacview-host", default=os.environ.get("TACVIEW_HOST", "127.0.0.1"),
+                       help="Tacview real-time telemetry host [$TACVIEW_HOST; default 127.0.0.1]")
+        # A string default goes through `type` too, so a bad $TACVIEW_PORT is reported like a bad --tacview-port.
+        p.add_argument("--tacview-port", type=int, default=os.environ.get("TACVIEW_PORT", TACVIEW_PORT),
+                       help=f"Tacview real-time telemetry port [$TACVIEW_PORT; default {TACVIEW_PORT}]")
         p.add_argument("--tacview-password")
         p.add_argument("--dcs-log", metavar="PATH", help="DCS Logs/dcs.log, for the burble server hook's events")
         p.add_argument("--debrief", metavar="PATH", help="DCS Logs/debrief.log (default: next to --dcs-log)")

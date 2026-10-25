@@ -40,7 +40,8 @@ from ..slices import (LEAD_S, TAIL_S, apply_hooks, approach_window, sidecar, sli
 from ..callouts.voice import ClipLibrary, choose_clip_set
 from ..srs import Modulation, Radio
 from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink
-from .live import LivePassDetector
+from .live import Listeners, LivePassDetector
+from .livefeed import SEND_INTERVAL_S, LiveFeed, LiveSender, live_settings
 from .outbox import Outbox
 
 log = logging.getLogger(__name__)
@@ -352,6 +353,7 @@ class Session:
     pass_windows: list[tuple[int, float, float]] = field(default_factory=list)  # (aircraft, start, end)
     # When each object first appeared in this session (to line debrief.log's clock up with the stream's).
     first_seen: dict[int, float] = field(default_factory=dict)
+    feed: LiveFeed | None = None  # what's flying around the carriers, for the hub's live view
 
 
 class Agent:
@@ -572,8 +574,13 @@ class Agent:
         info = await client.connect()
         await self.refresh_config()
         callouts = self._callouts()
-        session = Session(SessionArchive(self.archive_dir), LivePassDetector(callouts), callouts,
-                          segmenters={} if c.mode == "pilot" else None)
+        feed = self._live_feed(callouts)
+        listener = callouts if feed is None else Listeners(*([callouts] if callouts else []), feed)
+        session = Session(SessionArchive(self.archive_dir), LivePassDetector(listener), callouts,
+                          segmenters={} if c.mode == "pilot" else None, feed=feed)
+        if feed is not None:
+            feed.night_at = lambda carrier, t: _night_at(session, carrier, t)
+            feed.globals = session.parser.globals
         if callouts is not None:
             callouts.grade_for = lambda carrier_id, aircraft_id: _provisional_grade(session, carrier_id, aircraft_id)
             callouts.deck_foul = session.detector.landing_area_foul
@@ -592,11 +599,14 @@ class Agent:
         log.info("connected to Tacview stream from %r; archiving to %s%s", info.name, session.archive.path,
                  "; live callouts ON" + (", listening to pilots" if listening else "") if callouts else "")
         watchdog = asyncio.create_task(self._watch_frames(session))
+        live = asyncio.create_task(self._send_live(feed), name="live view") if feed is not None else None
         try:
             async for line in client.lines():
                 await self._line(session, line)
         finally:
             watchdog.cancel()
+            if live is not None:
+                live.cancel()
             if listening is not None:
                 listening.cancel()
             await client.close()
@@ -616,6 +626,23 @@ class Agent:
         if c.debrief is not None:
             asyncio.create_task(self._debrief_after(session))
         return session
+
+    def _live_feed(self, callouts: LiveCallouts | None) -> LiveFeed | None:
+        """The live view's feed (server mode, with a hub to send to), unless the hub's config turns it off."""
+        enabled, radius_m = live_settings(self.remote_config)
+        if self.config.mode != "server" or self.client is None or not enabled:
+            return None
+        return LiveFeed(radius_m, callouts)
+
+    async def _send_live(self, feed: LiveFeed) -> None:
+        assert self.client is not None
+        sender = LiveSender(feed, self.client, time.monotonic)
+        while True:
+            await asyncio.sleep(SEND_INTERVAL_S)
+            try:
+                await sender.send_once()
+            except Exception:  # never let the live view take the session down
+                log.exception("live view: sending failed")
 
     async def _watch_frames(self, session: Session) -> None:
         """While frames stop: slice waiting passes after `STALLED_SLICE_S`, and warn now and then."""
@@ -668,6 +695,12 @@ class Agent:
                 session.first_seen.setdefault(record.id, record.time)
             for result in session.detector.feed(record):
                 self._queue(session, result)
+            if session.feed is not None:
+                if isinstance(record, ObjectUpdate) and record.moved:
+                    if (track := session.detector.tracks.get(record.id)) is not None:
+                        session.feed.update(track)
+                elif isinstance(record, ObjectRemoved):
+                    session.feed.removed(record.id)
             if session.segmenters is not None:
                 self._own_track(session, record)
 
