@@ -930,8 +930,11 @@ def join_page(error: str | None = None, name: str = "", existing: str | None = N
     return _page("Join this board", body)
 
 
-def signin_page(error: str | None = None, name: str = "", next_url: str = "") -> str:
+def signin_page(error: str | None = None, name: str = "", next_url: str = "", members_only: bool = False) -> str:
     note = f'<p class="error">{escape(error)}</p>' if error else ""
+    if members_only:
+        note = ('<p class="sub" style="color:var(--text)">This board is for its members: sign in to see it, or '
+                '<a href="/join">join</a>.</p>' + note)
     form = (
         '<form class="upload" method="post" action="/signin">'
         f'<input type="hidden" name="next" value="{escape(next_url)}">'
@@ -1026,7 +1029,7 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
 
 def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None, error: str | None = None,
                new_token: tuple[str, str] | None = None, css: str = "", telemetry: dict | None = None,
-               pending: list | None = None, approval: bool = False) -> str:
+               pending: list | None = None, approval: bool = False, members_only: bool = False) -> str:
     """For admins (pilots with the role, signed in): pilots (admin role, password reset, removal, other names,
     pilot tokens) and server agents (adding one, their configuration). `new_token`: (what, token), shown once."""
     me = CURRENT_PILOT.get()
@@ -1103,13 +1106,29 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
     usage_link = ' · <a href="/admin/usage">Usage</a>' if tel.get("view") else ""
     body = ('<h1>Admin</h1><p class="sub">Regrading and the wire check are run on the hub\'s machine '
             f"(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).{usage_link}</p>"
-            f'{note}{_telemetry_notice(tel)}<div class="admin">{_joining(pending or [], approval, post)}'
+            f'{note}{_telemetry_notice(tel)}<div class="admin">{_joining(pending or [], approval, post)}{_board_access(members_only, approval, post)}'
             f'<div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}'
             '<p class="sub">Only a pilot with a password can be an admin; resetting an admin\'s password removes the '
             "role. Deleting a pilot deletes their landings too; an admin can't be deleted (remove the role first).</p></div>"
             f'<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Server agents</h2>{agents_table}'
             f"{add_agent}</div>{_appearance(css)}{_telemetry_panel(tel) if telemetry else ''}</div>")
     return _page("Admin", body)
+
+
+def _board_access(members_only: bool, approval: bool, post) -> str:
+    """Who can see the board: anyone, or members only (signed-in, approved pilots)."""
+    toggle = post("/admin/members-only", "Open it to everyone" if members_only else "Make it members-only",
+                  extra=f'<input type="hidden" name="on" value="{0 if members_only else 1}">')
+    if members_only:
+        state = ("<strong>Members only:</strong> the board, passes, pilots' pages, replays, and the read API need a "
+                 "signed-in pilot an admin has approved (the API also takes a token). Signing in, joining, uploads, and "
+                 "Discord posts work as before; links in Discord posts lead to signing in.")
+        if not approval:
+            state += " Anyone can join, though: turn on approving new pilots to choose who gets in."
+    else:
+        state = "<strong>Open:</strong> anyone can see the board, passes, and pilots' pages."
+    return (f'<div class="panel" style="margin-bottom:12px"><h2 style="margin-top:0">Who can see the board</h2>'
+            f'<div class="actions"><p class="sub" style="margin:0">{state}</p>{toggle}</div></div>')
 
 
 def _js_text(text: str) -> str:
