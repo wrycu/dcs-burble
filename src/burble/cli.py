@@ -278,6 +278,9 @@ def _hub_serve(args: argparse.Namespace) -> int:
     from .hub.app import create_app
 
     hub = _hub(args)
+    if args.voice_model:
+        from .hub.voice import CallVoice
+        hub.voice = CallVoice(args.voice_model, hub.data_dir / "voice-cache")
     if args.discord_board_webhook or args.discord_traps_webhook:
         from .hub.discord import Discord
         Discord(hub, args.discord_board_webhook, args.discord_traps_webhook, args.public_url or "")
@@ -705,6 +708,9 @@ def main(argv: list[str] | None = None) -> int:
                             "[$BURBLE_DISCORD_BOARD_WEBHOOK]")
     serve.add_argument("--discord-traps-webhook", default=os.environ.get("BURBLE_DISCORD_TRAPS_WEBHOOK"),
                        help="Discord webhook for a post per landing, with its trap card [$BURBLE_DISCORD_TRAPS_WEBHOOK]")
+    serve.add_argument("--voice-model", default=os.environ.get("BURBLE_VOICE_MODEL"), metavar="ONNX",
+                       help="a Piper voice (.onnx) the replay page speaks the LSO's calls in, rendered on the hub "
+                            "(without it, the browser's own voice) [$BURBLE_VOICE_MODEL]")
     serve.set_defaults(func=_hub_serve)
     add_agent = hub_sub.add_parser("add-agent", help="add a server agent and print its server agent token")
     add_agent.add_argument("name")

@@ -17,8 +17,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
 
-from ..cards import render_card
+from ..cards import render_card, render_lineup
 from ..cards.overlay import render_overlay
+from ..cards.replay import ordered_calls, replay_data
+from ..callouts.voice import spoken_text
 from ..cards.svg import X_MAX_M as OVERLAY_MAX_M, X_MIN_M as OVERLAY_MIN_M, wind_text
 from ..geometry import airframe
 from ..grading import grade_pass
@@ -29,6 +31,8 @@ from .db import Pass, Pilot, Source, Upload
 from .pilothook import PILOT_HOOK_VERSION
 from .service import SESSION_DAYS, Hub, IngestError, SignedIn
 from .telemetry import DEFAULT_URLS, Settings as TelemetrySettings, build_report, fetch_usage
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 MAX_SLICE_BYTES = 20 * 1024 * 1024
 MAX_RECORDING_BYTES = 1024 * 1024 * 1024  # a whole session's Tacview recording (backfill)
@@ -787,6 +791,59 @@ def create_app(hub: Hub) -> FastAPI:
                           calls=p.calls, night=bool(p.night), view=view, zoom_hint=zoom,
                           **_badges(accuracy_of(p, reports)))
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=300"})
+
+    @app.get("/passes/{pass_id}/replay", response_class=HTMLResponse)
+    def pass_replay(pass_id: int) -> str:
+        p = _get(pass_id)
+        if p.merged_into_id is not None:
+            return RedirectResponse(f"/passes/{p.merged_into_id}/replay", status_code=307)
+        try:
+            lineup = render_lineup(hub.load_pass(p), p.calls)
+        except (IngestError, OSError):
+            lineup = None  # the replay's data says why (replay.json)
+        return pages.replay_page(p, lineup)
+
+    @app.get("/passes/{pass_id}/replay.json")
+    def pass_replay_data(pass_id: int) -> Response:
+        """The landing's track in the carrier's frame, for the replay page (cards.replay)."""
+        p = _get(pass_id)
+        if p.merged_into_id is not None:
+            return RedirectResponse(f"/passes/{p.merged_into_id}/replay.json", status_code=307)
+        try:
+            result, recording = hub.load_pass_recording(p)
+        except (IngestError, OSError) as exc:
+            raise HTTPException(404, f"replay unavailable: {exc}") from exc
+        data = replay_data(recording, result, grade_pass(result), p.calls, night=bool(p.night),
+                           title=pages.card_title(p))
+        if hub.voice is not None:
+            for i, call in enumerate(data["calls"]):
+                if "say" in call:
+                    call["audio"] = f"/passes/{p.id}/calls/{i}.wav"
+        # Checked every time: it changes with the hub's settings (the voice) as well as the pass.
+        return JSONResponse(data, headers={"Cache-Control": "no-cache"})
+
+    @app.get("/passes/{pass_id}/calls/{index}.wav")
+    def pass_call_audio(pass_id: int, index: int) -> FileResponse:
+        """One of the LSO's calls on the pass (by its place in the replay's list), in the hub's voice."""
+        if hub.voice is None:
+            raise HTTPException(404, "this hub has no voice (hub serve --voice-model)")
+        calls = ordered_calls(_get(pass_id).calls)
+        if not 0 <= index < len(calls) or calls[index].get("by") == "pilot":
+            raise HTTPException(404, "no such call")
+        path = hub.voice.wav(spoken_text(calls[index]))
+        return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
+
+    @app.get("/static/{name:path}")
+    def static_file(name: str) -> FileResponse:
+        """The replay's script and three.js (static/)."""
+        path = (STATIC_DIR / name).resolve()
+        if not path.is_file() or not path.is_relative_to(STATIC_DIR.resolve()):
+            raise HTTPException(404, "no such file")
+        media = "text/javascript" if path.suffix == ".js" else "text/plain"
+        # three.js's folder is named by its version, so it never changes; the replay's own script (about 30 KB) is
+        # fetched every time, so a hub restarted with a new version serves it at once.
+        cache = "max-age=31536000, immutable" if name.startswith("three-") else "no-cache"
+        return FileResponse(path, media_type=media, headers={"Cache-Control": cache})
 
     @app.get("/passes/{pass_id}/acmi")
     def pass_acmi(pass_id: int) -> FileResponse:
