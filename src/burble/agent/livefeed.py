@@ -219,7 +219,7 @@ class LiveSender:
         self.client = client
         self.clock = clock  # monotonic seconds
         self._refused_until = -math.inf
-        self._failing = False
+        self._failing: str | None = None  # why the last update failed
 
     async def send_once(self) -> bool:
         batch = self.feed.batch()
@@ -228,9 +228,7 @@ class LiveSender:
         try:
             r = await self.client.post("/api/v1/live", json=batch, timeout=2.0)
         except httpx.HTTPError as exc:
-            if not self._failing:
-                log.info("live view: hub not taking updates (%s); dropping them until it does", exc)
-            self._failing = True
+            self._failed(f"hub not taking updates ({exc or type(exc).__name__})")
             return False
         if r.status_code in (404, 405):
             log.info("live view: the hub doesn't have it (%s); trying again in %.0f min", r.status_code,
@@ -238,11 +236,15 @@ class LiveSender:
             self._refused_until = self.clock() + REFUSED_BACKOFF_S
             return False
         if r.status_code != 200:
-            if not self._failing:
-                log.warning("live view: hub refused an update (%s %s)", r.status_code, r.text[:200])
-            self._failing = True
+            self._failed(f"hub refused an update ({r.status_code} {r.text[:200]})")
             return False
-        if self._failing:
+        if self._failing is not None:
             log.info("live view: hub taking updates again")
-        self._failing = False
+        self._failing = None
         return True
+
+    def _failed(self, why: str) -> None:
+        """Logged once per kind of failure (not four times a second), and again when the reason changes."""
+        if why != self._failing:
+            log.warning("live view: %s; dropping updates meanwhile", why)
+        self._failing = why

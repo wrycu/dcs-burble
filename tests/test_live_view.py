@@ -268,3 +268,29 @@ def test_the_agents_sender_posts_the_feeds_batches(hub):
     assert asyncio.run(run()) == [True] * 10 + [False]
     (channel,) = app.state.live.live()
     assert channel.unit == "CVN-75 Harry S. Truman" and channel.pilots and len(channel.updates) == 10
+
+
+def test_the_sender_logs_each_new_reason_it_cant_send(caplog):
+    answers = iter([httpx.ConnectError("All connection attempts failed"), httpx.ConnectError("All connection attempts failed"),
+                    httpx.Response(401, text="invalid token"), httpx.Response(401, text="invalid token"),
+                    httpx.Response(200, json={"carriers": 1})])
+
+    def answer(request):
+        a = next(answers)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    async def run():
+        feed = LiveFeed()
+        feed.batch = lambda: {"now": 1.0, "carriers": []}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(answer), base_url="http://hub") as client:
+            sender = LiveSender(feed, client, clock=lambda: 0.0)
+            return [await sender.send_once() for _ in range(5)]
+
+    with caplog.at_level("INFO", logger="burble.agent.livefeed"):
+        assert asyncio.run(run()) == [False, False, False, False, True]
+    assert [r.getMessage() for r in caplog.records] == [
+        "live view: hub not taking updates (All connection attempts failed); dropping updates meanwhile",
+        "live view: hub refused an update (401 invalid token); dropping updates meanwhile",
+        "live view: hub taking updates again"]
