@@ -186,7 +186,7 @@ def test_joining_the_board_before_flying_here(hub):
     hub.add_pilot_token("Wrycu")
     hub.ingest(hub.authenticate(hub.add_pilot_token("Wrycu")).id, *report(OTHER, "Wrycu (2)"))  # an alias of Wrycu's
     assert client.post("/api/v1/pilots", data={"name": "Wrycu (2)", "password": "long enough"}).status_code == 409
-    assert client.post("/api/v1/pilots", data={"name": "Iceman", "password": "long enough"}).json() == {"pilot": "Iceman"}
+    assert client.post("/api/v1/pilots", data={"name": "Iceman", "password": "long enough"}).json() == {"pilot": "Iceman", "pending": False}
 
 
 def test_board_can_show_pilots_with_no_passes(hub):

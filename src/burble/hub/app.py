@@ -112,15 +112,21 @@ def create_app(hub: Hub) -> FastAPI:
         pilot = await run_in_threadpool(hub.session_pilot, token) if token else None
         request.state.pilot = pilot
         request.state.admin = await run_in_threadpool(hub.is_admin, pilot) if pilot else False
+        pending = await run_in_threadpool(hub.pending_count) if request.state.admin else 0
+        # Signed in but waiting for an admin's approval: their account does nothing else yet (PLAN #44).
+        request.state.waiting = await run_in_threadpool(hub.is_pending, pilot) if pilot else False
         css = await run_in_threadpool(hub.custom_css)
         reset = (pages.CURRENT_PILOT.set(pilot), pages.CURRENT_ADMIN.set(request.state.admin),
-                 pages.CURRENT_CSS.set(css))
+                 pages.CURRENT_CSS.set(css), pages.CURRENT_PENDING.set(pending),
+                 pages.CURRENT_WAITING.set(request.state.waiting))
         try:
             response = await call_next(request)
         finally:
             pages.CURRENT_PILOT.reset(reset[0])
             pages.CURRENT_ADMIN.reset(reset[1])
             pages.CURRENT_CSS.reset(reset[2])
+            pages.CURRENT_PENDING.reset(reset[3])
+            pages.CURRENT_WAITING.reset(reset[4])
         if token and pilot is None and not getattr(request.state, "session_set", False):
             response.delete_cookie(SESSION_COOKIE, path="/")  # ended (signed out elsewhere, expired)
         return response
@@ -351,20 +357,22 @@ def create_app(hub: Hub) -> FastAPI:
 
     @app.get("/join", response_class=HTMLResponse)
     def join() -> str:
-        return pages.join_page()
+        return pages.join_page(approval=hub.join_approval())
 
     @app.post("/join", response_class=HTMLResponse)
     def join_form(request: Request, name: Annotated[str, Form()], password: Annotated[str, Form()],
                   confirm: Annotated[str, Form()]):
+        approval = hub.join_approval()
         if password != confirm:
-            return HTMLResponse(pages.join_page("the two passwords differ", name), status_code=400)
+            return HTMLResponse(pages.join_page("the two passwords differ", name, approval=approval), status_code=400)
         try:
             stored = hub.register_pilot(name, password)
         except FileExistsError as exc:
-            return HTMLResponse(pages.join_page(name=name, existing=str(exc)), status_code=409)
+            return HTMLResponse(pages.join_page(name=name, existing=str(exc), approval=approval), status_code=409)
         except (PermissionError, ValueError) as exc:
-            return HTMLResponse(pages.join_page(str(exc), name), status_code=400)
-        done = quote("Welcome aboard! You're signed in, and can now create pilot tokens and claim other names.")
+            return HTMLResponse(pages.join_page(str(exc), name, approval=approval), status_code=400)
+        done = quote("Welcome aboard! You're signed in; an admin will approve you here." if hub.is_pending(stored) else
+                     "Welcome aboard! You're signed in, and can now create pilot tokens and claim other names.")
         response = RedirectResponse(f"/pilots/{quote(stored, safe='')}/settings?done={done}", status_code=303)
         return _start_session(request, response, hub.start_session(stored))
 
@@ -379,7 +387,7 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return {"pilot": stored}
+        return {"pilot": stored, "pending": hub.is_pending(stored)}
 
     @app.post("/api/v1/pilots/{name}/password")
     def pilot_password(name: str, new: Annotated[str, Form()], current: Annotated[str | None, Form()] = None) -> dict:
@@ -492,7 +500,9 @@ def create_app(hub: Hub) -> FastAPI:
                     new_token: tuple[str, str] | None = None, status: int = 200) -> HTMLResponse:
         _admin(request)
         return HTMLResponse(pages.admin_page(hub.admin_pilots(q), hub.server_agents(), q, done, error, new_token,
-                                             css=hub.custom_css(), telemetry=_telemetry_info()), status_code=status)
+                                             css=hub.custom_css(), telemetry=_telemetry_info(),
+                                             pending=hub.pending_pilots(), approval=hub.join_approval()),
+                            status_code=status)
 
     def _telemetry_info() -> dict:
         t = TelemetrySettings(hub)
@@ -532,11 +542,40 @@ def create_app(hub: Hub) -> FastAPI:
                            f"{name}'s password is cleared; they (or anyone) can set a new one on their settings page.",
                            q)
 
+    @app.post("/admin/join-approval")
+    def admin_join_approval(request: Request, on: Annotated[str, Form()], q: Annotated[str, Form()] = ""):
+        on_ = on == "1"
+        return _admin_step(request, lambda: hub.set_join_approval(on_),
+                           "New pilots now wait for approval." if on_ else "New pilots no longer wait for approval.", q)
+
+    @app.post("/admin/pilots/{name}/approve")
+    def admin_approve_pilot(request: Request, name: str, q: Annotated[str, Form()] = ""):
+        return _admin_step(request, lambda: hub.approve_pilot(name), f"{name} approved.", q)
+
+    @app.post("/admin/pilots/{name}/refuse")
+    def admin_refuse_pilot(request: Request, name: str, q: Annotated[str, Form()] = ""):
+        _admin(request)
+        try:
+            removed = hub.refuse_pilot(name)
+        except (LookupError, ValueError) as exc:
+            message = str(exc.args[0]) if isinstance(exc, LookupError) and exc.args else str(exc)
+            return RedirectResponse(f"/admin?error={quote(message)}&q={quote(q)}", status_code=303)
+        done = f"{name} refused and removed; the name is free." if removed else \
+            f"{name} refused; the name is on the board again, unclaimed."
+        return RedirectResponse(f"/admin?done={quote(done)}&q={quote(q)}", status_code=303)
+
     @app.post("/admin/pilots/{name}/remove")
     def admin_remove_pilot(request: Request, name: str, q: Annotated[str, Form()] = ""):
-        if name == _admin(request):
-            return RedirectResponse("/admin?error=" + quote("you can't remove yourself"), status_code=303)
-        return _admin_step(request, lambda: hub.remove_pilot(name), f"{name} removed; their pilot tokens are revoked.", q)
+        """Delete a pilot who isn't an admin, with their landings (Hub.delete_pilot)."""
+        _admin(request)
+        try:
+            landings = hub.delete_pilot(name)
+        except (LookupError, ValueError) as exc:
+            message = str(exc.args[0]) if isinstance(exc, LookupError) and exc.args else str(exc)
+            return RedirectResponse(f"/admin?error={quote(message)}&q={quote(q)}", status_code=303)
+        what = f" and {landings} landing{'s' if landings != 1 else ''}" if landings else ""
+        return RedirectResponse(f"/admin?done={quote(f'{name}{what} deleted; their pilot tokens are revoked.')}"
+                                f"&q={quote(q)}", status_code=303)
 
     @app.post("/admin/aliases/remove")  # (the alias in the form: names like "VF-1/Goose" don't fit in a path)
     def admin_remove_alias(request: Request, alias: Annotated[str, Form()], q: Annotated[str, Form()] = ""):
@@ -868,10 +907,19 @@ def create_app(hub: Hub) -> FastAPI:
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(400, f"bad update: {exc}") from exc
 
-    def _signed_in_page(request: Request) -> RedirectResponse | None:
-        if getattr(request.state, "pilot", None):
-            return None
-        return RedirectResponse(f"/signin?next={quote(request.url.path, safe='/')}", status_code=303)
+    def _signed_in_page(request: Request) -> Response | None:
+        """None for a pilot who may watch; else where they go instead (signing in, or that they're waiting)."""
+        if getattr(request.state, "pilot", None) is None:
+            return RedirectResponse(f"/signin?next={quote(request.url.path, safe='/')}", status_code=303)
+        if request.state.waiting:
+            return HTMLResponse(pages.waiting_page(request.state.pilot), status_code=403)
+        return None
+
+    def _may_watch(request: Request) -> None:
+        if getattr(request.state, "pilot", None) is None:
+            raise HTTPException(401, "sign in to watch")
+        if request.state.waiting:
+            raise HTTPException(403, "an admin hasn't approved you yet")
 
     def _agent_names() -> list[str]:
         return [a.name for a in hub.server_agents()]
@@ -883,8 +931,7 @@ def create_app(hub: Hub) -> FastAPI:
     @app.get("/live/say.wav")
     def live_say(request: Request, text: str) -> FileResponse:
         """A call said on a live view lately, in the hub's voice."""
-        if not getattr(request.state, "pilot", None):
-            raise HTTPException(401, "sign in to watch")
+        _may_watch(request)
         if hub.voice is None or not live.may_say(text):
             raise HTTPException(404, "no such call")
         return FileResponse(hub.voice.wav(text), media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
@@ -910,8 +957,7 @@ def create_app(hub: Hub) -> FastAPI:
     async def live_events(request: Request, agent: str, unit: str) -> StreamingResponse:
         """The carrier's traffic as server-sent events: `carrier` (the ship, then again for a new mission), `update`
         (each batch, the last KEEP_S of them first), and `graded` (a pass from it was graded)."""
-        if not getattr(request.state, "pilot", None):
-            raise HTTPException(401, "sign in to watch")
+        _may_watch(request)
 
         async def stream():
             yield "retry: 3000\n\n"

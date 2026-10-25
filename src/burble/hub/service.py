@@ -43,6 +43,7 @@ log = logging.getLogger(__name__)
 
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
 CUSTOM_CSS_SETTING = "custom_css"
+JOIN_APPROVAL_SETTING = "join_approval"  # "on": new pilots wait for an admin's approval (PLAN #44)
 PILOT_HOOKS = "pilot hooks"  # source of pilot hook uploads recognised without a token (see pilot_hook_access)
 INTERNAL_SOURCES = (PUBLIC_UPLOADS, PILOT_HOOKS)
 # A player counts as flying on one of this hub's servers if a server agent reported them this recently. Not only
@@ -90,6 +91,14 @@ class AdminPilot:
     admin: bool
     passes: int  # landings shown (reports merged into another aren't counted)
     aliases: list[str]
+    pending: bool = False  # waiting for an admin's approval
+
+
+@dataclass(frozen=True, slots=True)
+class PendingPilot:
+    name: str
+    since: datetime
+    passes: int  # on the board already (a name claimed from there, or flown while waiting)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,7 +234,10 @@ class Hub:
         """Admin: create a pilot token for a pilot (no password needed; the pilot is added if they have no
         passes here yet)."""
         with self.sessions.begin() as s:
-            return self._new_pilot_token(s, self._resolve_pilot(s, name), label)
+            pilot = self._resolve_pilot(s, name)
+            if pilot.pending_since is not None:
+                raise ValueError(f"{pilot.name!r} is waiting for approval; approve them first")
+            return self._new_pilot_token(s, pilot, label)
 
     def _new_pilot_token(self, s: Session, pilot: Pilot, label: str) -> str:
         label = (label or "").strip()[:100] or "pilot token"
@@ -332,6 +344,44 @@ class Hub:
             s.flush()
             s.delete(pilot)
 
+    def delete_pilot(self, name: str) -> int:
+        """Admin: delete a pilot (not an admin) and their landings: every report of those landings (whoever's), the
+        slices no other pass uses, their other names, their sign-ins; their pilot tokens are revoked. A report of
+        theirs merged into another pilot's landing stays with that landing, as its pilot's. If they fly here again,
+        they come back as a new pilot. Returns how many landings went."""
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            if pilot.is_admin:
+                raise ValueError(f"{pilot.name!r} is an admin; remove their admin role first")
+            theirs = list(s.scalars(select(Pass).where(Pass.pilot_id == pilot.id)))
+            landings = {p.id for p in theirs if p.merged_into_id is None}
+            for report in theirs:
+                if report.merged_into_id is not None and report.merged_into_id not in landings:
+                    report.pilot_id = s.get(Pass, report.merged_into_id).pilot_id  # part of someone else's landing
+            doomed = [p for p in s.scalars(select(Pass).where(
+                or_(Pass.id.in_(landings), Pass.merged_into_id.in_(landings))))]
+            slices = {p.slice_id for p in doomed}
+            for report in sorted(doomed, key=lambda p: p.merged_into_id is None):  # merged reports first
+                s.delete(report)
+            s.flush()
+            kept = set(s.scalars(select(Pass.slice_id).where(Pass.slice_id.in_(slices))))
+            gone = [sl for sl in s.scalars(select(Slice).where(Slice.id.in_(slices - kept)))]
+            for alias in s.scalars(select(PilotAlias).where(PilotAlias.pilot_id == pilot.id)):
+                s.delete(alias)
+            for source in s.scalars(select(Source).where(Source.pilot_id == pilot.id)):
+                source.pilot_id, source.revoked_at = None, source.revoked_at or datetime.now(UTC)
+            self._end_sessions(s, pilot)
+            for sl in gone:
+                s.delete(sl)
+            s.flush()
+            s.delete(pilot)
+            shas = [sl.sha256 for sl in gone]
+        for sha in shas:  # once the database no longer points at them
+            self.store.remove(sha)
+        if landings:
+            self._notify(None)  # the board changed
+        return len(landings)
+
     def _resolve_pilot(self, s: Session, name: str) -> Pilot:
         """The pilot a report under this in-game name belongs to: an alias's pilot, else the pilot of that
         name (created on first sight)."""
@@ -364,6 +414,70 @@ class Hub:
             if source is None or (kind is not None and source.kind != kind):
                 raise ValueError(f"no source named {name!r}")
             source.config = config
+
+    # -- approving new pilots (PLAN #44) -------------------------------------------------------------
+
+    def join_approval(self) -> bool:
+        """Do new pilots (joining, or claiming a name on the board) wait for an admin's approval?"""
+        with self.sessions() as s:
+            return self._join_approval(s)
+
+    @staticmethod
+    def _join_approval(s: Session) -> bool:
+        row = s.get(Setting, JOIN_APPROVAL_SETTING)
+        return bool(row and row.value == "on")
+
+    def _pending_since(self, s: Session) -> datetime | None:
+        """For a pilot claiming a name now: when they started waiting, if this hub approves new pilots."""
+        return datetime.now(UTC) if self._join_approval(s) else None
+
+    def set_join_approval(self, on: bool) -> None:
+        """Turn approving new pilots on or off. Turning it off doesn't approve those already waiting."""
+        with self.sessions.begin() as s:
+            row = s.get(Setting, JOIN_APPROVAL_SETTING)
+            if row is None:
+                s.add(Setting(key=JOIN_APPROVAL_SETTING, value="on" if on else ""))
+            else:
+                row.value = "on" if on else ""
+
+    def pending_pilots(self) -> list[PendingPilot]:
+        """Pilots waiting for an admin's approval, longest-waiting first."""
+        with self.sessions() as s:
+            counts = dict(s.execute(select(Pass.pilot_id, func.count()).where(Pass.merged_into_id.is_(None))
+                                    .group_by(Pass.pilot_id)).all())
+            return [PendingPilot(p.name, p.pending_since, counts.get(p.id, 0))
+                    for p in s.scalars(select(Pilot).where(Pilot.pending_since.is_not(None))
+                                       .order_by(Pilot.pending_since))]
+
+    def is_pending(self, name: str) -> bool:
+        with self.sessions() as s:
+            return self._pilot(s, name).pending_since is not None
+
+    def pending_count(self) -> int:
+        with self.sessions() as s:
+            return s.scalar(select(func.count()).select_from(Pilot).where(Pilot.pending_since.is_not(None))) or 0
+
+    def approve_pilot(self, name: str) -> None:
+        """Admin: a pilot waiting for approval may now use their account."""
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            if pilot.pending_since is None:
+                raise ValueError(f"{pilot.name!r} isn't waiting for approval")
+            pilot.pending_since = None
+
+    def refuse_pilot(self, name: str) -> bool:
+        """Admin: refuse a pilot waiting for approval, freeing the name: a pilot with no passes is removed, one on the
+        board goes back to unclaimed (no password). Returns whether they were removed."""
+        with self.sessions.begin() as s:
+            pilot = self._pilot(s, name)
+            if pilot.pending_since is None:
+                raise ValueError(f"{pilot.name!r} isn't waiting for approval")
+            passes = s.scalar(select(func.count()).select_from(Pass).where(Pass.pilot_id == pilot.id))
+            pilot.password_hash, pilot.pending_since, pilot.is_admin = None, None, None
+            self._end_sessions(s, pilot)
+        if not passes:
+            self.remove_pilot(name)
+        return not passes
 
     def custom_css(self) -> str:
         """The CSS the hub's admins set for the website (its theme variables also colour the Discord images)."""
@@ -971,7 +1085,7 @@ class Hub:
         """Queue the upload if its pilot has no password, or `password` is theirs, or the uploader is signed in
         as them; otherwise it waits for the password (`needs_password`). Returns whether it was queued."""
         pilot = s.scalar(select(Pilot).where(Pilot.name == upload.pilot))
-        if pilot is None or pilot.password_hash is None:
+        if pilot is None or pilot.password_hash is None or pilot.pending_since is not None:  # nobody's password
             upload.status, upload.message = "queued", None
             return True
         if isinstance(password, SignedIn):
@@ -1033,7 +1147,7 @@ class Hub:
                 # sets one on their settings page).
                 raise PermissionError("that name and password don't match")
             try:
-                self._check_password(pilot, password if isinstance(password, str) else None)
+                self._check_password(pilot, password if isinstance(password, str) else None, pending_ok=True)
             except PermissionError as exc:
                 raise PermissionError("that name and password don't match" if "isn't right" in str(exc) else str(exc))
             return pilot.name, self._new_session(s, pilot)
@@ -1130,7 +1244,7 @@ class Hub:
             if unclaimed:  # on the board, unclaimed: set the password on their settings page
                 exact = [p for p in unclaimed if p.name == name]
                 raise FileExistsError((exact or unclaimed)[0].name)
-            s.add(Pilot(name=name, password_hash=hash_password(password)))
+            s.add(Pilot(name=name, password_hash=hash_password(password), pending_since=self._pending_since(s)))
         return name
 
     def set_pilot_password(self, name: str, new: str, current: str | None = None,
@@ -1142,10 +1256,12 @@ class Hub:
         with self.sessions.begin() as s:
             pilot = self._pilot(s, name)
             if pilot.password_hash is not None:
-                self._check_password(pilot, current if isinstance(current, str) else None)
+                self._check_password(pilot, current if isinstance(current, str) else None, pending_ok=True)
             elif (clash := self._name_clash(s, pilot.name, pilot)) is not None:
                 raise PermissionError(f"{clash!r} has already been claimed; {pilot.name!r} would sign in as the same "
                                       "pilot (ask an admin to merge them)")
+            else:  # claiming the name: waits for an admin, if this hub approves new pilots
+                pilot.pending_since = self._pending_since(s)
             pilot.password_hash = hash_password(new)
             self._end_sessions(s, pilot, keep=keep_session)
 
@@ -1155,6 +1271,7 @@ class Hub:
             pilot = self._pilot(s, name)
             pilot.password_hash = None
             pilot.is_admin = None
+            pilot.pending_since = None
             self._end_sessions(s, pilot)
 
     # -- admins -----------------------------------------------------------------------------------
@@ -1164,7 +1281,8 @@ class Hub:
             return False
         with self.sessions() as s:
             pilot = s.scalar(select(Pilot).where(Pilot.name == name))
-            return bool(pilot is not None and pilot.is_admin and pilot.password_hash is not None)
+            return bool(pilot is not None and pilot.is_admin and pilot.password_hash is not None
+                        and pilot.pending_since is None)
 
     def set_admin(self, name: str, admin: bool, by: str | None = None) -> None:
         """Make a pilot an admin, or stop them being one. Only a pilot with a password (it's their sign-in that
@@ -1176,6 +1294,8 @@ class Hub:
             if not admin and by is not None and by == pilot.name:
                 raise ValueError("you can't remove your own admin role; another admin can")
             pilot.is_admin = True if admin else None
+            if admin:
+                pilot.pending_since = None  # making them an admin approves them
 
     def admin_pilots(self, search: str = "") -> list[AdminPilot]:
         """Every pilot (or those whose name, or one of their other names, contains `search`), for the admin page."""
@@ -1187,7 +1307,7 @@ class Hub:
                 aliases.setdefault(a.pilot_id, []).append(a.name)
             needle = (search or "").strip().lower()
             return [AdminPilot(p.name, p.password_hash is not None, bool(p.is_admin), counts.get(p.id, 0),
-                               aliases.get(p.id, []))
+                               aliases.get(p.id, []), p.pending_since is not None)
                     for p in s.scalars(select(Pilot).order_by(func.lower(Pilot.name)))
                     if not needle or needle in p.name.lower() or any(needle in a.lower() for a in aliases.get(p.id, []))]
 
@@ -1207,7 +1327,11 @@ class Hub:
             self._check_password(pilot, password)
             pilot.modex = modex
 
-    def _check_password(self, pilot: Pilot, password: str | SignedIn | None) -> None:
+    def _check_password(self, pilot: Pilot, password: str | SignedIn | None, pending_ok: bool = False) -> None:
+        """Is `password` the pilot's (or are they signed in as them)? A pilot waiting for approval may only sign in
+        and change their password (`pending_ok`)."""
+        if pilot.pending_since is not None and not pending_ok:
+            raise PermissionError(f"an admin hasn't approved {pilot.name} yet; this waits until they do")
         if isinstance(password, SignedIn):
             if password.pilot != pilot.name:
                 raise PermissionError(f"you're signed in as {password.pilot}, not {pilot.name}")
@@ -1315,7 +1439,7 @@ class Hub:
             items.append(TrendPass.from_detail(p.grade.detail or {}, p.outcome, on_speed, wire=p.wire))
         return PilotSummary(trends(items), rows, len(landings), min(seen) if seen else None,
                             max(seen) if seen else None, pilot.modex,
-                            next((p.livery for p in landings if p.livery), None), pilot.password_hash is not None,
+                            next((p.livery for p in landings if p.livery), None), pilot.password_hash is not None and pilot.pending_since is None,
                             chosen, sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower())))
 
     def overlay(self, rows: list[Pass]) -> list[OverlayPass]:

@@ -57,6 +57,9 @@ class Pilot(Base):
     # May manage the hub on the website (/admin), signed in. Granted with `hub set-admin` or by another admin;
     # only to a pilot with a password, and lost if their password is reset.
     is_admin: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Claimed the name (joined, or set the first password) while the hub approves new pilots, and not approved yet:
+    # they can sign in and see that they're waiting, nothing more (their password protects nothing yet).
+    pending_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class WebSession(Base):
