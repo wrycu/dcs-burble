@@ -4,6 +4,8 @@
 #   BURBLE_URL=http://127.0.0.1:8000
 #   BURBLE_TOKEN=<server agent token from `burble hub add-agent <name>`>
 #   TACVIEW_PASSWORD=<tacviewRealTimeTelemetryPassword>
+#   TACVIEW_HOST=<where DCS's Tacview real-time telemetry is; optional, default 127.0.0.1>
+#   TACVIEW_PORT=<its port; optional, default 42674>
 # Listening to pilots' calls (answering "Roger ball"): the Vosk model in ~/burble-data (see --listen-model below),
 #   then turn it on in the hub's config for this server ("listen": true under "callouts").
 # Enable: systemctl --user enable --now burble-agent@server1
