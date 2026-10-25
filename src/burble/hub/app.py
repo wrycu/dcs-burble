@@ -99,6 +99,43 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(401, "invalid token")
         return source
 
+    # -- members only (PLAN #45) --------------------------------------------------------------------
+
+    class MembersOnly(Exception):
+        """The hub is members-only and this request isn't from an approved pilot (or, for the API, a token)."""
+
+    @app.exception_handler(MembersOnly)
+    def members_only_handler(request: Request, _exc: MembersOnly) -> Response:
+        pilot = getattr(request.state, "pilot", None)
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": "this hub is members-only: sign in, or send a token"}, status_code=401)
+        if pilot is not None:  # signed in, but an admin hasn't approved them yet
+            return HTMLResponse(pages.waiting_page(pilot), status_code=403)
+        target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse(f"/signin?next={quote(target, safe='')}", status_code=303)
+
+    def _may_see(request: Request, authorization: str | None) -> bool:
+        """An approved pilot, signed in; or, for the API, any valid token (a server agent's or a pilot's)."""
+        if getattr(request.state, "pilot", None) is not None and not request.state.waiting:
+            return True
+        return (request.url.path.startswith("/api/") and (authorization or "").startswith("Bearer ")
+                and hub.authenticate(authorization.removeprefix("Bearer ").strip()) is not None)
+
+    def member(request: Request, authorization: Annotated[str | None, Header()] = None) -> None:
+        """Pages and data that need a member when the hub is members-only (`_may_see`)."""
+        if hub.members_only() and not _may_see(request, authorization):
+            raise MembersOnly()
+
+    def _upload_visible(request: Request, upload: Upload, key: str | None, authorization: str | None) -> bool:
+        """An upload's results (pilots, grades): to anyone on an open board; when members-only, to members and to
+        the uploader (the key in their link). Returns whether it's the uploader."""
+        owner = key is not None and upload.key is not None and secrets.compare_digest(upload.key, key)
+        if not owner and hub.members_only() and not _may_see(request, authorization):
+            raise MembersOnly()
+        return owner
+
+    members = [Depends(member)]
+
     # -- signing in on the website ------------------------------------------------------------
 
     @app.middleware("http")
@@ -147,7 +184,7 @@ def create_app(hub: Hub) -> FastAPI:
 
     @app.get("/signin", response_class=HTMLResponse)
     def signin(next: str | None = None) -> str:
-        return pages.signin_page(next_url=_safe_next(next) or "")
+        return pages.signin_page(next_url=_safe_next(next) or "", members_only=hub.members_only())
 
     @app.post("/signin")
     def signin_form(request: Request, name: Annotated[str, Form()], password: Annotated[str, Form()],
@@ -501,7 +538,8 @@ def create_app(hub: Hub) -> FastAPI:
         _admin(request)
         return HTMLResponse(pages.admin_page(hub.admin_pilots(q), hub.server_agents(), q, done, error, new_token,
                                              css=hub.custom_css(), telemetry=_telemetry_info(),
-                                             pending=hub.pending_pilots(), approval=hub.join_approval()),
+                                             pending=hub.pending_pilots(), approval=hub.join_approval(),
+                                             members_only=hub.members_only()),
                             status_code=status)
 
     def _telemetry_info() -> dict:
@@ -547,6 +585,12 @@ def create_app(hub: Hub) -> FastAPI:
         on_ = on == "1"
         return _admin_step(request, lambda: hub.set_join_approval(on_),
                            "New pilots now wait for approval." if on_ else "New pilots no longer wait for approval.", q)
+
+    @app.post("/admin/members-only")
+    def admin_members_only(request: Request, on: Annotated[str, Form()], q: Annotated[str, Form()] = ""):
+        on_ = on == "1"
+        return _admin_step(request, lambda: hub.set_members_only(on_),
+                           "The board is members-only now." if on_ else "The board is open to everyone now.", q)
 
     @app.post("/admin/pilots/{name}/approve")
     def admin_approve_pilot(request: Request, name: str, q: Annotated[str, Form()] = ""):
@@ -669,8 +713,10 @@ def create_app(hub: Hub) -> FastAPI:
         return upload
 
     @app.get("/api/v1/recordings/{upload_id}")
-    def upload_status(upload_id: int) -> dict:
+    def upload_status(request: Request, upload_id: int, key: str | None = None,
+                      authorization: Annotated[str | None, Header()] = None) -> dict:
         u = _upload(upload_id)
+        _upload_visible(request, u, key, authorization)
         return {"upload_id": u.id, "filename": u.filename, "size": u.size, "source": u.source.name,
                 "pilots": u.pilots or [], "pilot": u.pilot,
                 "status": u.status, "message": u.message, "results": u.results or []}
@@ -680,9 +726,9 @@ def create_app(hub: Hub) -> FastAPI:
         return pages.upload_page(token_required=hub.require_upload_token)
 
     @app.get("/uploads/{upload_id}", response_class=HTMLResponse)
-    def upload_detail(upload_id: int, key: str | None = None) -> str:
+    def upload_detail(request: Request, upload_id: int, key: str | None = None) -> str:
         upload = _upload(upload_id)
-        owner = key is not None and upload.key is not None and secrets.compare_digest(upload.key, key)
+        owner = _upload_visible(request, upload, key, None)
         return pages.upload_status_page(upload, key if owner else None)
 
     def _servers(servers: str | None) -> str:
@@ -716,7 +762,7 @@ def create_app(hub: Hub) -> FastAPI:
         """Settings for this source's agent (callouts etc.)."""
         return source.config or {}
 
-    @app.get("/api/v1/passes")
+    @app.get("/api/v1/passes", dependencies=members)
     def list_passes(days: int = 30, pilot: str | None = None, source: str | None = None,
                     servers: str | None = None, aircraft: str | None = None) -> list[dict]:
         """`servers`: "ours" (flown on this hub's servers, or unknown) or "all"; default per `--other-servers`.
@@ -739,7 +785,7 @@ def create_app(hub: Hub) -> FastAPI:
                         "accuracy": accuracy_of(p, reports).to_dict()})
         return out
 
-    @app.get("/api/v1/pilots/{name}/trends")
+    @app.get("/api/v1/pilots/{name}/trends", dependencies=members)
     def pilot_trends_api(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
                          servers: str | None = None, aircraft: str | None = None) -> dict:
         """Themes across a pilot's recent passes: what keeps going wrong, biases, speed, outcomes, wires.
@@ -754,7 +800,7 @@ def create_app(hub: Hub) -> FastAPI:
                 "airframe": found.airframe, "airframes": [{"airframe": a, "landings": n} for a, n in found.airframes],
                 **found.trends.to_dict(), "pass_ids": [p.id for p in found.rows]}
 
-    @app.get("/pilots/{name}", response_class=HTMLResponse)
+    @app.get("/pilots/{name}", response_class=HTMLResponse, dependencies=members)
     def pilot_page(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
                    servers: str | None = None, aircraft: str | None = None) -> str:
         servers = _servers(servers)
@@ -768,7 +814,7 @@ def create_app(hub: Hub) -> FastAPI:
                f"&aircraft={quote(found.airframe or '', safe='')}")
         return pages.pilot_page(name, found, passes, svg, servers=servers, overlay_src=src)
 
-    @app.get("/pilots/{name}/overlay.svg")
+    @app.get("/pilots/{name}/overlay.svg", dependencies=members)
     def pilot_overlay(name: str, passes: Annotated[int, Query(ge=3, le=50)] = DEFAULT_PASSES,
                       near: float | None = None, far: float | None = None, servers: str | None = None,
                       aircraft: str | None = None) -> Response:
@@ -780,7 +826,7 @@ def create_app(hub: Hub) -> FastAPI:
         svg = render_overlay(hub.overlay(found.rows), uid="ov", title=f"{name}: passes overlaid", view=_view(near, far))
         return Response(svg, media_type="image/svg+xml")
 
-    @app.get("/", response_class=HTMLResponse)
+    @app.get("/", response_class=HTMLResponse, dependencies=members)
     def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None,
               empty: bool = False, servers: str | None = None, aircraft: str | None = None) -> str:
         pilot, source, aircraft = pilot or None, source or None, aircraft or None  # the form sends "" for All
@@ -809,7 +855,7 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(404, "no such pass")
         return p
 
-    @app.get("/passes/{pass_id}", response_class=HTMLResponse)
+    @app.get("/passes/{pass_id}", response_class=HTMLResponse, dependencies=members)
     def pass_detail(pass_id: int) -> str:
         p = _get(pass_id)
         if p.merged_into_id is not None:
@@ -825,7 +871,7 @@ def create_app(hub: Hub) -> FastAPI:
         except (IngestError, OSError) as exc:
             return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports, accuracy=accuracy)
 
-    @app.get("/passes/{pass_id}/card.svg")
+    @app.get("/passes/{pass_id}/card.svg", dependencies=members)
     def pass_card(pass_id: int, request: Request, near: float | None = None, far: float | None = None,
                   zoom: bool = False) -> Response:
         """The pass's trap card on its own (e.g. previewed on hover); with `near`/`far` (meters short of the aim
@@ -845,7 +891,7 @@ def create_app(hub: Hub) -> FastAPI:
                           **_badges(accuracy_of(p, reports)))
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=300"})
 
-    @app.get("/passes/{pass_id}/replay", response_class=HTMLResponse)
+    @app.get("/passes/{pass_id}/replay", response_class=HTMLResponse, dependencies=members)
     def pass_replay(pass_id: int) -> str:
         p = _get(pass_id)
         if p.merged_into_id is not None:
@@ -856,7 +902,7 @@ def create_app(hub: Hub) -> FastAPI:
             lineup = None  # the replay's data says why (replay.json)
         return pages.replay_page(p, lineup)
 
-    @app.get("/passes/{pass_id}/replay.json")
+    @app.get("/passes/{pass_id}/replay.json", dependencies=members)
     def pass_replay_data(pass_id: int) -> Response:
         """The landing's track in the carrier's frame, for the replay page (cards.replay)."""
         p = _get(pass_id)
@@ -875,7 +921,7 @@ def create_app(hub: Hub) -> FastAPI:
         # Checked every time: it changes with the hub's settings (the voice) as well as the pass.
         return JSONResponse(data, headers={"Cache-Control": "no-cache"})
 
-    @app.get("/passes/{pass_id}/calls/{index}.wav")
+    @app.get("/passes/{pass_id}/calls/{index}.wav", dependencies=members)
     def pass_call_audio(pass_id: int, index: int) -> FileResponse:
         """One of the LSO's calls on the pass (by its place in the replay's list), in the hub's voice."""
         if hub.voice is None:
@@ -990,7 +1036,7 @@ def create_app(hub: Hub) -> FastAPI:
         cache = "max-age=31536000, immutable" if name.startswith("three-") else "no-cache"
         return FileResponse(path, media_type=media, headers={"Cache-Control": cache})
 
-    @app.get("/passes/{pass_id}/acmi")
+    @app.get("/passes/{pass_id}/acmi", dependencies=members)
     def pass_acmi(pass_id: int) -> FileResponse:
         p = _get(pass_id)
         stamp = p.occurred_at.strftime("%Y%m%d-%H%M%S") if p.occurred_at else f"pass{p.id}"

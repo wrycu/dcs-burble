@@ -44,6 +44,7 @@ log = logging.getLogger(__name__)
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
 CUSTOM_CSS_SETTING = "custom_css"
 JOIN_APPROVAL_SETTING = "join_approval"  # "on": new pilots wait for an admin's approval (PLAN #44)
+MEMBERS_ONLY_SETTING = "members_only"  # "on": the board and passes need a signed-in pilot (PLAN #45)
 PILOT_HOOKS = "pilot hooks"  # source of pilot hook uploads recognised without a token (see pilot_hook_access)
 INTERNAL_SOURCES = (PUBLIC_UPLOADS, PILOT_HOOKS)
 # A player counts as flying on one of this hub's servers if a server agent reported them this recently. Not only
@@ -424,8 +425,20 @@ class Hub:
 
     @staticmethod
     def _join_approval(s: Session) -> bool:
-        row = s.get(Setting, JOIN_APPROVAL_SETTING)
+        return Hub._flag(s, JOIN_APPROVAL_SETTING)
+
+    @staticmethod
+    def _flag(s: Session, key: str) -> bool:
+        row = s.get(Setting, key)
         return bool(row and row.value == "on")
+
+    def _set_flag(self, key: str, on: bool) -> None:
+        with self.sessions.begin() as s:
+            row = s.get(Setting, key)
+            if row is None:
+                s.add(Setting(key=key, value="on" if on else ""))
+            else:
+                row.value = "on" if on else ""
 
     def _pending_since(self, s: Session) -> datetime | None:
         """For a pilot claiming a name now: when they started waiting, if this hub approves new pilots."""
@@ -433,12 +446,15 @@ class Hub:
 
     def set_join_approval(self, on: bool) -> None:
         """Turn approving new pilots on or off. Turning it off doesn't approve those already waiting."""
-        with self.sessions.begin() as s:
-            row = s.get(Setting, JOIN_APPROVAL_SETTING)
-            if row is None:
-                s.add(Setting(key=JOIN_APPROVAL_SETTING, value="on" if on else ""))
-            else:
-                row.value = "on" if on else ""
+        self._set_flag(JOIN_APPROVAL_SETTING, on)
+
+    def members_only(self) -> bool:
+        """Do the board, passes, and pilots' pages (and the read API) need a signed-in pilot?"""
+        with self.sessions() as s:
+            return self._flag(s, MEMBERS_ONLY_SETTING)
+
+    def set_members_only(self, on: bool) -> None:
+        self._set_flag(MEMBERS_ONLY_SETTING, on)
 
     def pending_pilots(self) -> list[PendingPilot]:
         """Pilots waiting for an admin's approval, longest-waiting first."""
