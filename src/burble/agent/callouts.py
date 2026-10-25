@@ -18,6 +18,7 @@ from typing import Protocol
 
 from ..acmi import ObjectTrack, Sample
 from ..callouts import CallEvent, CalloutEngine, LiveEstimator, LiveInput, Thresholds
+from ..callouts.estimator import GrooveState
 from ..callouts.heard import describe
 from ..callouts.rules import WAVE_OFFS, WELCOME_WIRE, Call
 from ..callouts.voice import Clip, ClipLibrary
@@ -304,6 +305,8 @@ class LiveCallouts:
         self.sink = sink
         self._engines: dict[tuple[int, int], tuple[LiveEstimator, CalloutEngine]] = {}
         self.made: list[MadeCall] = []
+        self.on_made: Callable[[MadeCall], None] | None = None  # told of each call as it's made (the live view)
+        self._states: dict[tuple[int, int], GrooveState] = {}  # the latest estimate for each pass in progress
         self._tasks: set[asyncio.Task] = set()
         self._welcomes: dict[int, asyncio.Task] = {}  # aircraft id -> its welcome (which may wait for the wire)
         self._stops: dict[tuple[int, int], _Stop] = {}  # trapped jets, for our wire estimate
@@ -340,6 +343,7 @@ class LiveCallouts:
             pitch=t.pitch or 0.0, alt=t.alt or 0.0, u=t.u or 0.0, v=t.v or 0.0, aoa=sample.aoa,
             heading_error=heading_error, roll=t.roll or 0.0, gear=_gear(plane), heading=t.heading,
             wind=wind.at(t.alt or 0.0) if wind else (0.0, 0.0), foul_deck=foul))
+        self._states[key] = state
         event = engine.update(state)
         if engine.in_groove:
             self._groove_seen[key] = sample.time
@@ -355,7 +359,7 @@ class LiveCallouts:
         if event is None or event.call not in self.settings.calls or event.call not in self.clips:
             return None
         made = MadeCall(plane.id, event.time, event.along, event.call)
-        self.made.append(made)
+        self._made(made)
         if event.call in WELCOME_WIRE:
             # Graded now, while the pass is still being tracked (the welcome may wait for the wire).
             grade = self.grade_for(carrier.id, plane.id) if self.grade_for is not None else None
@@ -486,6 +490,7 @@ class LiveCallouts:
         self._outcome_called.discard(key)
         self._stops.pop(key, None)  # a welcome still waiting keeps its own reference
         self._live.pop(key, None)
+        self._states.pop(key, None)
         self._answered = {a for a in self._answered if a[:2] != key}
 
     # -- what pilots say (heard on SRS: agent/listening.py) ---------------------------------------------------
@@ -500,7 +505,7 @@ class LiveCallouts:
             if (entry := self._engines.get(key)) is not None:
                 entry[1].heard(heard.call.call)
             if (*key, heard.call.call) not in self._answered:  # a call repeated (e.g. no answer yet) once
-                self.made.append(MadeCall(plane.id, sim_time, along, heard.call.call, describe(heard.call), "pilot"))
+                self._made(MadeCall(plane.id, sim_time, along, heard.call.call, describe(heard.call), "pilot"))
         answer = {"ball": Call.ROGER_BALL, "clara": Call.ROGER_CLARA, "paddles": Call.LOUD_AND_CLEAR}[heard.call.call]
         if answer not in self.settings.calls or answer not in self.clips:
             return
@@ -519,7 +524,7 @@ class LiveCallouts:
                 if (with_wind := self.clips.roger_ball(wind.speed / KT, wind.off_axis)) is not None:
                     clip = with_wind  # "Roger ball, 25 knots."
                     said = clip.text.rstrip(".")
-            self.made.append(MadeCall(plane.id, sim_time, along, answer, said))
+            self._made(MadeCall(plane.id, sim_time, along, answer, said))
             radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
             who = plane.pilot or hex(plane.id)
         else:
@@ -560,6 +565,15 @@ class LiveCallouts:
             if len(by_side) == 1:
                 return by_side[0]
         return here[0] if len(here) == 1 else None
+
+    def _made(self, made: MadeCall) -> None:
+        self.made.append(made)
+        if self.on_made is not None:
+            self.on_made(made)
+
+    def state_for(self, carrier_id: int, aircraft_id: int) -> GrooveState | None:
+        """The live estimate for a pass in progress (e.g. AOA from motion), if it's being tracked."""
+        return self._states.get((carrier_id, aircraft_id))
 
     def calls_for(self, aircraft_id: int, start: float, end: float) -> list[dict]:
         if self.made:

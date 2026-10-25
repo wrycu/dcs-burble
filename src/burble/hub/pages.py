@@ -153,7 +153,7 @@ def _nav() -> str:
     me = CURRENT_PILOT.get()
     if me:
         quoted = quote(me, safe="")
-        right = (f'<span class="me">Signed in as <strong><a href="/pilots/{quoted}">{escape(me)}</a></strong>'
+        right = (f'<span class="me"><a href="/live">Live</a>Signed in as <strong><a href="/pilots/{quoted}">{escape(me)}</a></strong>'
                  f'<a href="/pilots/{quoted}/settings">Settings</a>'
                  + ('<a href="/admin">Admin</a>' if CURRENT_ADMIN.get() else "") +
                  '<form method="post" action="/signout"><button type="submit">Sign out</button></form></span>')
@@ -428,10 +428,6 @@ def replay_page(p: Pass, lineup_svg: str | None = None) -> str:
     """The 3D replay of a landing (static/replay.js draws it from /passes/{id}/replay.json), with the trap card's
     lineup plot (`lineup_svg`, cards.render_lineup) below it, which follows the jet."""
     g = p.grade
-    imports = json.dumps({"imports": {"three": f"{THREE_DIR}/three.module.min.js",
-                                      "three/addons/controls/OrbitControls.js": f"{THREE_DIR}/OrbitControls.js"}})
-    hud = "".join(f'<dt>{label}</dt><dd id="hud-{key}">–</dd>'
-                  for key, label in (("range", "Range"), ("gs", "Glideslope"), ("lineup", "Lineup"), ("aoa", "AOA")))
     body = (f'<p class="sub"><a href="/passes/{p.id}">← The pass</a> · <a href="/">Greenie board</a></p>'
             f"<h1>{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}"
             f'{" · " + escape(g.text) if g and g.text else ""}</h1>'
@@ -439,16 +435,7 @@ def replay_page(p: Pass, lineup_svg: str | None = None) -> str:
             f'{escape(p.carrier_unit or p.carrier_type)}{" · wire " + escape(_wire(p)) if p.wire else ""}</p>'
             f'<div class="replay" id="replay" data-src="/passes/{p.id}/replay.json">'
             f'<canvas aria-label="3D replay of the pass"></canvas>'
-            # Laid out as on the deck camera's monitor (positions in a 1274 x 928 picture, as DCS's Supercarrier has them).
-            '<div class="platframe" aria-hidden="true">'
-            + "".join(f'<span id="plat-{k}" style="left:{x}%;top:{y}%"></span>'
-                      for k, x, y in (("date", 15.5, 1.1), ("time", 15.5, 8.6), ("status", 63.4, 1.1), ("hull", 76.8, 1.1),
-                                      ("wind", 69.1, 8.6), ("speed", 15.5, 85.3), ("waveoff", 37.9, 85.3),
-                                      ("distance", 50.0, 85.3), ("sink", 76.8, 85.3)))
-            + "".join(f'<div class="line" id="plat-{k}"></div>' for k in ("left", "right", "top", "bottom"))
-            + '</div>'
-            f'<dl class="hud">{hud}</dl><div class="ballbox" id="hud-ballbox" hidden><div class="ball" id="hud-ball"></div></div>'
-            f'<div class="call" id="hud-call" hidden></div><div class="loading">Loading the replay…</div></div>'
+            + _scene_overlays("Loading the replay…") + '</div>'
             f'<div class="replay-bar"><button type="button" id="replay-play">Pause</button>'
             f'<input type="range" id="replay-scrub" min="0" value="0" aria-label="Time">'
             f'<span class="time" id="replay-time"></span>'
@@ -466,9 +453,81 @@ def replay_page(p: Pass, lineup_svg: str | None = None) -> str:
             f'<p class="sub">Space plays and pauses, the arrow keys step a second (with Shift, five), 1–6 pick the '
             f"camera, and the mouse wheel zooms. The jet and ship are simple stand-in models; positions are from "
             f"the landing's best track, smoothed between samples.</p>"
-            f'<script type="importmap">{imports}</script>'
+            f'<script type="importmap">{_imports()}</script>'
             f'<script type="module" src="/static/replay.js"></script>')
     return _page(f"Replay: {p.pilot.name} {g.grade if g else ''}", f"<style>{REPLAY_STYLE}</style>{body}")
+
+
+LIVE_STYLE = """
+.replay .labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.replay .labels .label { position: absolute; transform: translate(-50%, -100%); padding: 1px 6px; border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5); color: #e8edf2; font-size: 12px; white-space: nowrap; }
+.replay .labels .label.followed { background: rgba(255, 208, 64, 0.85); color: #111; font-weight: 600; }
+.replay-bar button[aria-pressed="mixed"] { border-style: dashed; border-color: var(--text); }
+.live-status { color: var(--muted); }
+.live-graded { margin: 8px 0; padding-left: 1.2em; }
+"""
+
+
+def _imports() -> str:
+    return json.dumps({"imports": {"three": f"{THREE_DIR}/three.module.min.js",
+                                   "three/addons/controls/OrbitControls.js": f"{THREE_DIR}/OrbitControls.js"}})
+
+
+def _scene_overlays(loading: str) -> str:
+    """What's drawn over the 3D view: the PLAT monitor's frame, the HUD, the ball, the subtitle, and a loading line."""
+    hud = "".join(f'<dt>{label}</dt><dd id="hud-{key}">–</dd>'
+                  for key, label in (("range", "Range"), ("gs", "Glideslope"), ("lineup", "Lineup"), ("aoa", "AOA")))
+    return ('<div class="platframe" aria-hidden="true">'
+            # Laid out as on the deck camera's monitor (positions in a 1274 x 928 picture, as DCS's Supercarrier has them).
+            + "".join(f'<span id="plat-{k}" style="left:{x}%;top:{y}%"></span>'
+                      for k, x, y in (("date", 15.5, 1.1), ("time", 15.5, 8.6), ("status", 63.4, 1.1), ("hull", 76.8, 1.1),
+                                      ("wind", 69.1, 8.6), ("speed", 15.5, 85.3), ("waveoff", 37.9, 85.3),
+                                      ("distance", 50.0, 85.3), ("sink", 76.8, 85.3)))
+            + "".join(f'<div class="line" id="plat-{k}"></div>' for k in ("left", "right", "top", "bottom"))
+            + '</div>'
+            f'<dl class="hud">{hud}</dl><div class="ballbox" id="hud-ballbox" hidden><div class="ball" id="hud-ball"></div></div>'
+            f'<div class="call" id="hud-call" hidden></div><div class="loading">{escape(loading)}</div>')
+
+
+def live_index_page(channels) -> str:
+    """The carriers with a live view now (hub.live.LiveBroker.live)."""
+    if channels:
+        rows = "".join(
+            f'<tr><td><a href="/live/{quote(c.agent, safe="")}/{quote(c.unit, safe="")}">{escape(c.unit)}</a></td>'
+            f"<td>{escape(c.agent)}</td><td>{len(c.pilots)}</td>"
+            f'<td>{", ".join(escape(p) for p in sorted(c.pilots.values(), key=str.lower)) or "–"}</td></tr>'
+            for c in channels)
+        table = (f'<div class="scroll-x"><table class="board"><thead><tr><th>Carrier</th><th>Server</th>'
+                 f"<th>Aircraft</th><th>Around it</th></tr></thead><tbody>{rows}</tbody></table></div>")
+    else:
+        table = ('<p class="sub">No carriers are live right now. A carrier shows here while a server agent is '
+                 "connected to a mission with one.</p>")
+    body = (f'<p class="sub"><a href="/">← Greenie board</a></p><h1>Live</h1>'
+            f'<p class="sub">Watch the carriers on this hub\'s servers as it happens, from the LSO\'s view.</p>{table}'
+            '<script>setTimeout(() => location.reload(), 15000);</script>')
+    return _page("Live", body)
+
+
+def live_page(agent: str, unit: str, voice: bool = False) -> str:
+    """One carrier's live view (static/live.js draws it from /live/{agent}/{unit}/events)."""
+    src = f"/live/{quote(agent, safe='')}/{quote(unit, safe='')}/events"
+    body = (f'<p class="sub"><a href="/live">← Live</a> · <a href="/">Greenie board</a></p>'
+            f"<h1>{escape(unit)}</h1><p class=\"sub\">Live from {escape(agent)} · "
+            f'<span class="live-status" id="live-status">Connecting…</span></p>'
+            f'<div class="replay" id="live" data-src="{escape(src)}" data-voice="{1 if voice else 0}">'
+            f'<canvas aria-label="Live 3D view of the carrier"></canvas><div class="labels"></div>'
+            + _scene_overlays("Waiting for the carrier…") + '</div>'
+            '<div class="replay-bar"><span class="group" id="live-follow" aria-label="Follow"></span>'
+            '<button type="button" id="live-sound" aria-pressed="true" hidden>Sound on</button></div>'
+            '<div class="replay-bar"><span class="group" id="live-views"></span></div>'
+            '<ul class="live-graded" id="live-graded" hidden></ul>'
+            '<p class="sub" id="live-hint"></p>'
+            '<p class="sub">1–7 pick the camera and the mouse wheel zooms. Auto follows the jet in the groove, else the '
+            "one nearest the ship. About a second behind the server; the jets and ship are simple stand-in models.</p>"
+            f'<script type="importmap">{_imports()}</script>'
+            '<script type="module" src="/static/live.js"></script>')
+    return _page(f"Live: {unit}", f"<style>{REPLAY_STYLE}{LIVE_STYLE}</style>{body}")
 
 
 UPLOAD_SCRIPT = """

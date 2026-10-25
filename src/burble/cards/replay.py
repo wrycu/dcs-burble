@@ -23,9 +23,11 @@ from .svg import KT, _said_order, call_label
 LEAD_S = 8.0
 TAIL_S = 4.0
 
-# The page's model for each aircraft type (anything else: the Hornet's).
+# The page's model for each aircraft type we grade (anything else: the Hornet's).
 MODELS = {"FA-18C_hornet": "hornet", "F-14A-135-GR": "tomcat", "F-14B": "tomcat", "F-14BU": "tomcat"}
 
+# The carrier's landing area is drawn for this aircraft where there's no one jet to draw it for (the live view).
+REFERENCE_AIRCRAFT = "FA-18C_hornet"
 
 # Calls further than this off the track's clock (see _calls_offset) are moved onto it.
 CALLS_OFFSET_MAX_S = 1.0
@@ -49,10 +51,14 @@ def _calls_offset(result: PassResult, calls: list[dict]) -> float:
 
 
 def _clock(recording: Recording, at: float) -> str | None:
+    return mission_clock(recording.globals, at)
+
+
+def mission_clock(globals_: dict[str, str], at: float) -> str | None:
     """The mission's date and time at `at` (Tacview's ReferenceTime plus the recording's clock), for the PLAT view; None
     when the recording doesn't know it (the pilot hook's files count from a stand-in date, 2000-01-01)."""
     try:
-        reference = datetime.fromisoformat(recording.globals.get("ReferenceTime", "").replace("Z", "+00:00"))
+        reference = datetime.fromisoformat((globals_.get("ReferenceTime") or "").replace("Z", "+00:00"))
     except ValueError:
         return None
     if reference.year <= 2000:
@@ -65,13 +71,47 @@ def ordered_calls(calls: list[dict] | None) -> list[dict]:
     return [c for c in sorted(calls or [], key=_said_order) if "time" in c]
 
 
+def carrier_data(carrier_type: str, aircraft_type: str = REFERENCE_AIRCRAFT) -> dict:
+    """The carrier as the 3D pages draw it: its landing area for this aircraft (the aim point and glide path depend
+    on its hook), carrier-local as in the module's docstring."""
+    info = CARRIERS[carrier_type]
+    aircraft = AIRCRAFT.get(aircraft_type, AIRCRAFT[REFERENCE_AIRCRAFT])
+    frame = DeckFrame(info, aircraft)
+
+    def local(along: float, lateral: float = 0.0) -> list[float]:
+        """A landing-area point (meters short of the aim point, right of the centerline) as carrier-local x, z."""
+        ax, az = frame.axis
+        return [_r(frame.aim[0] - along * ax + lateral * az, 2), _r(frame.aim[1] - along * az - lateral * ax, 2)]
+
+    return {
+        "type": carrier_type,
+        "deck_angle": info.deck_angle,
+        "deck_altitude": info.deck_altitude,
+        "wires": [[list(port), list(stbd)] for port, stbd in info.wires],
+        "aim": [_r(v, 2) for v in frame.aim],
+        "axis": [_r(v, 5) for v in frame.axis],
+        "ramp": local(info.ramp_along_m),
+        "landing_area_end": local(info.landing_area_forward_m),
+        "glideslope": aircraft.glideslope,
+    }
+
+
+def aircraft_data(aircraft_type: str) -> dict:
+    """How the 3D pages draw an aircraft type: its model and hook, and its on-speed AOA. A type we don't grade
+    (`hook` None) is drawn as a generic jet."""
+    aircraft = AIRCRAFT.get(aircraft_type)
+    if aircraft is None:
+        return {"type": aircraft_type, "model": "other", "hook": None, "on_speed_aoa": None}
+    return {"type": aircraft_type, "model": MODELS.get(aircraft_type, "hornet"), "hook": list(aircraft.hook),
+            "on_speed_aoa": list(aircraft.on_speed_aoa)}
+
+
 def replay_data(recording: Recording, result: PassResult, grade: GradeResult | None = None,
                 calls: list[dict] | None = None, night: bool = False, title: str = "") -> dict:
     """The replay of `result`, found in `recording` (its `aircraft_id` and `carrier_id` are objects there)."""
     carrier_track = recording.objects[result.carrier_id]
     plane_track = recording.objects[result.aircraft_id]
     info, aircraft = CARRIERS[result.carrier_type], AIRCRAFT[result.aircraft_type]
-    frame = DeckFrame(info, aircraft)
     timeline = CarrierTimeline(carrier_track.samples)
 
     start, end = result.start_time - LEAD_S, result.end_time + TAIL_S
@@ -103,11 +143,6 @@ def replay_data(recording: Recording, result: PassResult, grade: GradeResult | N
         groove["aoa"].append(None if s.aoa is None else _r(s.aoa + (aircraft.derived_aoa_offset if s.aoa_derived
                                                                      else 0.0), 2))
 
-    def local(along: float, lateral: float = 0.0) -> list[float]:
-        """A landing-area point (meters short of the aim point, right of the centerline) as carrier-local x, z."""
-        ax, az = frame.axis
-        return [_r(frame.aim[0] - along * ax + lateral * az, 2), _r(frame.aim[1] - along * az - lateral * ax, 2)]
-
     calls = ordered_calls(calls)
     offset = _calls_offset(result, calls)
     if abs(offset) <= CALLS_OFFSET_MAX_S:
@@ -124,21 +159,9 @@ def replay_data(recording: Recording, result: PassResult, grade: GradeResult | N
         "grade": None if grade is None else {"grade": grade.grade, "name": grade_name(grade.grade),
                                              "text": grade.text},
         "wire": result.wire_label,
-        "aircraft": {"type": result.aircraft_type, "model": MODELS.get(result.aircraft_type, "hornet"),
-                     "hook": list(aircraft.hook), "on_speed_aoa": list(aircraft.on_speed_aoa)},
-        "carrier": {
-            "type": result.carrier_type,
-            "deck_angle": info.deck_angle,
-            "deck_altitude": info.deck_altitude,
-            "wires": [[list(port), list(stbd)] for port, stbd in info.wires],
-            "caught": result.wire if result.wire is not None else result.wire_estimate,
-            "aim": [_r(v, 2) for v in frame.aim],
-            "axis": [_r(v, 5) for v in frame.axis],
-            "ramp": local(info.ramp_along_m),
-            "landing_area_end": local(info.landing_area_forward_m),
-            "glideslope": aircraft.glideslope,
-            "speed": _r(speed, 2),
-        },
+        "aircraft": aircraft_data(result.aircraft_type),
+        "carrier": {**carrier_data(result.carrier_type, result.aircraft_type),
+                    "caught": result.wire if result.wire is not None else result.wire_estimate, "speed": _r(speed, 2)},
         "track": track,
         "groove": groove,
         # `say`: what the LSO said, to be spoken (the pilot's calls are shown, not spoken).

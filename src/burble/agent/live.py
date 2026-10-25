@@ -55,6 +55,22 @@ class PassListener(Protocol):
     def pass_ended(self, carrier_id: int, aircraft_id: int) -> None: ...
 
 
+class Listeners:
+    """Several pass listeners in turn (the callouts, then the live view's feed, which reads their estimate)."""
+
+    def __init__(self, *listeners: PassListener) -> None:
+        self.listeners = listeners
+
+    def on_sample(self, carrier: ObjectTrack, plane: ObjectTrack, pose: CarrierPose, sample: Sample,
+                  frame: DeckFrame) -> None:
+        for listener in self.listeners:
+            listener.on_sample(carrier, plane, pose, sample, frame)
+
+    def pass_ended(self, carrier_id: int, aircraft_id: int) -> None:
+        for listener in self.listeners:
+            listener.pass_ended(carrier_id, aircraft_id)
+
+
 class LivePassDetector:
     def __init__(self, listener: PassListener | None = None) -> None:
         self.listener = listener

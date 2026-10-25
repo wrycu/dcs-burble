@@ -286,7 +286,8 @@ def _hub_serve(args: argparse.Namespace) -> int:
         Discord(hub, args.discord_board_webhook, args.discord_traps_webhook, args.public_url or "")
     from .hub.telemetry import Telemetry
     Telemetry(hub)  # usage reports, once a day while on (see `burble hub telemetry`)
-    uvicorn.run(create_app(hub), host=args.host, port=args.port)
+    # Live views keep their connections open: on a restart, close them after a few seconds rather than wait.
+    uvicorn.run(create_app(hub), host=args.host, port=args.port, timeout_graceful_shutdown=5)
     return 0
 
 
