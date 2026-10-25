@@ -28,3 +28,7 @@ class SliceStore:
                 fh.write(data)
             os.replace(tmp, target)
         return sha
+
+    def remove(self, sha256: str) -> None:
+        """Delete a stored slice (nothing if it isn't there)."""
+        self.path(sha256).unlink(missing_ok=True)

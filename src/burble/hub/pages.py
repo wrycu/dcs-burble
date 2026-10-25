@@ -145,6 +145,10 @@ GRADE_CLASS = {g: f"g-{i}" for i, g in enumerate(GRADE_COLORS)}
 # Who the request is signed in as (set per request by the app), for the bar at the top of every page.
 CURRENT_PILOT: ContextVar[str | None] = ContextVar("current_pilot", default=None)
 CURRENT_ADMIN: ContextVar[bool] = ContextVar("current_admin", default=False)
+# For an admin: how many pilots are waiting for approval (shown on the Admin link).
+CURRENT_PENDING: ContextVar[int] = ContextVar("current_pending", default=0)
+# The signed-in pilot is waiting for an admin's approval (no Live link for them yet).
+CURRENT_WAITING: ContextVar[bool] = ContextVar("current_waiting", default=False)
 # The admins' custom CSS (set per request by the app), added after the built-in styles on every page.
 CURRENT_CSS: ContextVar[str] = ContextVar("current_css", default="")
 
@@ -153,9 +157,11 @@ def _nav() -> str:
     me = CURRENT_PILOT.get()
     if me:
         quoted = quote(me, safe="")
-        right = (f'<span class="me"><a href="/live">Live</a>Signed in as <strong><a href="/pilots/{quoted}">{escape(me)}</a></strong>'
+        live = "" if CURRENT_WAITING.get() else '<a href="/live">Live</a>'  # not until an admin approves them
+        right = (f'<span class="me">{live}Signed in as <strong><a href="/pilots/{quoted}">{escape(me)}</a></strong>'
                  f'<a href="/pilots/{quoted}/settings">Settings</a>'
-                 + ('<a href="/admin">Admin</a>' if CURRENT_ADMIN.get() else "") +
+                 + (f'<a href="/admin">Admin{f" ({n})" if (n := CURRENT_PENDING.get()) else ""}</a>'
+                    if CURRENT_ADMIN.get() else "") +
                  '<form method="post" action="/signout"><button type="submit">Sign out</button></form></span>')
     else:
         right = '<span class="me"><a href="/signin">Sign in</a><a href="/join">Join</a></span>'
@@ -893,8 +899,16 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
     return _page(f"{name}: recent passes", body)
 
 
-def join_page(error: str | None = None, name: str = "", existing: str | None = None) -> str:
-    """Join the board before flying here: choose a name and a password."""
+def waiting_page(name: str) -> str:
+    """For a signed-in pilot an admin hasn't approved yet, where only approved pilots may go."""
+    body = (f'<p class="sub"><a href="/">← Greenie board</a></p><h1>Waiting for approval</h1>'
+            f'<div class="panel"><p>An admin approves new pilots on this board, and hasn\'t approved {escape(name)} yet. '
+            f'This opens once they do. <a href="/pilots/{quote(name, safe="")}/settings">Your settings</a></p></div>')
+    return _page("Waiting for approval", body)
+
+
+def join_page(error: str | None = None, name: str = "", existing: str | None = None, approval: bool = False) -> str:
+    """Join the board before flying here: choose a name and a password (`approval`: an admin approves new pilots)."""
     note = f'<p class="error">{escape(error)}</p>' if error else ""
     if existing:
         note = (f'<p class="error">{escape(existing)} is already on this board. If that\'s you, '
@@ -904,6 +918,8 @@ def join_page(error: str | None = None, name: str = "", existing: str | None = N
         '<p class="sub">Choose the name you fly under in DCS and a password. With it you can create pilot tokens '
         "(to send your passes here from your own PC) and claim other names you fly under. Passes reported under "
         "this name count as yours.</p>"
+        + ('<p class="sub">An admin approves new pilots on this board: until they do, you can sign in and see that '
+           "you're waiting, nothing more.</p>" if approval else "") +
         f'<label>Pilot name <input name="name" required maxlength="100" value="{escape(name)}" autocomplete="username"></label>'
         '<label>Password <input name="password" type="password" required minlength="8" autocomplete="new-password">'
         '<span class="hint">At least 8 characters.</span></label>'
@@ -961,6 +977,13 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
     if not has:  # nothing else until the name is claimed
         body = f'{back}{note}<div class="panel">{password_form}</div>'
         return _page(f"{name}: settings", body)
+    if pilot.pending_since is not None:  # nothing else until an admin approves them
+        waiting = ('<div class="panel"><h2 style="margin-top:0">Waiting for approval</h2><p>An admin approves new '
+                   f"pilots on this board, and hasn't approved {escape(name)} yet (asked {escape(_when(pilot.pending_since))}). "
+                   "Until then you can't create pilot tokens, claim other names, or change your side number, and "
+                   "your password doesn't protect uploads of your passes yet. Your passes still reach the board.</p></div>")
+        body = f'{back}{note}{waiting}<div class="panel" style="margin-top:12px">{password_form}</div>'
+        return _page(f"{name}: settings", body)
     modex_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/modex">'
         '<h2>Side number</h2>'
@@ -1002,7 +1025,8 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
 
 
 def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None, error: str | None = None,
-               new_token: tuple[str, str] | None = None, css: str = "", telemetry: dict | None = None) -> str:
+               new_token: tuple[str, str] | None = None, css: str = "", telemetry: dict | None = None,
+               pending: list | None = None, approval: bool = False) -> str:
     """For admins (pilots with the role, signed in): pilots (admin role, password reset, removal, other names,
     pilot tokens) and server agents (adding one, their configuration). `new_token`: (what, token), shown once."""
     me = CURRENT_PILOT.get()
@@ -1027,24 +1051,29 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
         if p.admin:
             if p.name != me:
                 acts.append(post(f"{base}/admin", "Remove admin", extra='<input type="hidden" name="admin" value="0">'))
-        elif p.has_password:
+        elif p.has_password and not p.pending:
             acts.append(post(f"{base}/admin", "Make admin", "Make this pilot an admin?",
                              extra='<input type="hidden" name="admin" value="1">'))
-        if p.has_password and p.name != me:
+        if p.has_password and not p.pending and p.name != me:
             acts.append(post(f"{base}/reset-password", "Reset password",
                              "Clear this pilot\\'s password? They (or anyone) can then set a new one.", danger=True))
-        if not p.passes and p.name != me:
-            acts.append(post(f"{base}/remove", "Remove", "Remove this pilot? Their pilot tokens are revoked.",
-                             danger=True))
-        acts.append(post(f"{base}/tokens", "New pilot token",
-                         extra='<input class="label" name="label" maxlength="100" placeholder="for (e.g. PC)">'))
+        if not p.admin:
+            lost = (f" and their {p.passes} landing{'s' if p.passes != 1 else ''} (gone from the board for good)"
+                    if p.passes else "")
+            acts.append(post(f"{base}/remove", "Delete",
+                             f"Delete {_js_text(p.name)}{lost}? Their pilot tokens are revoked. "
+                             "If they fly here again, they come back as a new pilot.", danger=True))
+        if not p.pending:  # approve them first (Approving new pilots, above)
+            acts.append(post(f"{base}/tokens", "New pilot token",
+                             extra='<input class="label" name="label" maxlength="100" placeholder="for (e.g. PC)">'))
         names = "".join(
             f'<span class="alias">{escape(a)}'
             + post("/admin/aliases/remove", "×", "Remove this alias? Its passes go back to a pilot of that name.",
                    extra=f'<input type="hidden" name="alias" value="{escape(a)}">') + "</span>" for a in p.aliases)
         rows.append(
             f'<tr><td><a href="/pilots/{quoted}">{escape(p.name)}</a>'
-            + (' <span class="tag">admin</span>' if p.admin else "") + "</td>"
+            + (' <span class="tag">admin</span>' if p.admin else "")
+            + (' <span class="tag">waiting</span>' if p.pending else "") + "</td>"
             f"<td>{p.passes}</td><td>{'set' if p.has_password else 'none'}</td>"
             f'<td>{names or "<span class=sub>none</span>"}</td><td><div class="actions">{"".join(acts)}</div></td></tr>')
     pilots_table = (
@@ -1074,12 +1103,41 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
     usage_link = ' · <a href="/admin/usage">Usage</a>' if tel.get("view") else ""
     body = ('<h1>Admin</h1><p class="sub">Regrading and the wire check are run on the hub\'s machine '
             f"(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).{usage_link}</p>"
-            f'{note}{_telemetry_notice(tel)}<div class="admin"><div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}'
+            f'{note}{_telemetry_notice(tel)}<div class="admin">{_joining(pending or [], approval, post)}'
+            f'<div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}'
             '<p class="sub">Only a pilot with a password can be an admin; resetting an admin\'s password removes the '
-            'role. A pilot with passes can\'t be removed.</p></div>'
+            "role. Deleting a pilot deletes their landings too; an admin can't be deleted (remove the role first).</p></div>"
             f'<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Server agents</h2>{agents_table}'
             f"{add_agent}</div>{_appearance(css)}{_telemetry_panel(tel) if telemetry else ''}</div>")
     return _page("Admin", body)
+
+
+def _js_text(text: str) -> str:
+    """Text for inside a single-quoted JavaScript string in an HTML attribute (e.g. a confirm() prompt)."""
+    js = text.replace("\\", "\\\\").replace("'", "\\'")
+    return escape(js, quote=False).replace('"', "&quot;")
+
+
+def _joining(pending: list, approval: bool, post) -> str:
+    """Approving new pilots: on or off, and those waiting (hub.service.PendingPilot) with Approve and Refuse."""
+    toggle = post("/admin/join-approval", "Turn off" if approval else "Turn on",
+                  extra=f'<input type="hidden" name="on" value="{0 if approval else 1}">')
+    state = ("<strong>On:</strong> a pilot who joins, or sets a password on a name already on the board, waits for an "
+             "admin here. Until then they can sign in and see that they're waiting, nothing more."
+             if approval else "<strong>Off:</strong> anyone can join and use their account straight away.")
+    rows = "".join(
+        f'<tr><td><a href="/pilots/{quote(p.name, safe="")}">{escape(p.name)}</a></td><td>{escape(_when(p.since))}</td>'
+        f"<td>{p.passes}</td><td><div class=\"actions\">"
+        + post(f"/admin/pilots/{quote(p.name, safe='')}/approve", "Approve")
+        + post(f"/admin/pilots/{quote(p.name, safe='')}/refuse", "Refuse",
+               "Refuse this pilot? The name is free again: removed if it has no passes, else back to unclaimed.",
+               danger=True)
+        + "</div></td></tr>" for p in pending)
+    waiting = ('<div class="scroll"><table class="results"><thead><tr><th>Waiting</th><th>Asked</th><th>Passes</th>'
+               f"<th></th></tr></thead><tbody>{rows}</tbody></table></div>" if rows else "")
+    after = ('<p class="sub">Turning it off doesn\'t approve those waiting.</p>' if rows and approval else "")
+    return (f'<div class="panel" style="margin-bottom:12px"><h2 style="margin-top:0">Approving new pilots</h2>'
+            f'{waiting}<div class="actions"><p class="sub" style="margin:0">{state}</p>{toggle}</div>{after}</div>')
 
 
 _OPEN_SENT = """onclick="document.getElementById('whats-sent').showModal()\""""
