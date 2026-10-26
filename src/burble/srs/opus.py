@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import math
+import struct
 from array import array
 
 SAMPLE_RATE = 16000
@@ -106,3 +107,29 @@ def tone(seconds: float, freq_hz: float = 1000.0, amplitude: float = 0.3) -> arr
     """A sine test tone as 16 kHz mono PCM."""
     n = int(seconds * SAMPLE_RATE)
     return array("h", (int(amplitude * 32767 * math.sin(2 * math.pi * freq_hz * i / SAMPLE_RATE)) for i in range(n)))
+
+
+def pack_frames(frames: list[bytes]) -> bytes:
+    """Opus frames in one blob, each after its length (2 bytes, big-endian): a recorded transmission (PLAN #52)."""
+    return b"".join(struct.pack(">H", len(f)) + f for f in frames)
+
+
+def unpack_frames(data: bytes) -> list[bytes]:
+    frames, i = [], 0
+    while i + 2 <= len(data):
+        (n,) = struct.unpack_from(">H", data, i)
+        if n == 0 or i + 2 + n > len(data):
+            raise ValueError("damaged frames")
+        frames.append(data[i + 2:i + 2 + n])
+        i += 2 + n
+    if i != len(data):
+        raise ValueError("damaged frames")
+    return frames
+
+
+def decode_frames(frames: list[bytes]) -> array:
+    """16 kHz PCM of a transmission's frames."""
+    decoder, pcm = Decoder(), array("h")
+    for frame in frames:
+        pcm.extend(decoder.decode(frame))
+    return pcm

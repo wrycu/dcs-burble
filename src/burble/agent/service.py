@@ -43,6 +43,7 @@ from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink
 from .live import Listeners, LivePassDetector
 from .livefeed import SEND_INTERVAL_S, LiveFeed, LiveSender, live_settings
 from .outbox import Outbox
+from .radio import RadioRecorder, radio_sidecar
 
 log = logging.getLogger(__name__)
 
@@ -354,6 +355,7 @@ class Session:
     # When each object first appeared in this session (to line debrief.log's clock up with the stream's).
     first_seen: dict[int, float] = field(default_factory=dict)
     feed: LiveFeed | None = None  # what's flying around the carriers, for the hub's live view
+    radio: RadioRecorder | None = None  # the carrier frequencies' radio, for each pass's replay (PLAN #52)
 
 
 class Agent:
@@ -374,7 +376,7 @@ class Agent:
         self._clip_sets: dict[Path, ClipLibrary] = {}  # loaded once each
         self._recogniser = None  # loaded on the first session that listens
         # Overridable for tests; by default calls go to the SRS server named in the config.
-        self.sink_factory = lambda settings: SrsSink(settings.srs, _radios(settings))
+        self.sink_factory = lambda settings: SrsSink(settings.srs, _radios(settings), recording=settings.record_radio)
 
     # -- configuration from the hub -------------------------------------------------------------
 
@@ -442,6 +444,17 @@ class Agent:
         listener = Listener(self._recogniser, callouts.on_heard)
         listener.attach(callouts.sink)
         return listener
+
+    def _radio(self, session: Session) -> RadioRecorder | None:
+        """Recording the carrier frequencies, if the hub's config says so (`callouts.record_radio`)."""
+        callouts = session.callouts
+        if callouts is None or not callouts.settings.record_radio or not hasattr(callouts.sink, "on_voice"):
+            return None  # (off, or a test sink)
+        # Mission time now: the stream's newest frame, carried on by the wall clock between frames (not past a
+        # second: the mission may be paused).
+        recorder = RadioRecorder(lambda: session.now + min(time.monotonic() - session.last_frame_at, 1.0))
+        recorder.attach(callouts.sink)
+        return recorder
 
     def _clips(self, voice: str | None) -> ClipLibrary | None:
         """The voice for this session: `--voice-dir` is one clip set, or a folder of them where the hub's
@@ -593,11 +606,13 @@ class Agent:
         listening = None
         if callouts is not None:
             listener = self._listener(callouts)
+            session.radio = self._radio(session)
             await callouts.sink.start()
             if listener is not None:
                 listening = asyncio.create_task(listener.run(), name="listening")
         log.info("connected to Tacview stream from %r; archiving to %s%s", info.name, session.archive.path,
-                 "; live callouts ON" + (", listening to pilots" if listening else "") if callouts else "")
+                 "; live callouts ON" + (", listening to pilots" if listening else "")
+                 + (", recording the radio" if session.radio else "") if callouts else "")
         watchdog = asyncio.create_task(self._watch_frames(session))
         live = asyncio.create_task(self._send_live(feed), name="live view") if feed is not None else None
         try:
@@ -751,15 +766,28 @@ class Agent:
             await session.callouts.settled(live.aircraft_id)
         calls = (session.callouts.calls_for(live.aircraft_id, live.start_time - LEAD_S, live.end_time + TAIL_S)
                  if session.callouts else None)
+        radio = self._pass_radio(session, live)
         loop = asyncio.get_running_loop()
         try:
-            name = await loop.run_in_executor(None, self._make_slice, session, item, calls)
+            name = await loop.run_in_executor(None, self._make_slice, session, item, calls, radio)
         except Exception:  # never let one bad pass take the agent down
             log.exception("could not slice pass at %.1fs", item.result.start_time)
             return
         if name:
             session.names.append(name)
             self._wake_uploader.set()
+
+    def _pass_radio(self, session: Session, live: PassResult) -> dict | None:
+        """The pass's radio (PLAN #52), if recorded: on its carrier's LSO frequency, its pilot and the LSO."""
+        callouts = session.callouts
+        if session.radio is None or callouts is None:
+            return None
+        carrier = session.detector.tracks.get(live.carrier_id)
+        unit = carrier.pilot if carrier is not None else ""
+        radio = callouts.settings.radio_for(unit, callouts.carrier_radio(unit) if callouts.carrier_radio else None)
+        recorded = session.radio.for_pass(live.pilot, radio.frequency_hz, live.start_time - LEAD_S,
+                                          live.end_time + TAIL_S)
+        return radio_sidecar(recorded) if recorded else None
 
     async def _slice_approach(self, session: Session, approach: Approach, ended_at: datetime) -> None:
         """Upload the own track around an approach, unless it was already handled as a full pass
@@ -794,7 +822,8 @@ class Agent:
         log.info("queued %s (own track; the hub grades it with the server's report of this landing)", name)
         return name
 
-    def _make_slice(self, session: Session, item: _Pending, calls: list[dict] | None = None) -> str | None:
+    def _make_slice(self, session: Session, item: _Pending, calls: list[dict] | None = None,
+                    radio: dict | None = None) -> str | None:
         live = item.result
         start = max(live.start_time - LEAD_S, session.first_frame or 0.0)
         # Stop just before the frame currently being received: its lines may still be arriving
@@ -822,6 +851,8 @@ class Agent:
             meta["window"] = {"start": start, "end": end}
             if calls is not None:
                 meta["calls"] = calls
+            if radio is not None:
+                meta["radio"] = radio
             meta["pass"]["occurred_at"] = (item.ended_at - timedelta(seconds=live.end_time - p.start_time)).isoformat()
             name = slice_name(recording, p)
             self.outbox.put(name, path, meta)

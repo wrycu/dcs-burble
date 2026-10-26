@@ -1,4 +1,4 @@
-"""Content-addressed storage for ACMI slices (local disk; S3-compatible later)."""
+"""Content-addressed storage for ACMI slices and passes' radio recordings (local disk; S3-compatible later)."""
 
 from __future__ import annotations
 
@@ -9,12 +9,13 @@ from pathlib import Path
 
 
 class SliceStore:
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, suffix: str = ".zip.acmi") -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self.suffix = suffix
 
     def path(self, sha256: str) -> Path:
-        return self.root / sha256[:2] / f"{sha256}.zip.acmi"
+        return self.root / sha256[:2] / f"{sha256}{self.suffix}"
 
     def put(self, data: bytes) -> str:
         """Store bytes (idempotent); returns their SHA-256."""

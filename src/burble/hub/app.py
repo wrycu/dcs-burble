@@ -867,7 +867,7 @@ def create_app(hub: Hub) -> FastAPI:
             svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls,
                               night=bool(p.night), zoom_hint=True, **_badges(accuracy))
             return pages.pass_page(p, svg, reports=reports, track_source=result.track_source, accuracy=accuracy,
-                                   wind=wind_text(result), weather=result.weather)
+                                   wind=wind_text(result), weather=result.weather, radio=hub.pass_radio(p))
         except (IngestError, OSError) as exc:
             return pages.pass_page(p, None, f"Trap card unavailable: {exc}", reports=reports, accuracy=accuracy)
 
@@ -912,8 +912,11 @@ def create_app(hub: Hub) -> FastAPI:
             result, recording = hub.load_pass_recording(p)
         except (IngestError, OSError) as exc:
             raise HTTPException(404, f"replay unavailable: {exc}") from exc
+        radio = hub.pass_radio(p)
         data = replay_data(recording, result, grade_pass(result), p.calls, night=bool(p.night),
-                           title=pages.card_title(p))
+                           title=pages.card_title(p), radio=radio)
+        for i, transmission in enumerate(data["radio"]):
+            transmission["audio"] = f"/passes/{p.id}/radio/{i}.wav"
         if hub.voice is not None:
             for i, call in enumerate(data["calls"]):
                 if "say" in call:
@@ -931,6 +934,30 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(404, "no such call")
         path = hub.voice.wav(spoken_text(calls[index]))
         return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
+
+    @app.get("/passes/{pass_id}/radio/{index}.wav", dependencies=members)
+    def pass_radio_audio(pass_id: int, index: int) -> FileResponse:
+        """One transmission of the pass's radio recording (PLAN #52), by its place in the replay's list."""
+        p = _get(pass_id)
+        try:
+            path = hub.radio_wav(p, index)
+        except (LookupError, OSError, ValueError) as exc:
+            raise HTTPException(404, "no such transmission") from exc
+        return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "private, max-age=86400"})
+
+    @app.post("/passes/{pass_id}/radio/delete")
+    def pass_radio_delete(request: Request, pass_id: int) -> RedirectResponse:
+        """The pass's pilot or an admin deletes its radio recording."""
+        me = getattr(request.state, "pilot", None)
+        if me is None or getattr(request.state, "waiting", False):
+            raise HTTPException(403, "sign in as the pass's pilot or an admin")
+        try:
+            hub.delete_radio(pass_id, me)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        return RedirectResponse(f"/passes/{pass_id}", status_code=303)
 
     # -- the live LSO view (hub.live) --------------------------------------------------------------
 

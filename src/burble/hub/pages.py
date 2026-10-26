@@ -338,7 +338,7 @@ def weather_text(weather: dict | None) -> str | None:
 
 def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: list[Pass] | None = None,
               track_source: str | None = None, accuracy: Accuracy | None = None, wind: str | None = None,
-              weather: dict | None = None) -> str:
+              weather: dict | None = None, radio: list[dict] | None = None) -> str:
     g = p.grade
     facts = [
         ("Pilot", p.pilot.name),
@@ -362,6 +362,8 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
     if relayed := (p.slice.sidecar or {}).get("calls_from"):
         facts.append(("LSO calls", f"made on {relayed}'s server, relayed by the pilot hook"))
     dl = "".join(f"<dt>{escape(k)}</dt><dd>{escape(v)}</dd>" for k, v in facts)
+    if radio:
+        dl += f"<dt>Radio</dt><dd>{_radio(p, radio)}</dd>"
     reports = reports or [p]
     used = track_source or p.source.name
     listed = "<br>".join(_report(r, len(reports) > 1 and r.source.name == used) for r in reports)
@@ -377,6 +379,20 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
             f"<h1>{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}</h1>"
             f'<dl class="facts">{dl}</dl>{_accuracy(accuracy) if accuracy else ""}{card}')
     return _page(f"{p.pilot.name} {g.grade if g else ''}", body)
+
+
+def _radio(p: Pass, radio: list[dict]) -> str:
+    """The pass's radio recording (PLAN #52): what's in it, and for its pilot or an admin, a way to delete it."""
+    seconds = sum(t["seconds"] for t in radio)
+    pilot = sum(t["by"] == "pilot" for t in radio)
+    text = escape(f"recorded on the carrier frequency: {len(radio)} transmission{'s' if len(radio) != 1 else ''} "
+                  f"({seconds:.0f} s, {pilot} from the pilot), played in the replay")
+    if CURRENT_ADMIN.get() or CURRENT_PILOT.get() == p.pilot.name:
+        ask = _js_text("Delete this pass's radio recording? It can't be undone.")
+        text += (f' <form method="post" action="/passes/{p.id}/radio/delete" style="display:inline" '
+                 f'onsubmit="return confirm(\'{ask}\')"><button type="submit" class="danger">Delete recording</button>'
+                 f'</form>')
+    return text
 
 
 # three.js for the replay, served by the hub (static/; MIT licence alongside it).

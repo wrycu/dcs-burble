@@ -92,6 +92,9 @@ class CalloutSettings:
     voice: str | None = None
     # Listen to pilots on the LSO frequencies and answer their calls ("Roger ball"); needs --listen-model.
     listen: bool = False
+    # Record the carrier frequency's radio with each pass, for its replay (PLAN #52): the pass's own pilot (if their
+    # SRS client allows recording) and the LSO. Off by default; players must be told (the server's description).
+    record_radio: bool = False
     # Recovery case: "auto" (Case III at night, or with a low ceiling or poor visibility in the mission's
     # weather), or always "I" or "III". Case III: "Paddles contact" coming down final, then "call the ball".
     case: str = "auto"
@@ -114,6 +117,7 @@ class CalloutSettings:
             thresholds=replace(Thresholds(), **overrides),
             voice=str(c["voice"]) if c.get("voice") else None,
             listen=bool(c.get("listen", False)),
+            record_radio=bool(c.get("record_radio", False)),
             case=str(c.get("case", "auto")).upper().replace("AUTO", "auto"),
         )
 
@@ -137,15 +141,23 @@ class SrsSink:
     """Speaks calls through one persistent SRS connection. A wave-off cuts off whatever is
     being said; other calls queue, and are dropped if they can no longer be said in time."""
 
-    def __init__(self, settings: SrsSettings, radios: list[Radio]) -> None:
+    def __init__(self, settings: SrsSettings, radios: list[Radio], recording: bool = False) -> None:
         self.settings = settings
         self.radios = radios
+        # Recording the frequency (PLAN #52): said in our SRS name, so players see it in their client list.
+        self.recording = recording
         self._client: SrsClient | None = None
         self._lock = asyncio.Lock()
         self._current: asyncio.Task | None = None
         self._keepalive: asyncio.Task | None = None
         # Everything heard on our frequencies (packet, perf_counter time), e.g. for listening to pilots' calls.
         self.on_voice: Callable | None = None
+        # Told when we start a transmission (its radio); returns a list to put the frames in as they're sent.
+        self.on_transmit: Callable[[Radio], list[bytes]] | None = None
+
+    @property
+    def name(self) -> str:
+        return f"{self.settings.name} (recording)" if self.recording else self.settings.name
 
     @property
     def client(self) -> SrsClient | None:
@@ -154,10 +166,10 @@ class SrsSink:
     async def _connected(self) -> SrsClient:
         if self._client is None or not self._client.connected:
             s = self.settings
-            client = SrsClient(s.host, s.port, name=s.name, coalition=s.coalition, radios=tuple(self.radios[:10]),
+            client = SrsClient(s.host, s.port, name=self.name, coalition=s.coalition, radios=tuple(self.radios[:10]),
                                on_voice=lambda packet, at: self.on_voice(packet, at) if self.on_voice else None)
             await client.connect()
-            log.info("SRS connected: %s:%d as %r on %s", s.host, s.port, s.name,
+            log.info("SRS connected: %s:%d as %r on %s", s.host, s.port, self.name,
                      ", ".join(f"{r.frequency_mhz:.3f} {r.modulation.name}" for r in self.radios))
             self._client = client
         return self._client
@@ -203,7 +215,12 @@ class SrsSink:
                     await client.set_radios(self.radios)
                     log.info("SRS: now also on %.3f %s", radio.frequency_mhz, radio.modulation.name)
                 self._current = asyncio.current_task()
-                await client.transmit(clip.frames, radios=(radio,))
+                if self.on_transmit is None:
+                    await client.transmit(clip.frames, radios=(radio,))
+                else:  # recorded as it goes out
+                    sent, frames = self.on_transmit(radio), iter(clip.frames)
+                    await client.transmit(clip.frames, radios=(radio,),
+                                          on_sent=lambda _n, _at: sent.append(next(frames)))
             except asyncio.CancelledError:
                 if call in WAVE_OFFS:
                     raise

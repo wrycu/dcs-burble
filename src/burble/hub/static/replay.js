@@ -68,9 +68,13 @@ function updateLineup(t) {
 
 // -- the LSO's voice ----------------------------------------------------------------------------
 
+// The carrier frequency's radio, when it was recorded with the pass (the pilot and the LSO as they were heard), in
+// place of speaking the LSO's calls.
 const voice = createVoice($('#replay-sound'));
-for (const c of data.calls) voice.load(c.audio);
-voice.hasCalls = data.calls.some((c) => c.say);
+const radio = data.radio || [];
+const spoken = radio.length ? radio.map((r) => ({ t: r.t, say: 'radio', audio: r.audio })) : data.calls;
+for (const c of spoken) voice.load(c.audio);
+voice.hasCalls = spoken.some((c) => c.say);
 
 // -- playback -----------------------------------------------------------------------------------
 
@@ -99,7 +103,7 @@ function frame(now) {
   if (playing) {
     const before = t;
     t = Math.min(t + dt * speed, duration);
-    for (const c of data.calls) if (before < c.t && c.t <= t) voice.say(c.say, c.audio, speed);
+    for (const c of spoken) if (before < c.t && c.t <= t) voice.say(c.say, c.audio, speed);
     if (t >= duration) setPlaying(false);
   }
   scrub.value = t;

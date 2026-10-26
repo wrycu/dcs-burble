@@ -145,6 +145,8 @@ class Pass(Base):
     dcs_grade: Mapped[str | None] = mapped_column(String(200))
     # Live LSO calls the agent made during this pass: [{"time", "along", "call", "text"?, "said"?, "voice"?, "by"?}].
     calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # The carrier frequency's radio during the pass (PLAN #52), if its server agent recorded it: in Hub.radio_store.
+    radio_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # "pass" (None in older rows): a gradable report with the carrier. "track": one aircraft's own
     # track, no carrier (a multiplayer client's recording), graded only as part of a landing.
     kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
