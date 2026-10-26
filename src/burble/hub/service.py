@@ -16,6 +16,7 @@ from pathlib import Path
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
+from .. import agentconfig
 from ..acmi import ObjectTrack, Recording, Sample, load_recording
 from ..dcslog import Debrief, LsoGrade, load_debrief
 from ..detect import PassResult, find_passes
@@ -418,6 +419,9 @@ class Hub:
         s.flush()
 
     def set_config(self, name: str, config: dict | None, kind: str | None = None) -> None:
+        """Save a server agent's configuration; ValueError if the agent couldn't read it (agentconfig.problems)."""
+        if wrong := agentconfig.problems(config):
+            raise ValueError(f"{name}: " + "; ".join(wrong))
         with self.sessions.begin() as s:
             source = s.scalar(select(Source).where(Source.name == name))
             if source is None or (kind is not None and source.kind != kind):
@@ -1387,6 +1391,30 @@ class Hub:
     def server_agents(self) -> list[Source]:
         with self.sessions() as s:
             return list(s.scalars(select(Source).where(Source.kind == "server").order_by(Source.name)))
+
+    def server_agent(self, name: str) -> Source:
+        with self.sessions() as s:
+            source = s.scalar(select(Source).where(Source.kind == "server", Source.name == name))
+            if source is None:
+                raise LookupError(f"no server agent named {name!r}")
+            return source
+
+    def report_agent_info(self, source_id: int, info: dict) -> None:
+        """What a server agent says about itself (its version, clip sets, and whether it has a listening model),
+        kept for its settings editor."""
+        voices = info.get("voices")
+        kept = {
+            "version": str(info.get("version") or "")[:40] or None,
+            "voices": [str(v)[:100] for v in voices[:50]] if isinstance(voices, list) else [],
+            "one_voice": bool(info.get("one_voice")),
+            "listen_model": bool(info.get("listen_model")),
+            "at": datetime.now(UTC).isoformat(),
+        }
+        with self.sessions.begin() as s:
+            source = s.get(Source, source_id)
+            if source is None or source.kind != "server":
+                raise PermissionError("only a server agent reports this")
+            source.agent_info = kept
 
     def set_pilot_modex(self, name: str, password: str | SignedIn | None, modex: str) -> None:
         """A pilot with a password changes their side number."""
