@@ -80,7 +80,7 @@ class HookUpload:
     # Was the hub this was sent to the hub of the server it was flown on? (version 3; None from older hooks)
     here: bool | None = None
     # Live LSO calls relayed from the hub of the server the pass was flown on (its server agent made them), and
-    # that hub's address: {"time", "along", "call"}, mission time.
+    # that hub's address: {"time", "along", "call", "text"?, "said"?, "voice"?, "by"?}, mission time.
     calls: list[dict] | None = None
     calls_from: str | None = None
     # DCS's own LSO grade for the pass, from the pilot's debrief.log (e.g. "LSO: GRADE:OK : (LOAR)  WIRE# 1"):
@@ -165,6 +165,9 @@ def _calls(value: object) -> list[dict] | None:
                 call = {"time": time, "along": along, "call": c["call"][:60]}
                 if isinstance(c.get("text"), str) and c["text"]:
                     call["text"] = c["text"][:80]  # what was said ("Roger ball, 25 knots"; the pilot's call)
+                for key in ("said", "voice"):  # exactly what the LSO said, and in which clip set
+                    if isinstance(c.get(key), str) and c[key]:
+                        call[key] = c[key][:160]
                 if c.get("by") == "pilot":
                     call["by"] = "pilot"
                 calls.append(call)

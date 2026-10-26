@@ -110,6 +110,11 @@ def test_what_the_lso_said():
     assert spoken_text({"call": "roger ball", "text": "Roger ball, 25 knots."}) == "Roger ball, 25 knots."
     assert spoken_text({"call": "welcome aboard, two wire"}) == "Welcome aboard, two wire."
     assert spoken_text({"call": "something new"}) == "Something new."  # a call this version doesn't know
+    # Exactly what was said, when the agent recorded it (PLAN #51): the variant, side number, and dig.
+    assert spoken_text({"call": "welcome aboard", "said": "301, Welcome home, good trap."}) == \
+        "301, Welcome home, good trap."
+    assert spoken_text({"call": "roger ball", "text": "Roger ball, 25 knots", "said": "Roger ball, 25 knots."}) == \
+        "Roger ball, 25 knots."
 
 
 def test_call_audio_in_the_hubs_voice(client, token, hub, tmp_path):

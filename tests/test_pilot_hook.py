@@ -219,7 +219,8 @@ def test_night_from_dccs_sun_without_a_server_agent(tmp_path, elevation, night):
         assert s.get(Pass, report["pass_id"]).night is night
 
 
-CALLS = [{"time": 1000.0, "along": 900.0, "call": "you're high"}, {"time": 1010.0, "along": 120.0, "call": "power"}]
+CALLS = [{"time": 1000.0, "along": 900.0, "call": "you're high"}, {"time": 1010.0, "along": 120.0, "call": "power",
+                                                                 "said": "301, Power.", "voice": "clips-ryan"}]
 
 
 def test_relaying_calls_to_another_hub(tmp_path):
@@ -243,7 +244,9 @@ def test_relaying_calls_to_another_hub(tmp_path):
     body = carrier_upload(calls=answer["calls"], calls_from="lso.wrycu.com")
     (relayed,) = post(client_at(b, "8.8.4.4"), body, token).json()["reports"]
     with b.sessions() as s:
-        assert [c["call"] for c in s.get(Pass, relayed["pass_id"]).calls] == ["you're high", "power"]
+        calls = s.get(Pass, relayed["pass_id"]).calls
+        assert [c["call"] for c in calls] == ["you're high", "power"]
+        assert calls[1]["said"] == "301, Power." and calls[1]["voice"] == "clips-ryan"  # kept when relayed
     page = client_at(b).get(f"/passes/{relayed['pass_id']}").text
     assert "relayed by the pilot hook" in page and "lso.wrycu.com" in page and "Power (" in page
 
