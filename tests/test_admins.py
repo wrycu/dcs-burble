@@ -70,11 +70,11 @@ def test_admin_adds_an_agent_and_sets_its_config(hub):
     token = page.split('class="token-once"')[1].split("<code>")[1].split("</code>")[0]
     assert hub.authenticate(token).name == "server1"
     assert viper.post("/admin/agents", data={"name": "server1"}).status_code == 400  # already there
-    config = {"callouts": {"srs": "127.0.0.1:5002"}}
+    config = {"callouts": {"srs": {"host": "10.0.0.5"}}}
     viper.post("/admin/agents/server1/config", data={"config": json.dumps(config)})
     assert hub.server_agents()[0].config == config
     r = viper.post("/admin/agents/server1/config", data={"config": "{nope"}, follow_redirects=False)
-    assert "error=" in r.headers["location"] and hub.server_agents()[0].config == config
+    assert r.status_code == 400 and "not valid JSON" in r.text and hub.server_agents()[0].config == config
 
 
 def test_admin_removes_pilots_aliases_and_creates_pilot_tokens(hub):

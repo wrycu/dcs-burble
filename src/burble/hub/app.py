@@ -19,6 +19,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
 
+from .. import agentconfig
 from ..cards import render_card, render_lineup
 from ..cards.overlay import render_overlay
 from ..cards.replay import ordered_calls, replay_data
@@ -651,18 +652,53 @@ def create_app(hub: Hub) -> FastAPI:
         return _admin_page(request, f"Server agent {name.strip()} added.",
                            new_token=(f"server agent token for {name.strip()}", token))
 
-    @app.post("/admin/agents/{name}/config")
+    def _agent_page(request: Request, name: str, done: str | None = None, error: str | None = None,
+                    status: int = 200, form: dict | None = None) -> HTMLResponse:
+        _admin(request)
+        try:
+            agent = hub.server_agent(name)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc.args[0])) from exc
+        return HTMLResponse(pages.agent_settings_page(agent, done, error, form), status_code=status)
+
+    @app.get("/admin/agents/{name}", response_class=HTMLResponse)
+    def admin_agent(request: Request, name: str, done: str | None = None, error: str | None = None):
+        """A server agent's settings editor (PLAN #43): a form for the common settings, the raw JSON for the rest."""
+        if getattr(request.state, "pilot", None) is None:
+            return RedirectResponse(f"/signin?next={quote(f'/admin/agents/{name}', safe='')}", status_code=303)
+        return _agent_page(request, name, done, error)
+
+    def _saved(name: str) -> RedirectResponse:
+        done = f"Settings for {name} saved; its agent applies them when the next mission starts."
+        return RedirectResponse(f"/admin/agents/{quote(name, safe='')}?done={quote(done)}", status_code=303)
+
+    @app.post("/admin/agents/{name}/settings", response_class=HTMLResponse)
+    async def admin_agent_settings(request: Request, name: str):
+        _admin(request)
+        form = await request.form()
+        fields = {k: [str(v) for v in form.getlist(k)] for k in form.keys()}
+        try:
+            config = agentconfig.apply_form(hub.server_agent(name).config, fields)
+            hub.set_config(name, config, kind="server")
+        except LookupError as exc:
+            raise HTTPException(404, str(exc.args[0])) from exc
+        except ValueError as exc:  # shown with what was typed, so nothing is lost
+            return _agent_page(request, name, error=str(exc), status=400, form=fields)
+        return _saved(name)
+
+    @app.post("/admin/agents/{name}/config", response_class=HTMLResponse)
     def admin_agent_config(request: Request, name: str, config: Annotated[str, Form()]):
         _admin(request)
         try:
             parsed = json.loads(config) if config.strip() else None
         except json.JSONDecodeError as exc:
-            return RedirectResponse(f"/admin?error={quote(f'{name}: that is not valid JSON ({exc})')}", status_code=303)
-        if parsed is not None and not isinstance(parsed, dict):
-            return RedirectResponse(f"/admin?error={quote(f'{name}: the configuration is a JSON object')}",
-                                    status_code=303)
-        return _admin_step(request, lambda: hub.set_config(name, parsed, kind="server"),
-                           f"Configuration for {name} saved; its agent applies it when the next mission starts.")
+            return _agent_page(request, name, error=f"That is not valid JSON ({exc}).", status=400,
+                               form={"raw": [config]})
+        try:
+            hub.set_config(name, parsed, kind="server")
+        except ValueError as exc:
+            return _agent_page(request, name, error=str(exc), status=400, form={"raw": [config]})
+        return _saved(name)
 
     @app.post("/admin/telemetry")
     def admin_telemetry(request: Request, on: Annotated[str, Form()]):
@@ -761,6 +797,16 @@ def create_app(hub: Hub) -> FastAPI:
     def get_config(source: Annotated[Source, Depends(source_from_token)]) -> dict:
         """Settings for this source's agent (callouts etc.)."""
         return source.config or {}
+
+    @app.post("/api/v1/agent")
+    def agent_info(source: Annotated[Source, Depends(source_from_token)], body: Annotated[dict, Body()]) -> dict:
+        """A server agent about itself, for its settings editor: {"version", "voices": [clip set names], "one_voice",
+        "listen_model"}."""
+        try:
+            hub.report_agent_info(source.id, body)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        return {"ok": True}
 
     @app.get("/api/v1/passes", dependencies=members)
     def list_passes(days: int = 30, pilot: str | None = None, source: str | None = None,

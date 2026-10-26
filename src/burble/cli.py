@@ -422,8 +422,19 @@ def _hub_remove_alias(args: argparse.Namespace) -> int:
 
 def _hub_set_config(args: argparse.Namespace) -> int:
     config = json.loads(Path(args.file).read_text(encoding="utf-8"))
-    _hub(args).set_config(args.name, config)
+    try:
+        _hub(args).set_config(args.name, config)
+    except ValueError as exc:
+        print(f"not saved: {exc}", file=sys.stderr)
+        return 1
     print(f"configuration for {args.name!r} updated; its agent applies it when the next mission starts")
+    return 0
+
+
+def _hub_config_reference(_args: argparse.Namespace) -> int:
+    from .agentconfig import reference_markdown
+
+    print(reference_markdown(), end="")
     return 0
 
 
@@ -746,6 +757,8 @@ def main(argv: list[str] | None = None) -> int:
     set_config.add_argument("name")
     set_config.add_argument("file")
     set_config.set_defaults(func=_hub_set_config)
+    hub_sub.add_parser("config-reference", help="print every server agent configuration key, as Markdown (for the "
+                                                "wiki)").set_defaults(func=_hub_config_reference)
     tel = hub_sub.add_parser("telemetry", help="usage reports: anonymous counts sent once a day (on unless turned off)")
     tel_sub = tel.add_subparsers(dest="telemetry_command")
     tel.set_defaults(func=_hub_telemetry, telemetry_command="status")

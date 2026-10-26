@@ -122,13 +122,31 @@ nav.airframes a.current { color: var(--text); border-bottom-color: var(--text); 
 nav.airframes .n { font-weight: 400; font-size: 12px; color: var(--muted); }
 .admin .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .admin .actions form { display: flex; gap: 6px; margin: 0; }
-.admin button, .admin input, .admin textarea { font: inherit; font-size: 13px; padding: 3px 8px; border-radius: 6px;
+.admin button, .admin input, .admin textarea, .admin select { font: inherit; font-size: 13px; padding: 3px 8px;
+  border-radius: 6px;
   border: 1px solid var(--border); background: var(--card); color: var(--text); }
 .admin button { cursor: pointer; } .admin button.danger { color: #cf222e; }
 .admin input.label { width: 8em; }
 .admin textarea { width: 100%; min-height: 8em; font-family: ui-monospace, monospace; box-sizing: border-box; }
 .admin .alias { display: inline-flex; gap: 4px; align-items: center; margin: 0 8px 2px 0; }
 .admin .alias button { padding: 0 6px; font-size: 12px; }
+.settings label.setting { display: grid; grid-template-columns: minmax(10em, 16em) minmax(0, 1fr); gap: 2px 12px;
+  align-items: center; margin: 8px 0; }
+.settings label.setting input:not([type=checkbox]), .settings label.setting select { max-width: 22em; width: 100%;
+  box-sizing: border-box; }
+.settings label.setting input[type=checkbox] { justify-self: start; }
+.settings label.setting .hint { grid-column: 2; color: var(--muted); font-size: 12px; }
+.settings h2 { margin: 18px 0 4px; font-size: 16px; } .settings h2:first-child { margin-top: 0; }
+.settings .warn { color: #9a6700; font-size: 13px; }
+.settings fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; padding: 6px 10px; }
+.settings fieldset label { display: inline-flex; gap: 4px; align-items: center; margin: 2px 14px 2px 0; }
+.settings fieldset .note { color: var(--muted); font-size: 12px; }
+.settings table input { width: 7em; }
+.settings table td.note { color: var(--muted); font-size: 12px; }
+.settings .carriers input.unit { width: 14em; max-width: 38vw; }
+.settings td.default { white-space: nowrap; }
+@media (max-width: 600px) { .settings label.setting { grid-template-columns: minmax(0, 1fr); }
+  .settings label.setting .hint { grid-column: 1; } }
 .admin .tag { font-size: 11px; font-weight: 700; border-radius: 8px; padding: 1px 7px; background: #0969da; color: #fff; }
 .zoom-reset { font: inherit; font-size: 12px; font-weight: 400; margin-left: 8px; padding: 2px 8px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; vertical-align: 2px; }
@@ -1103,12 +1121,9 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
               f'<input name="q" value="{escape(q)}" placeholder="Pilot or other name"><button type="submit">Find</button>'
               + ('<a href="/admin">Show all</a>' if q else "") + "</form>")
     agent_rows = "".join(
-        f'<tr><td>{escape(a.name)}</td><td>{_when(a.created_at)}</td>'
-        f'<td>{_when(a.last_used_at) if a.last_used_at else "never"}</td><td>'
-        f'<details><summary>Configuration</summary>'
-        f'<form method="post" action="/admin/agents/{quote(a.name, safe="")}/config">'
-        f'<textarea name="config" spellcheck="false">{escape(json.dumps(a.config, indent=2) if a.config else "")}'
-        '</textarea><button type="submit">Save configuration</button></form></details></td></tr>'
+        f'<tr><td><a href="/admin/agents/{quote(a.name, safe="")}">{escape(a.name)}</a></td><td>{_when(a.created_at)}</td>'
+        f'<td>{_when(a.last_used_at) if a.last_used_at else "never"}</td>'
+        f'<td><a href="/admin/agents/{quote(a.name, safe="")}">Settings</a></td></tr>'
         for a in agents)
     agents_table = (
         '<div class="scroll"><table class="results"><thead><tr><th>Server agent</th><th>Added</th><th>Last used</th>'
@@ -1129,6 +1144,150 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
             f'<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Server agents</h2>{agents_table}'
             f"{add_agent}</div>{_appearance(css)}{_telemetry_panel(tel) if telemetry else ''}</div>")
     return _page("Admin", body)
+
+
+def agent_settings_page(agent, done: str | None = None, error: str | None = None,
+                        form: dict[str, list[str]] | None = None) -> str:
+    """A server agent's settings (PLAN #43): the common ones as a form (agentconfig.SECTIONS), its carriers'
+    frequencies, which calls it makes, and its call thresholds; the raw JSON below for anything else. `form`: what
+    was just posted (shown again after an error, so nothing typed is lost)."""
+    from .. import agentconfig as ac
+
+    config = agent.config if isinstance(agent.config, dict) else {}
+    info = agent.agent_info or {}
+    typed = form is not None and "raw" not in form
+    name = quote(agent.name, safe="")
+
+    def typed_value(key: str) -> str:
+        return ((form or {}).get(key) or [""])[-1]
+
+    def shown(value: object) -> str:
+        if value is None:
+            return ""
+        return value if isinstance(value, str) else json.dumps(value)
+
+    def field(setting) -> str:
+        key = ac.field_name(setting)
+        current = ac.get(config, setting.path)
+        hint = f'<span class="hint">{escape(setting.help)}</span>' if setting.help else ""
+        if setting.kind == "bool":
+            on = key in (form or {}) if typed else (current if isinstance(current, bool) else setting.default)
+            control = f'<input type="checkbox" name="{key}" value="1"{" checked" if on else ""}>'
+        elif setting.kind == "choice" or setting.path == ("callouts", "voice") and info:
+            choices = list(setting.choices)
+            if setting.path == ("callouts", "voice"):
+                choices = [("", "First by name")] + [(v, v) for v in info.get("voices") or []]
+            value = typed_value(key) if typed else shown(current if current is not None else setting.default)
+            if setting.path[-1] == "case" and value.upper() in ("I", "III"):
+                value = value.upper()
+            if value not in [str(c) for c, _ in choices]:
+                choices.append((value, f"{value} (not on the agent)" if setting.path[-1] == "voice" else value))
+            control = f'<select name="{key}">' + "".join(
+                f'<option value="{escape(str(c))}"{" selected" if str(c) == value else ""}>{escape(label)}</option>'
+                for c, label in choices) + "</select>"
+        else:
+            value = typed_value(key) if typed else shown(current)
+            kind = ' type="number" step="any"' if setting.kind in ("int", "number") else ""
+            default = f"{setting.default:g}" if isinstance(setting.default, float) else setting.default
+            placeholder = "" if default is None else f' placeholder="{escape(str(default))}"'
+            control = f'<input name="{key}"{kind} value="{escape(value)}"{placeholder}>'
+        return f'<label class="setting"><span>{escape(setting.label)}</span>{control}{hint}</label>'
+
+    sections = []
+    for title, group in ac.SECTIONS:
+        sections.append(f"<h2>{escape(title)}</h2>" + "".join(field(st) for st in group))
+        if title == "Live calls":
+            sections.append(_carrier_rows(config, form if typed else None))
+        if title == "Listening and recording":
+            if (ac.get(config, ("callouts", "listen")) is True and info and not info.get("listen_model")):
+                sections.append('<p class="warn">Listening is on, but this agent wasn\'t started with --listen-model, '
+                                "so it can't hear anyone.</p>")
+
+    calls = ac.get(config, ("callouts", "calls"))
+    chosen = set(form.get("call") or []) if typed else (set(calls) if isinstance(calls, list) else None)
+    groups = "".join(
+        f"<fieldset><legend>{escape(title)}</legend>" + "".join(
+            f'<label><input type="checkbox" name="call" value="{escape(c.value)}"'
+            f'{" checked" if chosen is None or c.value in chosen else ""}> {escape(ac.call_label(c))}'
+            + (f' <span class="note">({escape(ac.CALL_NOTES[c])})</span>' if c in ac.CALL_NOTES else "") + "</label>"
+            for c in group) + "</fieldset>" for title, group in ac.CALL_GROUPS)
+
+    set_thresholds = ac.get(config, ("callouts", "thresholds"))
+    set_thresholds = set_thresholds if isinstance(set_thresholds, dict) else {}
+    rows = []
+    for t in ac.thresholds():
+        key = f"threshold.{t.name}"
+        value = typed_value(key) if typed else shown(set_thresholds.get(t.name))
+        rows.append(f'<tr><td><code>{t.name}</code></td><td><input name="{key}" type="number" step="any" '
+                    f'value="{escape(value)}" placeholder="{t.default:g}" aria-label="{t.name}"></td>'
+                    f'<td class="default">{escape(ac.show_number(t.default, t.unit))}</td>'
+                    f'<td class="note">{escape(t.note)}</td></tr>')
+    changed = any(t.name in set_thresholds for t in ac.thresholds())
+    thresholds = (f'<details{" open" if changed else ""}><summary><strong>Call thresholds</strong> (advanced; '
+                  f"{sum(t.name in set_thresholds for t in ac.thresholds())} changed)</summary>"
+                  '<p class="sub">Leave one empty for its default. Distances are in metres (1 nm = 1852 m), angles in '
+                  "degrees. The AOA band is each aircraft's own.</p>"
+                  '<div class="scroll"><table class="results"><thead><tr><th>Threshold</th><th>Value</th><th>Default</th>'
+                  f'<th></th></tr></thead><tbody>{"".join(rows)}</tbody></table></div></details>')
+
+    if info:
+        voices = info.get("voices") or []
+        about = (f"Agent version {escape(info.get('version') or 'unknown')}; "
+                 + (f"one clip set ({escape(voices[0])}), used whatever the voice says" if info.get("one_voice") and voices
+                    else f"clip sets: {escape(', '.join(voices))}" if voices else "no voice clips (it can't make calls)")
+                 + f"; listening model: {'yes' if info.get('listen_model') else 'no'}. "
+                 f"(Reported {escape(str(info.get('at', ''))[:16].replace('T', ' '))} UTC.)")
+    else:
+        about = ("This agent hasn't said which voices it has yet: it does when it next fetches its settings (agents "
+                 "older than this hub don't). Type the voice's folder name meanwhile.")
+    raw_value = typed_value("raw") if form is not None and "raw" in form else (
+        json.dumps(config, indent=2) if config else "")
+    note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
+        f'<p class="error">{escape(error)}</p>' if error else "")
+    body = (f'<p><a href="/admin">← Admin</a></p><h1>{escape(agent.name)}: settings</h1>'
+            '<p class="sub">Its server agent fetches these from the hub and applies them when the next mission starts. '
+            f"{about}</p>{note}"
+            f'<div class="admin settings"><form class="panel" method="post" action="/admin/agents/{name}/settings">'
+            + "".join(sections)
+            + "<h2>Calls</h2><p class=\"sub\">Which calls the LSO makes.</p>" + groups
+            + f'<h2>Thresholds</h2>{thresholds}<p><button type="submit">Save settings</button></p></form>'
+            f'<div class="panel" style="margin-top:12px"><details{" open" if form is not None and "raw" in form else ""}>'
+            '<summary><strong>Raw configuration (JSON)</strong></summary>'
+            '<p class="sub">Everything the agent is sent, including keys the form doesn\'t show (kept when the form '
+            "is saved). Checked before it's saved. Every key is listed by <code>burble hub config-reference</code>.</p>"
+            f'<form method="post" action="/admin/agents/{name}/config">'
+            f'<textarea name="config" spellcheck="false" rows="16">{escape(raw_value)}</textarea>'
+            '<button type="submit">Save configuration</button></form></details></div></div>')
+    return _page(f"{agent.name}: settings", body)
+
+
+def _carrier_rows(config: dict, form: dict[str, list[str]] | None) -> str:
+    """Per-carrier frequencies (callouts.carriers), with two empty rows to add more."""
+    from .. import agentconfig as ac
+
+    if form is not None:
+        n = int((form.get("carriers") or ["0"])[-1] or 0)
+        rows = [tuple((form.get(f"carrier.{i}.{k}") or [""])[-1] for k in ("unit", "frequency_mhz", "modulation"))
+                for i in range(n)]
+        rows = [r for r in rows if any(r[:2])]
+    else:
+        carriers = ac.get(config, ("callouts", "carriers"))
+        rows = [(unit, f"{radio.get('frequency_mhz', '')}", str(radio.get("modulation", "AM")))
+                for unit, radio in (carriers.items() if isinstance(carriers, dict) else []) if isinstance(radio, dict)]
+    rows += [("", "", "AM")] * 2
+    cells = "".join(
+        f'<tr><td><input class="unit" name="carrier.{i}.unit" value="{escape(unit)}" placeholder="e.g. CVN-75 Truman" '
+        f'aria-label="Carrier unit name"></td><td><input name="carrier.{i}.frequency_mhz" type="number" step="any" '
+        f'value="{escape(mhz)}" placeholder="MHz" aria-label="Frequency (MHz)"></td>'
+        f'<td><select name="carrier.{i}.modulation" aria-label="Modulation">' + "".join(
+            f'<option{" selected" if m == mod else ""}>{m}</option>' for m, _ in ac.MODULATIONS) + "</select></td></tr>"
+        for i, (unit, mhz, mod) in enumerate(rows))
+    return ('<p style="margin:12px 0 4px"><strong>Carriers\' frequencies</strong></p><p class="sub" style="margin:0">'
+            "By the carrier's unit name in the mission. A carrier listed here uses this frequency; one that isn't uses "
+            "the frequency set for it in the mission, else the default above. Clear a name to remove it.</p>"
+            f'<input type="hidden" name="carriers" value="{len(rows)}">'
+            '<div class="scroll carriers"><table class="results"><thead><tr><th>Carrier</th><th>MHz</th><th>Modulation'
+            f"</th></tr></thead><tbody>{cells}</tbody></table></div>")
 
 
 def _board_access(members_only: bool, approval: bool, post) -> str:

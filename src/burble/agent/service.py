@@ -35,9 +35,9 @@ from ..detect import Outcome, PassResult, find_passes
 from ..detect.approaches import Approach, ApproachSegmenter
 from ..geometry import AIRCRAFT, WindProfile
 from ..grading import Grade, grade_pass
-from ..slices import (LEAD_S, TAIL_S, apply_hooks, approach_window, sidecar, slice_name, slice_objects, track_sidecar,
-                      track_slice_name)
-from ..callouts.voice import ClipLibrary, choose_clip_set
+from ..slices import (LEAD_S, TAIL_S, _collector_version, apply_hooks, approach_window, sidecar, slice_name,
+                      slice_objects, track_sidecar, track_slice_name)
+from ..callouts.voice import ClipLibrary, choose_clip_set, clip_sets
 from ..srs import Modulation, Radio
 from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink
 from .live import Listeners, LivePassDetector
@@ -374,6 +374,7 @@ class Agent:
         self.config_path = config.work_dir / "config.json"
         self.remote_config: dict = self._load_cached_config()
         self._clip_sets: dict[Path, ClipLibrary] = {}  # loaded once each
+        self._info_reported: dict | None = None  # what the hub was last told about this agent (`info`)
         self._recogniser = None  # loaded on the first session that listens
         # Overridable for tests; by default calls go to the SRS server named in the config.
         self.sink_factory = lambda settings: SrsSink(settings.srs, _radios(settings), recording=settings.record_radio)
@@ -404,6 +405,36 @@ class Agent:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             self.config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
             log.info("configuration updated from the hub (applies from the next session)")
+        await self.report_info()
+
+    def info(self) -> dict:
+        """About this agent, for its settings editor on the hub: its version, its clip sets (by the names the
+        config's `voice` takes), and whether it can listen."""
+        sets = clip_sets(self.config.voice_dir) if self.config.voice_dir is not None else {}
+        one = "" in sets
+        return {"version": _collector_version(), "voices": [sets[""].name] if one else list(sets),
+                "one_voice": one, "listen_model": self.config.listen_model is not None}
+
+    async def report_info(self) -> bool:
+        """Tell the hub about this agent (`info`) when it has changed (once a run, normally)."""
+        if self.client is None or self.config.mode != "server":
+            return False
+        info = self.info()
+        if info == self._info_reported:
+            return False
+        try:
+            r = await self.client.post("/api/v1/agent", json=info)
+        except httpx.HTTPError as exc:
+            log.debug("agent info not reported: %s", exc)
+            return False
+        if r.status_code == 404:  # a hub from before the settings editor
+            self._info_reported = info
+            return False
+        if r.status_code != 200:
+            log.warning("hub refused the agent's info (%s %s)", r.status_code, r.text[:200])
+            return False
+        self._info_reported = info
+        return True
 
     def _callouts(self) -> LiveCallouts | None:
         if self.config.mode != "server":

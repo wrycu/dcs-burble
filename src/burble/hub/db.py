@@ -42,6 +42,9 @@ class Source(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # When this server agent last reported its connected players (see PlayerSeen).
     players_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # What this server agent last said about itself (PLAN #43), for its settings editor: {"version", "voices",
+    # "one_voice", "listen_model", "at"}.
+    agent_info: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Pilot(Base):
