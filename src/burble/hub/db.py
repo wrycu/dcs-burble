@@ -143,7 +143,7 @@ class Pass(Base):
     outcome: Mapped[str] = mapped_column(String(16))
     wire: Mapped[int | None] = mapped_column(Integer)  # from DCS's LSO only
     dcs_grade: Mapped[str | None] = mapped_column(String(200))
-    # Live LSO calls the agent made during this pass: [{"time", "along", "call"}].
+    # Live LSO calls the agent made during this pass: [{"time", "along", "call", "text"?, "said"?, "voice"?, "by"?}].
     calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # "pass" (None in older rows): a gradable report with the carrier. "track": one aircraft's own
     # track, no carrier (a multiplayer client's recording), graded only as part of a landing.

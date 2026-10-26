@@ -134,10 +134,12 @@ def variants(call: Call) -> tuple[str, ...]:
 
 
 def spoken_text(call: dict) -> str:
-    """What the LSO said for a recorded call (`{"call", "text"?}`, as the server agent records them): its text when it
-    has one ("Roger ball, 25 knots."), else the call's first phrasing (which variant was said isn't recorded)."""
-    if call.get("text"):
-        return call["text"]
+    """What the LSO said for a recorded call (`{"call", "text"?, "said"?}`, as the server agent records them): exactly
+    what was said when recorded ("301, Welcome home, good trap."), else its text ("Roger ball, 25 knots."), else the
+    call's first phrasing (calls recorded before 2026-10-25 don't say which variant was said)."""
+    for key in ("said", "text"):
+        if call.get(key):
+            return call[key]
     try:
         return variants(Call(call["call"]))[0]
     except (ValueError, KeyError):

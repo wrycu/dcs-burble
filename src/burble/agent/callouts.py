@@ -259,18 +259,25 @@ class _Stop:
 class MadeCall:
     """A call made on a pass, recorded when decided (so a pass sliced right after still has it); a welcome's
     `call` is filled in with the wire once DCS reports it. Also what the pilot said (`by` "pilot": `call` is
-    "ball", "clara" or "paddles" and `text` the call as heard)."""
+    "ball", "clara" or "paddles" and `text` the call as heard). An LSO call also keeps the clip set that said it
+    (`voice`) and exactly what it said (`said`: the variant, side number, and dig included, e.g. "301, Power.")."""
     aircraft_id: int
     time: float  # sim time
     along: float  # meters short of the aim point
     call: Call | str
     text: str | None = None  # what was said, when it says more than the call (e.g. "Roger ball, 25 knots.")
     by: str = "lso"
+    said: str | None = None  # set once the clip is picked (a welcome's waits for the wire)
+    voice: str | None = None
 
     def to_dict(self) -> dict:
         out = {"time": self.time, "along": round(self.along, 1), "call": str(self.call)}
         if self.text:
             out["text"] = self.text
+        if self.said:
+            out["said"] = self.said
+        if self.voice:
+            out["voice"] = self.voice
         if self.by != "lso":
             out["by"] = self.by
         return out
@@ -359,8 +366,8 @@ class LiveCallouts:
         if event is None or event.call not in self.settings.calls or event.call not in self.clips:
             return None
         made = MadeCall(plane.id, event.time, event.along, event.call)
-        self._made(made)
         if event.call in WELCOME_WIRE:
+            self._made(made)
             # Graded now, while the pass is still being tracked (the welcome may wait for the wire).
             grade = self.grade_for(carrier.id, plane.id) if self.grade_for is not None else None
             stop = self._stops[key] = _Stop(frame, sample.aoa is not None, pos.along, sample.time, sample.time)
@@ -368,7 +375,9 @@ class LiveCallouts:
         else:
             # Decided now (the groove may have changed by the time the call is spoken).
             side_number = self._side_number(carrier.id, plane, event.time) if event.call not in (Call.BOLTER,) else None
-            welcome = self._say(carrier, plane, event.call, event, side_number=side_number)
+            clip = self._clip(event.call, made, side_number=side_number)
+            self._made(made)
+            welcome = self._say(carrier, plane, event.call, event, clip)
         task = asyncio.get_running_loop().create_task(welcome)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -408,8 +417,9 @@ class LiveCallouts:
         # A dig about a poor or cut landing, now and then (a trap through a wave-off already gets the salty one).
         dig = (event.call is Call.TRAPPED and grade in ROUGH_GRADES and Call.ROUGH_LANDING in self.clips
                and random.random() < self.settings.thresholds.rough_dig_chance)
-        await self._say(carrier, plane, call if call in self.clips else event.call, event,
-                        praise=grade in PRAISE_GRADES, home=home, dig=dig)
+        call = call if call in self.clips else event.call
+        clip = self._clip(call, made, praise=grade in PRAISE_GRADES, home=home, dig=dig)
+        await self._say(carrier, plane, call, event, clip)
 
     def case_iii(self, carrier: ObjectTrack, now: float) -> bool:
         """A Case III recovery: as the config says, or (auto) at night or in the mission's poor weather."""
@@ -440,14 +450,19 @@ class LiveCallouts:
             return None
         return self.side_number_for(plane.pilot, now)
 
-    async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent,
-                   praise: bool = False, side_number: str | None = None, home: bool | None = None,
-                   dig: bool = False) -> None:
-        radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
+    def _clip(self, call: Call, made: MadeCall | None, praise: bool = False, side_number: str | None = None,
+              home: bool | None = None, dig: bool = False) -> Clip:
+        """The clip to say for `call`, noted on `made` (what was said, in which voice)."""
         clip = self.clips.pick(call, praise, home)
         if dig:
             clip = self.clips.followed_by(clip, self.clips.pick(Call.ROUGH_LANDING))
         clip = self.clips.with_side_number(clip, side_number)  # whose call, if busy
+        if made is not None:
+            made.said, made.voice = clip.text, self.clips.voice
+        return clip
+
+    async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent, clip: Clip) -> None:
+        radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
         log.info("CALL %s -> %s (%.2f nm, %s): %r", call.value, plane.pilot or hex(plane.id),
                  event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}", clip.text)
         await self.sink.say(call, clip, radio, time.monotonic())
@@ -524,7 +539,7 @@ class LiveCallouts:
                 if (with_wind := self.clips.roger_ball(wind.speed / KT, wind.off_axis)) is not None:
                     clip = with_wind  # "Roger ball, 25 knots."
                     said = clip.text.rstrip(".")
-            self._made(MadeCall(plane.id, sim_time, along, answer, said))
+            self._made(MadeCall(plane.id, sim_time, along, answer, said, said=clip.text, voice=self.clips.voice))
             radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
             who = plane.pilot or hex(plane.id)
         else:

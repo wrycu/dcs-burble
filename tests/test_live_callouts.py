@@ -159,6 +159,9 @@ def test_live_calls_are_spoken_and_uploaded(tmp_path, clips):
     (row,) = listed
     assert [c["call"] for c in row["calls"]] == [c.value for c in said]
     assert "LSO calls:" in page and "Wave off" in page
+    # Each call says exactly what was said (the variant picked), and in which voice (PLAN #51).
+    assert [c["said"] for c in row["calls"]] == sink.texts
+    assert {c["voice"] for c in row["calls"]} == {"test-tones"}
 
 
 def test_pilot_mode_never_transmits(tmp_path, clips):
@@ -484,10 +487,13 @@ class SlotHooks(WireHooks):
 def test_side_numbers_when_two_jets_are_in_the_groove(tmp_path, clips):
     from test_backfill import two_pilots
     path = two_pilots(FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi", tmp_path / "two.zip.acmi")
-    _, _, sink = asyncio.run(run_collector(path, tmp_path / "edge", clips,
-                                           hooks=SlotHooks({"Wrycu": "301", "Maverick": "302"})))
+    _, session, sink = asyncio.run(run_collector(path, tmp_path / "edge", clips,
+                                                 hooks=SlotHooks({"Wrycu": "301", "Maverick": "302"})))
     groove_calls = [text for (call, _), text in zip(sink.said, sink.texts) if call not in WELCOMES]
     assert groove_calls and all(t.startswith(("301, ", "302, ")) for t in groove_calls)
+    # Recorded with the side number said.
+    said = [m.said for m in session.callouts.made if m.by == "lso"]
+    assert said == sink.texts
     assert {t[:3] for t in groove_calls} == {"301", "302"}
     # (The copy flies exactly the same path, so each also finds the other in the landing area.)
     assert Call.WAVE_OFF_FOUL_DECK in [c for c, _ in sink.said]
@@ -611,9 +617,10 @@ def test_rough_landings_get_a_dig_now_and_then(tmp_path, clips, monkeypatch, rol
     import burble.agent.callouts as callouts_mod
     from burble.callouts.voice import PHRASES
     monkeypatch.setattr(callouts_mod.random, "random", lambda: roll)
-    _, _, sink = asyncio.run(run_collector(FIXTURES / "live" / "trap-server.zip.acmi", tmp_path / "edge", clips))
+    _, session, sink = asyncio.run(run_collector(FIXTURES / "live" / "trap-server.zip.acmi", tmp_path / "edge", clips))
     assert plain(sink.said[-1][0]) is Call.TRAPPED
     assert any(sink.texts[-1].endswith(d) for d in PHRASES[Call.ROUGH_LANDING]) is dig
+    assert session.callouts.made[-1].said == sink.texts[-1]  # the welcome as said, dig and all
 
 
 def test_a_visitor_is_welcomed_aboard_not_home(tmp_path, clips, monkeypatch):
@@ -682,6 +689,7 @@ def test_pilots_calls_are_answered_for_the_jet_that_made_them(clips):
         (2, "clara", "pilot"), (2, Call.ROGER_CLARA, "lso")]
     assert callouts.made[0].to_dict() == {"time": 100.0, "along": 1200.0, "call": "ball",
                                           "text": "305, Hornet ball, 5.2", "by": "pilot"}
+    assert callouts.made[1].to_dict()["voice"] == "test-tones" and callouts.made[1].said.startswith("Roger ball")
 
 
 def test_the_listener_hands_recognised_calls_on():
