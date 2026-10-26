@@ -35,6 +35,7 @@ from .db import (Grade, Pass, Pilot, PilotAlias, PlayerSeen, Setting, Slice, Sou
                  make_sessionmaker)
 from .pilothook import HookUploadError, hook_reports, parse_upload
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
+from .radio import parse_radio, remove_cached, transmission_wav, transmissions
 from .storage import SliceStore
 from .voice import CallVoice
 
@@ -194,6 +195,9 @@ class Hub:
         # The voice the replay page's LSO calls are spoken in (`hub serve --voice-model`); None: the browser's own.
         self.voice: CallVoice | None = None
         self.store = SliceStore(Path(data_dir) / "slices")
+        # Passes' radio recordings (PLAN #52), and the WAVs of their transmissions made for the replay.
+        self.radio_store = SliceStore(Path(data_dir) / "radio", ".json")
+        self.radio_cache = Path(data_dir) / "radio-cache"
         self.uploads_dir = Path(data_dir) / "uploads"
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self._fail_interrupted_uploads()
@@ -362,6 +366,7 @@ class Hub:
             doomed = [p for p in s.scalars(select(Pass).where(
                 or_(Pass.id.in_(landings), Pass.merged_into_id.in_(landings))))]
             slices = {p.slice_id for p in doomed}
+            radio = {p.radio_sha256 for p in doomed if p.radio_sha256}
             for report in sorted(doomed, key=lambda p: p.merged_into_id is None):  # merged reports first
                 s.delete(report)
             s.flush()
@@ -377,8 +382,11 @@ class Hub:
             s.flush()
             s.delete(pilot)
             shas = [sl.sha256 for sl in gone]
+            radio -= set(s.scalars(select(Pass.radio_sha256).where(Pass.radio_sha256.in_(radio))))
         for sha in shas:  # once the database no longer points at them
             self.store.remove(sha)
+        for sha in radio:
+            self._remove_radio(sha)
         if landings:
             self._notify(None)  # the board changed
         return len(landings)
@@ -534,6 +542,50 @@ class Hub:
         """Rebuild the landing from its stored slices: the most detailed aircraft track among its
         reports, graded against the carrier in this (gradable) report, plus DCS's grade and wire."""
         return self.load_pass_recording(p, reports, s)[0]
+
+    # -- radio recordings (PLAN #52) --------------------------------------------------------------------------
+
+    def pass_radio(self, p: Pass) -> list[dict] | None:
+        """The landing's radio recording, if it has one: its transmissions ({"time", "by", "name"?, "seconds"})."""
+        if not p.radio_sha256:
+            return None
+        try:
+            return transmissions(self.radio_store.path(p.radio_sha256))
+        except (OSError, ValueError, KeyError):
+            log.exception("radio recording %s of pass %d unreadable", p.radio_sha256, p.id)
+            return None
+
+    def radio_wav(self, p: Pass, index: int) -> Path:
+        """Transmission `index` of the landing's radio as a WAV. LookupError if there's none such."""
+        if not p.radio_sha256:
+            raise LookupError("no radio recorded")
+        return transmission_wav(self.radio_store.path(p.radio_sha256), index, self.radio_cache)
+
+    def delete_radio(self, pass_id: int, by: str) -> None:
+        """Delete a landing's radio recording, and its reports': by an admin or the landing's own pilot (`by`, signed
+        in). PermissionError for anyone else."""
+        admin = self.is_admin(by)
+        with self.sessions.begin() as s:
+            landing = s.get(Pass, pass_id)
+            if landing is None:
+                raise LookupError("no such pass")
+            if landing.merged_into_id is not None:
+                landing = s.get(Pass, landing.merged_into_id)
+            if not admin and landing.pilot.name != by:
+                raise PermissionError("only the pass's pilot or an admin can delete its radio")
+            reports = [landing, *s.scalars(select(Pass).where(Pass.merged_into_id == landing.id))]
+            radio = {r.radio_sha256 for r in reports if r.radio_sha256}
+            for r in reports:
+                r.radio_sha256 = None
+            s.flush()
+            radio -= set(s.scalars(select(Pass.radio_sha256).where(Pass.radio_sha256.in_(radio))))
+        for sha in radio:
+            self._remove_radio(sha)
+        log.info("radio of pass %d deleted by %s", pass_id, by)
+
+    def _remove_radio(self, sha: str) -> None:
+        self.radio_store.remove(sha)
+        remove_cached(sha, self.radio_cache)
 
     def load_pass_recording(self, p: Pass, reports: list[Pass] | None = None,
                             s: Session | None = None) -> tuple[PassResult, Recording]:
@@ -694,6 +746,8 @@ class Hub:
             landing.wire = report.wire
         if landing.calls is None and report.calls:
             landing.calls = report.calls
+        if landing.radio_sha256 is None and report.radio_sha256:
+            landing.radio_sha256 = report.radio_sha256
         if landing.livery is None and report.livery:
             landing.livery = report.livery
         s.flush()
@@ -764,6 +818,8 @@ class Hub:
             info = sidecar["pass"]
             key = pass_key(sidecar)
             kind = sidecar.get("kind") or "pass"
+            # The pass's radio (PLAN #52) is stored on its own, not in the sidecar kept with the slice.
+            radio = parse_radio(sidecar.pop("radio")) if sidecar.get("radio") is not None else None
         except (KeyError, TypeError, ValueError) as exc:
             raise IngestError(f"invalid sidecar: {exc}") from exc
         with self.sessions.begin() as s:
@@ -821,6 +877,7 @@ class Hub:
                     outcome=info["outcome"], wire=dcs.get("wire"),
                     dcs_grade=(dcs.get("grade") or {}).get("raw"),
                     calls=sidecar.get("calls"),
+                    radio_sha256=self.radio_store.put(radio) if radio is not None else None,
                     livery=((sidecar.get("aircraft") or {}).get("livery") or None),
                 )
                 modex = str((sidecar.get("aircraft") or {}).get("onboard_num") or "").strip()

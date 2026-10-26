@@ -107,8 +107,11 @@ def aircraft_data(aircraft_type: str) -> dict:
 
 
 def replay_data(recording: Recording, result: PassResult, grade: GradeResult | None = None,
-                calls: list[dict] | None = None, night: bool = False, title: str = "") -> dict:
-    """The replay of `result`, found in `recording` (its `aircraft_id` and `carrier_id` are objects there)."""
+                calls: list[dict] | None = None, night: bool = False, title: str = "",
+                radio: list[dict] | None = None) -> dict:
+    """The replay of `result`, found in `recording` (its `aircraft_id` and `carrier_id` are objects there). `radio`:
+    the carrier frequency's transmissions recorded with the pass ({"time", "by", "name"?, "seconds"}), on the calls'
+    clock."""
     carrier_track = recording.objects[result.carrier_id]
     plane_track = recording.objects[result.aircraft_id]
     info, aircraft = CARRIERS[result.carrier_type], AIRCRAFT[result.aircraft_type]
@@ -167,4 +170,7 @@ def replay_data(recording: Recording, result: PassResult, grade: GradeResult | N
         # `say`: what the LSO said, to be spoken (the pilot's calls are shown, not spoken).
         "calls": [{"t": _r(c["time"] + offset - start, 2), "text": call_label(c), "by": c.get("by", "lso"),
                    **({} if c.get("by") == "pilot" else {"say": spoken_text(c)})} for c in calls],
+        # What was actually said on the radio, when recorded (played in place of speaking the LSO's calls).
+        "radio": [{"t": _r(r["time"] + offset - start, 2), "by": r["by"], "seconds": _r(r["seconds"], 2),
+                   **({"name": r["name"]} if r.get("name") else {})} for r in radio or []],
     }
