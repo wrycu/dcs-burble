@@ -117,6 +117,21 @@ def test_what_the_lso_said():
         "Roger ball, 25 knots."
 
 
+def test_the_subtitles_say_what_was_said(client, token, hub):
+    pass_id = upload(client, token, PASS_FILES[0]).json()["pass_id"]
+    from burble.hub.db import Pass
+
+    with hub.sessions() as s:
+        s.get(Pass, pass_id).calls = [
+            {"time": 3290.0, "along": 500.0, "call": "power"},
+            {"time": 3300.0, "along": 0.0, "call": "welcome aboard, despite the wave off",
+             "said": "You did hear the wave off, right?"}]
+        s.commit()
+    calls = client.get(f"/passes/{pass_id}/replay.json").json()["calls"]
+    assert [(c["text"], c["say"]) for c in calls] == [
+        ("Power", "Power."), ("You did hear the wave off, right?", "You did hear the wave off, right?")]
+
+
 def test_call_audio_in_the_hubs_voice(client, token, hub, tmp_path):
     pass_id = upload(client, token, PASS_FILES[0]).json()["pass_id"]
     from burble.hub.db import Pass

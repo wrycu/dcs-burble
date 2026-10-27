@@ -167,9 +167,11 @@ def replay_data(recording: Recording, result: PassResult, grade: GradeResult | N
                     "caught": result.wire if result.wire is not None else result.wire_estimate, "speed": _r(speed, 2)},
         "track": track,
         "groove": groove,
-        # `say`: what the LSO said, to be spoken (the pilot's calls are shown, not spoken).
-        "calls": [{"t": _r(c["time"] + offset - start, 2), "text": call_label(c), "by": c.get("by", "lso"),
-                   **({} if c.get("by") == "pilot" else {"say": spoken_text(c)})} for c in calls],
+        # `say`: what the LSO said, to be spoken (the pilot's calls are shown, not spoken). `text`, the subtitle: exactly
+        # what was said when the agent recorded it (PLAN #51: "You did hear the wave off, right?"), else the call.
+        "calls": [{"t": _r(c["time"] + offset - start, 2), "text": c.get("said") or call_label(c),
+                   "by": c.get("by", "lso"), **({} if c.get("by") == "pilot" else {"say": spoken_text(c)})}
+                  for c in calls],
         # What was actually said on the radio, when recorded (played in place of speaking the LSO's calls).
         "radio": [{"t": _r(r["time"] + offset - start, 2), "by": r["by"], "seconds": _r(r["seconds"], 2),
                    **({"name": r["name"]} if r.get("name") else {})} for r in radio or []],
