@@ -180,7 +180,8 @@ def test_editing_on_the_page(hub):
     assert 'name="carrier.0.unit" value="CVN-75"' in page and "&quot;mystery&quot;: true" in page
     assert "hasn't said which voices it has yet" in page and '<input name="callouts.voice"' in page
     assert page.count('name="call"') == len(ac.CHOOSABLE_CALLS) and "0 changed" in page
-    form = {"callouts.enabled": "1", "live.enabled": "1", "callouts.srs.host": "10.0.0.5", "carriers": "3",
+    form = {"callouts.enabled": "1", "live.enabled": "1", "callouts.record_radio": "1", "lights.enabled": "1",
+            "callouts.srs.host": "10.0.0.5", "carriers": "3",
             "carrier.0.unit": "CVN-75", "carrier.0.frequency_mhz": "127.6", "carrier.0.modulation": "AM",
             "call": [c.value for c in ac.CHOOSABLE_CALLS], "threshold.ball_wait_s": "4"}
     r = viper.post("/admin/agents/server1/settings", data=form, follow_redirects=False)

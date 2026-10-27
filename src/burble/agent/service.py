@@ -39,7 +39,8 @@ from ..slices import (LEAD_S, TAIL_S, _collector_version, apply_hooks, approach_
                       slice_objects, track_sidecar, track_slice_name)
 from ..callouts.voice import ClipLibrary, choose_clip_set, clip_sets
 from ..srs import Modulation, Radio
-from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink
+from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink, recovery_case_iii
+from .lights import LIGHTS_FILE, CarrierLights, lights_settings
 from .live import Listeners, LivePassDetector
 from .livefeed import SEND_INTERVAL_S, LiveFeed, LiveSender, live_settings
 from .outbox import Outbox
@@ -356,6 +357,7 @@ class Session:
     first_seen: dict[int, float] = field(default_factory=dict)
     feed: LiveFeed | None = None  # what's flying around the carriers, for the hub's live view
     radio: RadioRecorder | None = None  # the carrier frequencies' radio, for each pass's replay (PLAN #52)
+    lights: CarrierLights | None = None  # the carriers' landing lights for Case III (PLAN #54)
 
 
 class Agent:
@@ -634,6 +636,7 @@ class Agent:
                 hooks = self.hooks
                 callouts.side_number_for = lambda pilot, t: (hooks.slot_for(pilot, t) or {}).get("onboard_num")
                 callouts.weather = getattr(hooks, "weather", None)
+        session.lights = self._lights(session)
         listening = None
         if callouts is not None:
             listener = self._listener(callouts)
@@ -644,6 +647,8 @@ class Agent:
         log.info("connected to Tacview stream from %r; archiving to %s%s", info.name, session.archive.path,
                  "; live callouts ON" + (", listening to pilots" if listening else "")
                  + (", recording the radio" if session.radio else "") if callouts else "")
+        if session.lights is not None:
+            log.info("carrier lights ON: landing lights for Case III recoveries (via %s)", session.lights.path)
         watchdog = asyncio.create_task(self._watch_frames(session))
         live = asyncio.create_task(self._send_live(feed), name="live view") if feed is not None else None
         try:
@@ -656,6 +661,8 @@ class Agent:
             if listening is not None:
                 listening.cancel()
             await client.close()
+            if session.lights is not None:
+                session.lights.close()
             for result in session.detector.flush():
                 self._queue(session, result)
             for segmenter in (session.segmenters or {}).values():
@@ -672,6 +679,20 @@ class Agent:
         if c.debrief is not None:
             asyncio.create_task(self._debrief_after(session))
         return session
+
+    def _lights(self, session: Session) -> CarrierLights | None:
+        """The carriers' landing lights (server mode, with dcs.log: the server hook reads the agent's file next to
+        it), unless the hub's config turns them off."""
+        enabled, radius_m, hold_s = lights_settings(self.remote_config)
+        if self.config.mode != "server" or self.config.dcs_log is None or not enabled:
+            return None
+        case = CalloutSettings.from_config(self.remote_config).case
+        weather = getattr(self.hooks, "weather", None)
+
+        def case_iii(carrier, t: float) -> bool:
+            return recovery_case_iii(case, lambda c, at: _night_at(session, c, at), weather, carrier, t)
+
+        return CarrierLights(self.config.dcs_log.parent / LIGHTS_FILE, case_iii, radius_m, hold_s)
 
     def _live_feed(self, callouts: LiveCallouts | None) -> LiveFeed | None:
         """The live view's feed (server mode, with a hub to send to), unless the hub's config turns it off."""
@@ -727,6 +748,8 @@ class Agent:
                 session.now = record.time
                 if session.first_frame is None:
                     session.first_frame = record.time
+                if session.lights is not None:
+                    session.lights.write()
                 due = [p for p in session.pending if p.due <= record.time]
                 if due:
                     session.pending = [p for p in session.pending if p.due > record.time]
@@ -741,6 +764,12 @@ class Agent:
                 session.first_seen.setdefault(record.id, record.time)
             for result in session.detector.feed(record):
                 self._queue(session, result)
+            if session.lights is not None:
+                if isinstance(record, ObjectUpdate) and record.moved:
+                    if (track := session.detector.tracks.get(record.id)) is not None:
+                        session.lights.update(track)
+                elif isinstance(record, ObjectRemoved):
+                    session.lights.removed(record.id)
             if session.feed is not None:
                 if isinstance(record, ObjectUpdate) and record.moved:
                     if (track := session.detector.tracks.get(record.id)) is not None:

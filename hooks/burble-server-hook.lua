@@ -281,6 +281,100 @@ local function log_players()
   log.write('BURBLE', log.INFO, 'BURBLE ' .. net.lua2json({ event = 'players', t = DCS.getModelTime(), players = players }))
 end
 
+-- The carriers' landing lights (PLAN #54). The server agent writes which carriers want them, by unit name, to
+-- Logs/burble-lights.json (`{"at": <unix time>, "carriers": {"CVN-75 ...": "recovery"}}`, rewritten every few seconds
+-- while it runs); those are set to AC RECOVERY, and put back as the mission had them once they're no longer wanted or
+-- the file is older than LIGHTS_STALE_S (the agent stopped). Only carriers set here are put back. DCS's "SET CARRIER
+-- LIGHTING MODE" trigger action is a function in the mission's own Lua state (not the scripting sandbox), by the
+-- carrier's unit id: modes -2 OFF, -1 AUTO, 0 NAVIGATION, 1 AC LAUNCH, 2 AC RECOVERY
+-- (MissionEditor/modules/me_trigrules.lua). DCS can't say which mode a carrier is in, so when a mission loads the
+-- function is wrapped (LIGHTS_WRAPPER) to note the last mode the mission's own triggers set for each carrier; ours
+-- go to the original (not noted). Put back: that mode, else AUTO (a carrier's mode until something sets it).
+local LIGHTS_FILE = lfs and lfs.writedir and lfs.writedir() .. 'Logs/burble-lights.json'
+local LIGHTS_EVERY_S = 1
+local LIGHTS_STALE_S = 30
+local LIGHTS_RECOVERY = 2
+local LIGHTS_MODE_NAMES = { [-2] = 'off', [-1] = 'auto', [0] = 'navigation', [1] = 'launch', [2] = 'recovery' }
+local LIGHTS_WRAPPER = [[
+if BURBLE_LIGHTS == nil and a_set_carrier_illumination_mode ~= nil then
+  BURBLE_LIGHTS = { set = a_set_carrier_illumination_mode, mission = {} }
+  a_set_carrier_illumination_mode = function(unit_id, mode, ...)
+    if tonumber(unit_id) and tonumber(mode) then BURBLE_LIGHTS.mission[tonumber(unit_id)] = tonumber(mode) end
+    return BURBLE_LIGHTS.set(unit_id, mode, ...)
+  end
+end
+return BURBLE_LIGHTS and "ok" or "no a_set_carrier_illumination_mode"
+]]
+-- Run in the mission's state: set one carrier's mode (%d: unit id; %s: the mode, or the mission's own), and say which.
+local LIGHTS_SET = [[
+local set = BURBLE_LIGHTS and BURBLE_LIGHTS.set or a_set_carrier_illumination_mode
+if set == nil then return "no a_set_carrier_illumination_mode" end
+local mode = %s
+set(%d, mode)
+return "ok " .. tostring(mode)
+]]
+local lights_lit = {}  -- carrier name -> true: set to recovery this mission
+local lights_failed = {}  -- carrier name -> true: couldn't be set this mission (not tried again)
+local last_lights = -LIGHTS_EVERY_S
+
+local function carrier_unit_id(name)
+  local mission = DCS.getCurrentMission()
+  local coalitions = mission and mission.mission and mission.mission.coalition or {}
+  for _, side in pairs(coalitions) do
+    for _, country in ipairs(side.country or {}) do
+      for _, group in ipairs((country.ship or {}).group or {}) do
+        for _, unit in ipairs(group.units or {}) do
+          if unit.name == name then return unit.unitId end
+        end
+      end
+    end
+  end
+end
+
+-- Recovery (`recover` true), or back as the mission had it.
+local function set_lights(name, recover)
+  local id = carrier_unit_id(name)
+  local ok, result = false, 'no such carrier in the mission'
+  if id then
+    local mode = recover and tostring(LIGHTS_RECOVERY)
+                 or string.format('BURBLE_LIGHTS and BURBLE_LIGHTS.mission[%d] or -1', id)
+    ok, result = pcall(net.dostring_in, 'mission', string.format(LIGHTS_SET, mode, id))
+    ok = ok and type(result) == 'string' and result:sub(1, 3) == 'ok '
+  end
+  local set = ok and tonumber(result:sub(4)) or nil
+  local fields = { event = 'lights', t = DCS.getModelTime(), carrier = name, mode = LIGHTS_MODE_NAMES[set] or set,
+                   restored = not recover or nil, ok = ok, error = not ok and tostring(result) or nil }
+  log.write('BURBLE', log.INFO, 'BURBLE ' .. net.lua2json(fields))
+  return ok
+end
+
+local function wanted_lights()
+  local f = LIGHTS_FILE and io.open(LIGHTS_FILE, 'r')
+  if not f then return {} end
+  local text = f:read('*a')
+  f:close()
+  local ok, data = pcall(net.json2lua, text)
+  if not ok or type(data) ~= 'table' or type(data.at) ~= 'number' or os.time() - data.at > LIGHTS_STALE_S then
+    return {}
+  end
+  return type(data.carriers) == 'table' and data.carriers or {}
+end
+
+local function update_lights()
+  local wanted = wanted_lights()
+  for name, mode in pairs(wanted) do
+    if mode == 'recovery' and not lights_lit[name] and not lights_failed[name] then
+      if set_lights(name, true) then lights_lit[name] = true else lights_failed[name] = true end
+    end
+  end
+  for name in pairs(lights_lit) do
+    if wanted[name] ~= 'recovery' then
+      set_lights(name, false)
+      lights_lit[name] = nil
+    end
+  end
+end
+
 function callbacks.onPlayerConnect(player_id)
   pcall(log_players)
 end
@@ -294,11 +388,18 @@ function callbacks.onSimulationFrame()
   if now - last_players >= PLAYERS_EVERY_S then
     pcall(log_players)
   end
+  if now - last_lights >= LIGHTS_EVERY_S then
+    last_lights = now
+    pcall(update_lights)
+  end
 end
 
 function callbacks.onMissionLoadEnd()
+  lights_lit, lights_failed = {}, {}  -- a new mission starts with its own lighting
   local ok, result = pcall(net.dostring_in, 'mission', 'a_do_script([====[' .. HANDLER .. ']====])')
   log.write('BURBLE', ok and log.INFO or log.ERROR, 'handler injection: ' .. tostring(ok) .. ' ' .. tostring(result))
+  ok, result = pcall(net.dostring_in, 'mission', LIGHTS_WRAPPER)
+  log.write('BURBLE', ok and result == 'ok' and log.INFO or log.ERROR, 'lights wrapper: ' .. tostring(result))
   pcall(log_carriers)
 end
 

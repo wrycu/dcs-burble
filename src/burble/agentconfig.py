@@ -3,8 +3,8 @@
 (`reference_markdown`, `burble hub config-reference`).
 
 The agent reads these keys itself (agent/callouts.py `CalloutSettings.from_config`, agent/livefeed.py `live_settings`,
-agent/service.py `Agent.retention`); the defaults here are checked against those by the tests. Keys the agent doesn't
-read are kept as they are.
+agent/lights.py `lights_settings`, agent/service.py `Agent.retention`); the defaults here are checked against those by
+the tests. Keys the agent doesn't read are kept as they are.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ SECTIONS: tuple[tuple[str, tuple[Setting, ...]], ...] = (
         Setting(("callouts", "listen"), "bool", False, "Listen to pilots and answer them",
                 "\"Roger ball\" with the wind, \"Roger, Clara\" with a talk-down, and radio checks. Needs the agent "
                 "started with --listen-model."),
-        Setting(("callouts", "record_radio"), "bool", False, "Record the carrier frequency's radio with each pass",
+        Setting(("callouts", "record_radio"), "bool", True, "Record the carrier frequency's radio with each pass",
                 "Played in the pass's replay: the pass's own pilot (only if their SRS client has \"Allow "
                 "Transmissions To Be Recorded\" on) and the LSO, nobody else. Tell your players, e.g. in the "
                 "server's description: what they say on the carrier frequency is published with their passes."),
@@ -77,6 +77,18 @@ SECTIONS: tuple[tuple[str, tuple[Setting, ...]], ...] = (
                 "Aircraft around each carrier, for signed-in pilots watching on the hub's Live page."),
         Setting(("live", "radius_nm"), "number", 10.0, "Around each carrier (nm)",
                 "Aircraft within this distance of a carrier (and below 10,000 ft) are sent.", minimum=0.1),
+    )),
+    ("Carrier lights", (
+        Setting(("lights", "enabled"), "bool", True, "Turn the carrier's landing lights on for Case III recoveries",
+                "At night DCS's Supercarrier keeps its deck dark unless a pilot uses its carrier ATC. With this on, a "
+                "carrier is set to recovery lighting while it's Case III there (as the recovery case above decides) "
+                "and an aircraft is recovering to it, then back as the mission had it (its own lighting trigger, "
+                "else auto). Needs the agent started with --dcs-log and the current server hook."),
+        Setting(("lights", "radius_nm"), "number", 10.0, "Recovering within (nm)",
+                "An aircraft this close to the carrier, astern of it, pointed at it, and below 5,000 ft above its deck "
+                "counts as recovering.", minimum=0.1),
+        Setting(("lights", "hold_s"), "number", 120.0, "Keep them on for (seconds)",
+                "After the last aircraft recovering, for a bolter or the next one in.", minimum=0),
     )),
     ("Keeping files on the agent's machine", (
         Setting(("retention", "archives_days"), "number", 90.0, "Session recordings (days)",
@@ -268,7 +280,8 @@ def problems(config: object) -> list[str]:
     if not isinstance(config, dict):
         return ["the configuration is a JSON object"]
     out = []
-    for section in ("callouts", "callouts.srs", "live", "retention", "callouts.carriers", "callouts.thresholds"):
+    for section in ("callouts", "callouts.srs", "live", "lights", "retention", "callouts.carriers",
+                    "callouts.thresholds"):
         value = get(config, tuple(section.split(".")))
         if value is not None and not isinstance(value, dict):
             out.append(f"{section}: should be an object")

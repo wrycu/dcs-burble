@@ -441,10 +441,7 @@ class LiveCallouts:
 
     def case_iii(self, carrier: ObjectTrack, now: float) -> bool:
         """A Case III recovery: as the config says, or (auto) at night or in the mission's poor weather."""
-        if self.settings.case in ("I", "III"):
-            return self.settings.case == "III"
-        night = self.night_at(carrier, now) if self.night_at is not None else None
-        return is_case_iii(bool(night), self.weather() if self.weather is not None else None)
+        return recovery_case_iii(self.settings.case, self.night_at, self.weather, carrier, now)
 
     def deck_wind(self, carrier: ObjectTrack) -> DeckWind | None:
         """The wind over this carrier's angled deck now: the mission's wind (from the hook) less the carrier's
@@ -633,6 +630,16 @@ CASE_III_VISIBILITY_M = 5 * 1852.0
 # presets; the lower ones are few or scattered).
 CEILING_DENSITY = 7
 CEILING_PRESETS = frozenset({f"Preset{n}" for n in range(13, 28)} | {"RainyPreset1", "RainyPreset2", "RainyPreset3"})
+
+
+def recovery_case_iii(case: str, night_at: Callable[[ObjectTrack, float], bool | None] | None,
+                      weather: Callable[[], dict | None] | None, carrier: ObjectTrack, now: float) -> bool:
+    """Case III at this carrier now: as the config's `case` says ("I", "III"), or (auto) at night or in the mission's
+    poor weather. (The live calls and the carrier's lights decide it the same way.)"""
+    if case in ("I", "III"):
+        return case == "III"
+    night = night_at(carrier, now) if night_at is not None else None
+    return is_case_iii(bool(night), weather() if weather is not None else None)
 
 
 def is_case_iii(night: bool, weather: dict | None) -> bool:
