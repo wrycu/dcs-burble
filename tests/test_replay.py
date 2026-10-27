@@ -117,6 +117,17 @@ def test_what_the_lso_said():
         "Roger ball, 25 knots."
 
 
+def test_the_trap_card_says_what_was_said():
+    from burble.cards.svg import call_label
+
+    assert call_label({"call": "welcome aboard, despite the wave off", "said": "You did hear the wave off, right?"}) == \
+        "You did hear the wave off, right?"
+    assert call_label({"call": "roger ball", "text": "Roger ball, 25 knots", "said": "Roger ball, 25 knots."}) == \
+        "Roger ball, 25 knots"
+    assert call_label({"call": "welcome aboard, despite the wave off"}) == "Welcome aboard, despite the wave off"
+    assert call_label({"call": "ball", "by": "pilot", "text": "305, Hornet ball, 5.2"}) == "\u201c305, Hornet ball, 5.2\u201d"
+
+
 def test_the_subtitles_say_what_was_said(client, token, hub):
     pass_id = upload(client, token, PASS_FILES[0]).json()["pass_id"]
     from burble.hub.db import Pass

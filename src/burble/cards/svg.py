@@ -254,10 +254,12 @@ def _text_w(text: str, size: float) -> float:
 
 
 def call_label(call: dict) -> str:
-    """How a recorded call reads: what was said when known ("Roger ball, 25 knots"), a pilot's in quotes."""
-    text = call.get("text") or call["call"]
+    """How a recorded call reads: exactly what the LSO said when the agent recorded it (PLAN #51: "You did hear the
+    wave off, right?", without a closing full stop), else its text ("Roger ball, 25 knots"), else the call; a pilot's
+    in quotes."""
     if call.get("by") == "pilot":
-        return f"\u201c{text}\u201d"
+        return f"\u201c{call.get('text') or call['call']}\u201d"
+    text = (call.get("said") or "").removesuffix(".") or call.get("text") or call["call"]
     return text[:1].upper() + text[1:]
 
 
