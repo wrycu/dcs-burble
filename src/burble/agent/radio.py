@@ -2,7 +2,7 @@
 kept as SRS sends it (40 ms Opus frames), and what the LSO itself said, each transmission stamped with mission time.
 A pass's upload carries the transmissions on its carrier's frequency from its own pilot and the LSO.
 
-Switched on per server in the hub's configuration (`callouts.record_radio`, off by default). A player whose SRS client
+Switched on per server in the hub's configuration (`callouts.record_radio`, on by default). A player whose SRS client
 doesn't allow recording ("Allow Transmissions To Be Recorded" off: `AllowRecord` in their client) is never recorded,
 as SRS's own recorder leaves them out.
 """

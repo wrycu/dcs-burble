@@ -94,9 +94,8 @@ def test_sidecar_round_trip_and_checks():
 
 
 def test_config_and_the_srs_name_says_recording():
-    assert not CalloutSettings.from_config({"callouts": {"enabled": True}}).record_radio  # off by default
-    settings = CalloutSettings.from_config({"callouts": {"enabled": True, "record_radio": True}})
-    assert settings.record_radio
+    assert CalloutSettings.from_config({"callouts": {"enabled": True}}).record_radio  # on by default
+    assert not CalloutSettings.from_config({"callouts": {"enabled": True, "record_radio": False}}).record_radio
     assert SrsSink(SrsSettings(name="LSO"), [Radio(127.5)], recording=True).name == "LSO (recording)"
     assert SrsSink(SrsSettings(name="LSO"), [Radio(127.5)]).name == "LSO"
 

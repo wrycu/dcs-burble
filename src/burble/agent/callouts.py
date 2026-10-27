@@ -93,8 +93,9 @@ class CalloutSettings:
     # Listen to pilots on the LSO frequencies and answer their calls ("Roger ball"); needs --listen-model.
     listen: bool = False
     # Record the carrier frequency's radio with each pass, for its replay (PLAN #52): the pass's own pilot (if their
-    # SRS client allows recording) and the LSO. Off by default; players must be told (the server's description).
-    record_radio: bool = False
+    # SRS client allows recording) and the LSO. On by default (each player opts in in their SRS client); players must be
+    # told (the server's description).
+    record_radio: bool = True
     # Recovery case: "auto" (Case III at night, or with a low ceiling or poor visibility in the mission's
     # weather), or always "I" or "III". Case III: "Paddles contact" coming down final, then "call the ball".
     case: str = "auto"
@@ -117,7 +118,7 @@ class CalloutSettings:
             thresholds=replace(Thresholds(), **overrides),
             voice=str(c["voice"]) if c.get("voice") else None,
             listen=bool(c.get("listen", False)),
-            record_radio=bool(c.get("record_radio", False)),
+            record_radio=bool(c.get("record_radio", True)),
             case=str(c.get("case", "auto")).upper().replace("AUTO", "auto"),
         )
 
