@@ -193,9 +193,77 @@ end
 local weather_ok, weather_error = pcall(log_weather)
 if not weather_ok then log_event({ event = 'weather', t = timer.getTime(), error = tostring(weather_error) }) end
 
+-- Every airplane's landing gear and tail hook (0 up .. 1 down), from their animation, for "wave off, gear" and
+-- "wave off, hook": Tacview sends the gear only for the recording PC's own jet, but on a dedicated server the
+-- mission has a client jet's animation too (probe, 2026-10-28). Draw args: 0 nose, 3 and 5 mains, 25 hook. The
+-- gear is the least lowered leg. Logged when either moves by GEAR_STEP or more since last logged, and only for
+-- jets within GEAR_RADIUS_M of a carrier (a jet coming back into range is logged afresh).
+local GEAR_ARGS = { 0, 3, 5 }
+local HOOK_ARG = 25
+local GEAR_INTERVAL_S = 1
+local GEAR_STEP = 0.1
+local GEAR_RADIUS_M = 2 * 1852  -- the gear and hook wave-offs are inside 0.5 nm
+local gear_logged = {}  -- object id -> { gear, hook } as last logged
+
+local function carrier_points()
+  local points = {}
+  for _, side in ipairs({ coalition.side.NEUTRAL, coalition.side.RED, coalition.side.BLUE }) do
+    for _, group in ipairs(try(function() return coalition.getGroups(side, Group.Category.SHIP) end) or {}) do
+      for _, unit in ipairs(try(function() return group:getUnits() end) or {}) do
+        local p = is_carrier(try(function() return unit:getTypeName() end) or '') and try(function() return unit:getPoint() end)
+        if p then points[#points + 1] = p end
+      end
+    end
+  end
+  return points
+end
+
+local function near_carrier(unit, carriers)
+  local p = try(function() return unit:getPoint() end)
+  if not p then return false end
+  for _, c in ipairs(carriers) do
+    local dx, dz = p.x - c.x, p.z - c.z
+    if dx * dx + dz * dz <= GEAR_RADIUS_M * GEAR_RADIUS_M then return true end
+  end
+  return false
+end
+
+local function log_gear()
+  local carriers = carrier_points()
+  for _, side in ipairs({ coalition.side.NEUTRAL, coalition.side.RED, coalition.side.BLUE }) do
+    for _, group in ipairs(#carriers > 0 and try(function() return coalition.getGroups(side, Group.Category.AIRPLANE) end) or {}) do
+      for _, unit in ipairs(try(function() return group:getUnits() end) or {}) do
+        local id = try(function() return unit.id_ end)
+        if id and not near_carrier(unit, carriers) then
+          gear_logged[id] = nil
+        elseif id then
+          local gear
+          for _, arg in ipairs(GEAR_ARGS) do
+            local v = try(function() return unit:getDrawArgumentValue(arg) end)
+            if v and (gear == nil or v < gear) then gear = v end
+          end
+          local hook = try(function() return unit:getDrawArgumentValue(HOOK_ARG) end)
+          local last = gear_logged[id]
+          if gear and hook and (not last or math.abs(gear - last[1]) >= GEAR_STEP
+                                or math.abs(hook - last[2]) >= GEAR_STEP) then
+            gear_logged[id] = { gear, hook }
+            log_event({ event = 'gear', t = timer.getTime(), object_id = id,
+                        name = try(function() return unit:getName() end),
+                        player = try(function() return unit:getPlayerName() end), gear = gear, hook = hook })
+          end
+        end
+      end
+    end
+  end
+end
+
 timer.scheduleFunction(function(_, now)
   pcall(log_wind)
   return now + WIND_INTERVAL_S
+end, nil, timer.getTime() + 1)
+timer.scheduleFunction(function(_, now)
+  pcall(log_gear)
+  return now + GEAR_INTERVAL_S
 end, nil, timer.getTime() + 1)
 env.info('BURBLE {"event":"handler_installed","t":' .. string.format('%.17g', timer.getTime()) .. '}')
 ]==]

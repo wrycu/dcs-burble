@@ -24,6 +24,7 @@ PHRASES: dict[Call, str | tuple[str, ...]] = {
     Call.WAVE_OFF: "Wave off, wave off, wave off!",
     Call.WAVE_OFF_FOUL_DECK: "Wave off, wave off, foul deck!",
     Call.WAVE_OFF_GEAR: "Wave off, gear!",
+    Call.WAVE_OFF_HOOK: "Wave off, hook!",
     Call.BOLTER: "Bolter, bolter, bolter!",
     Call.ROGER_BALL: "Roger ball.",
     Call.ROGER_CLARA: ("Roger, Clara. Keep it coming.", "Roger, Clara. Continue."),

@@ -231,7 +231,7 @@ def test_wire_from_carrier_animation_without_dcs_grade(tmp_path):
 
     feed = HookFeed.__new__(HookFeed)
     import threading
-    feed._events, feed._lock = [], threading.Lock()
+    feed._events, feed._gear, feed._lock = [], {}, threading.Lock()
     me = {"object_id": 16777728, "type": "FA-18C_hornet"}  # -> Tacview 0x201, the AI trap's aircraft
     other = {"object_id": 16777984, "type": "FA-18C_hornet"}
     for t, wires, who in [(292.4, {"w1": 0, "w2": 0, "w3": 1, "w4": 0}, me),
@@ -264,7 +264,7 @@ def test_hook_events_are_scoped_to_the_current_mission():
     from burble.agent.service import HookFeed
 
     feed = HookFeed.__new__(HookFeed)
-    feed._events, feed._lock = [], threading.Lock()
+    feed._events, feed._gear, feed._lock = [], {}, threading.Lock()
     me = {"object_id": 16777728, "type": "FA-18C_hornet"}
     old_mission = [HookEvent("handler_installed", 0.0, None, None, None, None, {}),
                    HookEvent("wire_sample", 300.0, None, me, None, None, {"initiator": me, "wires": {"w3": 1}}),
@@ -417,3 +417,34 @@ def test_the_hub_records_a_crash_and_regrading_corrects_old_bolters(tmp_path):
     hub.regrade(force=True)
     with hub.sessions() as s:
         assert s.query(Pass).one().outcome == "crash"
+
+
+def test_hook_feed_keeps_each_aircrafts_latest_gear():
+    """The server hook's `gear` events: the latest per aircraft, only for the pilot Tacview names, until a new
+    mission."""
+    import threading
+    from burble.dcslog import parse_hook_line
+    from burble.agent.service import HookFeed
+
+    feed = HookFeed.__new__(HookFeed)
+    feed._events, feed._gear, feed._lock = [], {}, threading.Lock()
+
+    def gear(t, object_id, player, gear, hook):
+        raw = {"event": "gear", "t": t, "object_id": object_id, "name": "Aerial-5-1", "gear": gear, "hook": hook}
+        if player:
+            raw["player"] = player
+        feed.add(parse_hook_line("2026-10-28 07:02:20.216 INFO    SCRIPTING (Main): BURBLE " + json.dumps(raw)))
+
+    assert feed.gear_for(0x201, "Wrycu") == (None, None)  # nothing logged yet (or an older hook)
+    gear(15.0, 16777728, "Wrycu", 0.0, 0.0)  # -> Tacview 0x201
+    gear(24.0, 16777728, "Wrycu", 0.0, 0.95)
+    assert feed.gear_for(0x201, "Wrycu") == (0.0, 0.95)
+    assert feed.gear_for(0x201, " wrycu ") == (0.0, 0.95)  # names compared as elsewhere
+    assert feed.gear_for(0x201, None) == (0.0, 0.95)
+    assert feed.gear_for(0x201, "Maverick") == (None, None)  # someone else: not their gear
+    assert feed.gear_for(0x202, "Wrycu") == (None, None)
+    assert not [e for e in feed._events if e.event == "gear"]  # kept apart, not piled up with the rest
+    gear(30.0, 16777729, None, 1.0, 1.0)  # an AI jet: checked against its unit's name
+    assert feed.gear_for(0x202, "Aerial-5-1") == (1.0, 1.0)
+    feed.add(parse_hook_line('2026-10-28 08:00:00.000 INFO    SCRIPTING (Main): BURBLE {"event":"handler_installed","t":0}'))
+    assert feed.gear_for(0x201, "Wrycu") == (None, None)  # a new mission

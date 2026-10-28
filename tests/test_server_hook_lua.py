@@ -61,3 +61,42 @@ def test_the_hook_says_why_turbulence_or_weather_are_missing():
     assert "turbulence" not in events["wind"]
     assert events["wind"]["turbulence_error"] == "no atmosphere.getWindWithTurbulence"
     assert events["weather"]["error"] == "no env.mission"
+
+
+GEAR_STUBS = STUBS.replace("Group = { Category = { SHIP = 3 } }", "Group = { Category = { AIRPLANE = 0, SHIP = 3 } }") \
+    .replace("getGroups = function(side) if side ~= 2 then return {} end return { GROUP } end",
+             "getGroups = function(side, cat) if side ~= 2 then return {} end "
+             "if cat == 0 then return { PLANES } end return { GROUP } end") + r"""
+ARGS = { [0] = 0.0, [3] = 0.0, [5] = 0.0, [25] = 0.0 }
+JET_AT = { x = 1000 - 2000, y = 150, z = 2000 }  -- 2 km astern of the carrier
+local jet = { id_ = 16777728, getName = function() return "Aerial-5-1" end,
+              getPlayerName = function() return "Wrycu" end, getPoint = function() return JET_AT end,
+              getDrawArgumentValue = function(self, arg) return ARGS[arg] end }
+local tanker = { id_ = 16777729, getName = function() return "TANKER_1-2-1" end, getPlayerName = function() return nil end,
+                 getPoint = function() return { x = 1000, y = 7000, z = 2000 } end,
+                 getDrawArgumentValue = function(self, arg) error("no such argument") end }
+local far = { id_ = 16777730, getName = function() return "DRONE-1-1" end, getPlayerName = function() return nil end,
+              getPoint = function() return { x = 1000 + 30000, y = 9000, z = 2000 } end,  -- 16 nm away
+              getDrawArgumentValue = function(self, arg) return 0 end }
+PLANES = { getUnits = function() return { jet, tanker, far } end }
+"""
+
+
+def test_the_hook_logs_gear_and_hook_as_they_move():
+    """Each airplane near a carrier: its gear (the least lowered leg) and hook, logged when either moves by 0.1 or
+    more, and afresh when it comes back within 2 nm."""
+    text = HOOK.read_text(encoding="utf-8")
+    handler = text.split("local HANDLER = [==[", 1)[1].split("]==]", 1)[0]
+    away, back = "JET_AT = { x = 1000 - 4000, y = 300, z = 2000 }", "JET_AT = { x = 1000 - 2000, y = 150, z = 2000 }"
+    steps = [[], ["ARGS[25] = 0.05"], ["ARGS[25] = 0.41"], ["ARGS[0] = 0.08", "ARGS[3] = 0.37", "ARGS[5] = 0.37"],
+             ["ARGS[0] = 0.39", "ARGS[3] = 1.0", "ARGS[5] = 1.0"], [], [away], [back]]
+    run = "".join("".join(line + "\n" for line in step) + "for _, s in ipairs(scheduled) do s[1](s[2], 100) end\n"
+                  for step in steps)
+    out = subprocess.run([luajit(), "-"], input=GEAR_STUBS + handler + "\n" + run, capture_output=True, text=True,
+                         check=True).stdout
+    gear = [json.loads(m) for m in re.findall(r"^BURBLE (\{.*\})$", out, re.M) if '"event":"gear"' in m]
+    # (The nose at 0.08 is under a 0.1 move; the mains lead it, the nose is the least lowered leg.)
+    assert [(round(e["gear"], 2), round(e["hook"], 2)) for e in gear] == [(0.0, 0.0), (0.0, 0.41), (0.39, 0.41),
+                                                                          (0.39, 0.41)]  # the last: back in range
+    # Not the tanker (no such draw args) nor the drone 16 nm away; the jet at 4 km (2.2 nm) is out of range.
+    assert {(e["object_id"], e["player"], e["name"]) for e in gear} == {(16777728, "Wrycu", "Aerial-5-1")}

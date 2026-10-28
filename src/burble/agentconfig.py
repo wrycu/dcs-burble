@@ -104,7 +104,7 @@ SETTINGS = tuple(s for _, group in SECTIONS for s in group)
 # The calls a server can turn off, grouped for the form's checklist. The welcome's variants that name the wire, and
 # the dig after a rough trap, go with "welcome aboard" (ALWAYS_CALLS: kept in a list of calls, never on the form).
 CALL_GROUPS: tuple[tuple[str, tuple[Call, ...]], ...] = (
-    ("Wave-offs", (Call.WAVE_OFF, Call.WAVE_OFF_FOUL_DECK, Call.WAVE_OFF_GEAR)),
+    ("Wave-offs", (Call.WAVE_OFF, Call.WAVE_OFF_FOUL_DECK, Call.WAVE_OFF_GEAR, Call.WAVE_OFF_HOOK)),
     ("Glideslope", (Call.POWER_X3, Call.POWER_X2, Call.POWER, Call.LOW, Call.HIGH, Call.EASY_WITH_IT, Call.DONT_SETTLE,
                     Call.DONT_CLIMB, Call.GOING_LOW, Call.LITTLE_LOW, Call.LITTLE_HIGH, Call.GOING_HIGH)),
     ("Lineup", (Call.RIGHT_FOR_LINEUP, Call.COME_LEFT, Call.LITTLE_RIGHT, Call.LITTLE_LEFT, Call.DRIFTING_LEFT,
@@ -120,6 +120,7 @@ ALWAYS_CALLS = tuple(c for c in Call if c not in CHOOSABLE_CALLS)
 CALL_NOTES = {
     Call.WAVE_OFF_FOUL_DECK: "another aircraft in the landing area",
     Call.WAVE_OFF_GEAR: "gear up",
+    Call.WAVE_OFF_HOOK: "hook up (turn off for touch-and-goes)",
     Call.TRAPPED: "every welcome, with the wire when it's known, and now and then a dig after a rough trap",
     Call.TRAPPED_WAVED_OFF: "trapped through a wave-off",
     Call.KEEP_TURN_IN: "overshooting the turn to final",
@@ -169,6 +170,7 @@ THRESHOLD_NOTES = {
     "quiet_inside_m": "No calls at all inside this (at the ramp: too late to act on them).",
     "wave_off_inside_m": "Wave-offs for a dangerous pass are called inside this.",
     "gear_wave_off_inside_m": "\"Wave off, gear\" inside this with the gear up.",
+    "hook_wave_off_inside_m": "\"Wave off, hook\" inside this with the tail hook up.",
     "foul_deck_inside_m": "\"Wave off, foul deck\" inside this with another aircraft in the landing area.",
     "in_close_m": "In close from here: \"power, power, power\", \"don't settle\", \"don't climb\".",
     "little_deg": "Off the glideslope by this much: \"a little low/high\".",

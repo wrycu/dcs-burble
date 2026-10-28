@@ -98,6 +98,7 @@ class HookFeed:
     def __init__(self, path: Path, follow: bool = True) -> None:
         self.path = path
         self._events: list[HookEvent] = []
+        self._gear: dict[int, dict] = {}  # Tacview id -> the hook's latest `gear` event for it (kept apart: frequent)
         self._lock = threading.Lock()
         if follow:
             threading.Thread(target=self._run, name="dcs-log-follower", daemon=True).start()
@@ -123,6 +124,13 @@ class HookFeed:
                 # A new mission: its times restart at 0, so the previous mission's events would
                 # otherwise match this mission's passes.
                 self._events.clear()
+                self._gear.clear()
+            if event.event == "gear":
+                try:
+                    self._gear[tacview_id_hint(int(event.raw["object_id"]))] = event.raw
+                except (KeyError, TypeError, ValueError):
+                    pass
+                return
             if event.event == "players":  # only the latest list matters
                 self._events = [e for e in self._events if e.event != "players"]
             self._events.append(event)
@@ -136,6 +144,25 @@ class HookFeed:
             return None
         return [{"ucid": str(x.get("ucid")), "ip": str(x.get("ip") or ""), "name": x.get("name")}
                 for x in latest.raw.get("players") or [] if isinstance(x, dict) and x.get("ucid")]
+
+    def gear_for(self, tacview_id: int, pilot: str | None = None) -> tuple[float | None, float | None]:
+        """An aircraft's landing gear and tail hook (each 0 up .. 1 down) as the hook last logged them in this
+        mission; None for either not known (an older hook, or not logged yet). With `pilot` (Tacview's name for the
+        aircraft), only if the hook's player (or for AI, the unit's name) is the same: another aircraft's gear would
+        make a false wave-off."""
+        with self._lock:
+            raw = self._gear.get(tacview_id)
+        if raw is None:
+            return None, None
+        who = raw.get("player") or raw.get("name")
+        if pilot and who and " ".join(str(who).lower().split()) != " ".join(pilot.lower().split()):
+            return None, None
+
+        def value(key: str) -> float | None:
+            v = raw.get(key)
+            return float(v) if isinstance(v, (int, float)) else None
+
+        return value("gear"), value("hook")
 
     def wire_for(self, tacview_id: int, start: float, end: float) -> int | None:
         """The wire caught by this aircraft between `start` and `end` (mission time), from the hook's
@@ -636,6 +663,7 @@ class Agent:
                 hooks = self.hooks
                 callouts.side_number_for = lambda pilot, t: (hooks.slot_for(pilot, t) or {}).get("onboard_num")
                 callouts.weather = getattr(hooks, "weather", None)
+                callouts.gear_for = getattr(hooks, "gear_for", None)
         session.lights = self._lights(session)
         listening = None
         if callouts is not None:

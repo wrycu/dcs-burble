@@ -31,6 +31,7 @@ class LiveInput:
     heading_error: float = 0.0  # aircraft heading minus landing-area heading, degrees
     roll: float = 0.0  # degrees
     gear: float | None = None  # landing gear position 0 (up) .. 1 (down), when the exporter provides it
+    hook: float | None = None  # tail hook position 0 (up) .. 1 (down), likewise
     heading: float | None = None  # degrees, grid (same frame as u/v); for AOA from motion
     wind: tuple[float, float] = (0.0, 0.0)  # (east, north) m/s at the aircraft, for AOA from motion
     foul_deck: bool = False  # another aircraft is in the landing area right now
@@ -54,6 +55,7 @@ class GrooveState:
     samples_in_window: int
     pitch_rate: float = 0.0  # deg/s
     gear: float | None = None
+    hook: float | None = None
     foul_deck: bool = False  # another aircraft is in the landing area
 
 
@@ -125,5 +127,5 @@ class LiveEstimator:
             time=x.time, along=x.along, glideslope_deg=gs, glideslope_rate=gs_rate,
             lineup_deg=lu, lineup_rate=lu_rate, lateral_m=lateral, aoa=aoa, aoa_derived=derived,
             heading_error=x.heading_error, roll=x.roll, samples_in_window=len(w),
-            pitch_rate=pitch_rate, gear=x.gear, foul_deck=x.foul_deck,
+            pitch_rate=pitch_rate, gear=x.gear, hook=x.hook, foul_deck=x.foul_deck,
         )

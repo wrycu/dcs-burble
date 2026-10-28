@@ -132,6 +132,10 @@ def test_case_iii_from_night_and_weather():
     low = {"clouds": {"preset": "Preset20", "base_m": 250}, "visibility_m": 80000}
     assert is_case_iii(False, low)
     assert not is_case_iii(False, {**low, "clouds": {"preset": "Preset2", "base_m": 250}})  # scattered: no ceiling
+    assert is_case_iii(False, {**low, "clouds": {"preset": "Preset7", "base_m": 250}})  # "Scattered 3": broken low
+    assert is_case_iii(False, {**low, "clouds": {"preset": "RainyPreset5", "base_m": 250}})  # "Light Rain 2"
+    assert not is_case_iii(False, {**low, "clouds": {"preset": "Preset10", "base_m": 250}})  # "Scattered 5"
+    assert not is_case_iii(False, {**low, "clouds": {"preset": "RainyPreset4", "base_m": 250}})  # "Light Rain 1"
     assert not is_case_iii(False, {**low, "clouds": {"preset": "Preset20", "base_m": 900}})
     assert is_case_iii(False, {"clouds": {}, "visibility_m": 80000, "fog": {"visibility_m": 1500}})
     assert is_case_iii(False, {"clouds": {"density": 8, "base_m": 200}})  # legacy clouds

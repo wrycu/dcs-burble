@@ -13,9 +13,9 @@ FIXTURE = Path(__file__).parent / "fixtures" / "ai_hornet_trap_cvn75.zip.acmi"
 
 
 def state(t=0.0, along=0.5 * NM, gs=0.0, gs_rate=0.0, lineup=0.0, lineup_rate=0.0, lateral=0.0, aoa=8.1,
-          heading_error=0.0, roll=0.0, pitch_rate=0.0, gear=None, foul_deck=False) -> GrooveState:
+          heading_error=0.0, roll=0.0, pitch_rate=0.0, gear=None, hook=None, foul_deck=False) -> GrooveState:
     return GrooveState(t, along, gs, gs_rate, lineup, lineup_rate, lateral, aoa, False, heading_error, roll, 5,
-                       pitch_rate=pitch_rate, gear=gear, foul_deck=foul_deck)
+                       pitch_rate=pitch_rate, gear=gear, hook=hook, foul_deck=foul_deck)
 
 
 def test_conditions_zones():
@@ -121,6 +121,20 @@ def test_foul_deck_wave_off():
     engine = CalloutEngine()
     calls = feed(engine, [state(t=i * 0.1, along=0.4 * NM - i * 7, foul_deck=i >= 10) for i in range(40)])
     assert calls == [Call.WAVE_OFF_FOUL_DECK]  # once, and nothing after it
+    assert engine.waved_off
+
+
+def test_gear_and_hook_wave_offs():
+    th = Thresholds()
+    assert Call.WAVE_OFF_GEAR in conditions(state(along=0.4 * NM, gear=0.2, hook=1.0), th)
+    assert Call.WAVE_OFF_HOOK in conditions(state(along=0.4 * NM, gear=1.0, hook=0.0), th)
+    assert Call.WAVE_OFF_HOOK in conditions(state(along=100.0, hook=0.0), th)  # still, at the ramp
+    assert not {Call.WAVE_OFF_GEAR, Call.WAVE_OFF_HOOK} & conditions(state(along=0.4 * NM, gear=1.0, hook=1.0), th)
+    assert Call.WAVE_OFF_HOOK not in conditions(state(along=0.6 * NM, hook=0.0), th)  # not yet
+    assert Call.WAVE_OFF_HOOK not in conditions(state(along=0.4 * NM, hook=None), th)  # not known: nothing
+    engine = CalloutEngine()
+    calls = feed(engine, [state(t=i * 0.1, along=0.45 * NM - i * 7, hook=0.0) for i in range(40)])
+    assert calls == [Call.WAVE_OFF_HOOK]  # once, and nothing after it
     assert engine.waved_off
 
 

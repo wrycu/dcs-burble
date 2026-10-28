@@ -21,6 +21,7 @@ class Call(StrEnum):
     WAVE_OFF = "wave off"
     WAVE_OFF_FOUL_DECK = "wave off, foul deck"  # another aircraft is in the landing area
     WAVE_OFF_GEAR = "wave off, gear"
+    WAVE_OFF_HOOK = "wave off, hook"  # the tail hook up (a touch-and-go would be flown so: the call can be turned off)
     BOLTER = "bolter"  # decided by the bolter detector in the live agent, not by CalloutEngine
     TRAPPED = "welcome aboard"  # likewise (arrestment detected); spoken as one of several variants
     TRAPPED_WAVED_OFF = "welcome aboard, despite the wave off"  # trapped after ignoring our wave-off
@@ -71,7 +72,7 @@ class Call(StrEnum):
 # Lower number = more urgent (declaration order above).
 PRIORITY = {call: i for i, call in enumerate(Call)}
 POWER_CALLS = frozenset({Call.POWER, Call.POWER_X2, Call.POWER_X3})
-WAVE_OFFS = frozenset({Call.WAVE_OFF, Call.WAVE_OFF_FOUL_DECK, Call.WAVE_OFF_GEAR})
+WAVE_OFFS = frozenset({Call.WAVE_OFF, Call.WAVE_OFF_FOUL_DECK, Call.WAVE_OFF_GEAR, Call.WAVE_OFF_HOOK})
 # Calls that can't wait: said after only the short gap (Thresholds.urgent_spacing_s).
 URGENT_CALLS = POWER_CALLS | {Call.LOW, Call.DONT_SETTLE}
 # A trap welcome naming the wire: {plain welcome: {wire: call}}.
@@ -120,6 +121,7 @@ class Thresholds:
     quiet_inside_m: float = 120.0
     wave_off_inside_m: float = 0.25 * NM
     gear_wave_off_inside_m: float = 0.5 * NM
+    hook_wave_off_inside_m: float = 0.5 * NM
     # Another aircraft in the landing area with the pilot this close: "wave off, foul deck".
     foul_deck_inside_m: float = 0.35 * NM
     in_close_m: float = 0.25 * NM
@@ -218,6 +220,8 @@ def conditions(s: GrooveState, th: Thresholds, previous: frozenset[Call] = froze
         active.add(Call.WAVE_OFF)
     if s.gear is not None and s.gear < 0.5 and 0 < s.along <= th.gear_wave_off_inside_m:
         active.add(Call.WAVE_OFF_GEAR)
+    if s.hook is not None and s.hook < 0.5 and 0 < s.along <= th.hook_wave_off_inside_m:
+        active.add(Call.WAVE_OFF_HOOK)
     if s.foul_deck and 0 < s.along <= th.foul_deck_inside_m:
         active.add(Call.WAVE_OFF_FOUL_DECK)
     if s.along <= th.quiet_inside_m:

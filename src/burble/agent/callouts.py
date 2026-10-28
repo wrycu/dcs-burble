@@ -281,8 +281,8 @@ def _norm(name: str | None) -> str:
 
 
 def _gear(plane: ObjectTrack) -> float | None:
-    """Landing gear position from Tacview's `LandingGear` property (only exported for some aircraft,
-    in practice the recording player's own)."""
+    """Landing gear position from Tacview's `LandingGear` property (only exported for the recording player's own
+    jet; for the others, the server hook's, `LiveCallouts.gear_for`)."""
     try:
         return float(plane.props["LandingGear"])
     except (KeyError, ValueError):
@@ -360,6 +360,8 @@ class LiveCallouts:
         # event). For deciding Case III (`case_iii`).
         self.night_at: Callable[[ObjectTrack, float], bool | None] | None = None
         self.weather: Callable[[], dict | None] | None = None
+        # An aircraft's landing gear and tail hook (Tacview id, its pilot) from the hook, for gear and hook wave-offs.
+        self.gear_for: Callable[[int, str | None], tuple[float | None, float | None]] | None = None
         self._groove_seen: dict[tuple[int, int], float] = {}  # (carrier, aircraft) -> last time in the groove
         self.clips = clips
         self.sink = sink
@@ -398,10 +400,14 @@ class LiveCallouts:
         heading_error = ((t.heading or 0.0) - (pose.heading - frame.carrier.deck_angle) + 180.0) % 360.0 - 180.0
         wind = self.wind_for(carrier.pilot) if self.wind_for else None
         foul = self.deck_foul(carrier.id, pose, frame, plane.id, sample.time) if self.deck_foul else False
+        gear, hook = _gear(plane), None
+        if self.gear_for is not None:
+            hooked_gear, hook = self.gear_for(plane.id, plane.pilot)
+            gear = hooked_gear if gear is None else gear
         state = estimator.update(LiveInput(
             time=sample.time, along=pos.along, lateral=pos.lateral, hook_height=pos.hook_height,
             pitch=t.pitch or 0.0, alt=t.alt or 0.0, u=t.u or 0.0, v=t.v or 0.0, aoa=sample.aoa,
-            heading_error=heading_error, roll=t.roll or 0.0, gear=_gear(plane), heading=t.heading,
+            heading_error=heading_error, roll=t.roll or 0.0, gear=gear, hook=hook, heading=t.heading,
             wind=wind.at(t.alt or 0.0) if wind else (0.0, 0.0), foul_deck=foul))
         self._states[key] = state
         event = engine.update(state)
@@ -663,10 +669,14 @@ class LiveCallouts:
 # Case III by the weather (when it isn't night): a ceiling below this, or visibility below this.
 CASE_III_CEILING_M = 1000 * 0.3048
 CASE_III_VISIBILITY_M = 5 * 1852.0
-# Cloud layers that make a ceiling: legacy clouds this dense (0-10), or these presets (DCS's broken and overcast
-# presets; the lower ones are few or scattered).
+# Cloud layers that make a ceiling: legacy clouds this dense (0-10), or these presets, whose bottom layer is broken
+# or overcast (user, 2026-10-27, by the mission editor's names; others are few or scattered low, some broken higher up).
 CEILING_DENSITY = 7
-CEILING_PRESETS = frozenset({f"Preset{n}" for n in range(13, 28)} | {"RainyPreset1", "RainyPreset2", "RainyPreset3"})
+CEILING_PRESETS = frozenset(
+    # Broken: Scattered 3, High Scattered 3, Scattered 4, Scattered 6, Scattered 7, and Broken 1-6.
+    {f"Preset{n}" for n in (7, 8, 9, 11, 12, *range(13, 19))}
+    # Overcast: Broken 7 and 8, Overcast 1-7, Overcast And Rain 1-3, and Light Rain 2 and 3.
+    | {f"Preset{n}" for n in range(19, 28)} | {f"RainyPreset{n}" for n in (1, 2, 3, 5, 6)})
 
 
 def recovery_case_iii(case: str, night_at: Callable[[ObjectTrack, float], bool | None] | None,

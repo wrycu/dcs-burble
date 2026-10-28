@@ -82,7 +82,7 @@ def _hindsight(inputs: list[LiveInput], glideslope: float, window_s: float,
         else:
             aoa = None
         states.append(GrooveState(x.time, x.along, gs, 0.0, lu, 0.0, x.lateral, aoa, not recorded,
-                                  x.heading_error, x.roll, len(w), gear=x.gear))
+                                  x.heading_error, x.roll, len(w), gear=x.gear, hook=x.hook))
     return states
 
 

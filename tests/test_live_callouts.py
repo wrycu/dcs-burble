@@ -380,7 +380,7 @@ def test_hook_feed_reads_the_wire_from_dcs_grade(tmp_path):
     from burble.agent.service import HookFeed
     feed = HookFeed.__new__(HookFeed)  # no dcs.log follower thread
     import threading
-    feed._events, feed._lock = [], threading.Lock()
+    feed._events, feed._gear, feed._lock = [], {}, threading.Lock()
     feed.add(HookEvent("landing_quality_mark", 362.1, "LSO: GRADE:C : _EGTL_  3PTSIW  WIRE# 2[BC]",
                        {"name": "Wrycu", "object_id": 16777474}, {"name": "CVN-75 Harry S. Truman"}, None, {}))
     assert feed.live_wire(0x103, since=340.0) == 2
@@ -513,7 +513,7 @@ def test_hook_feed_reads_each_carriers_mission_frequency():
     from burble.dcslog import parse_hook_line
     from burble.agent.service import HookFeed
     feed = HookFeed.__new__(HookFeed)
-    feed._events, feed._lock = [], threading.Lock()
+    feed._events, feed._gear, feed._lock = [], {}, threading.Lock()
     line = ('2026-10-03 12:00:00.000 INFO    BURBLE (Main): BURBLE {"event":"carrier","t":0,'
             '"name":"CVN-75 Harry S. Truman","type":"CVN_75","frequency":127500000,"modulation":0}')
     feed.add(parse_hook_line(line))
@@ -722,3 +722,30 @@ def test_the_listener_hands_recognised_calls_on():
     asyncio.run(run())
     (h,) = heard
     assert (h.speaker, h.unit_id, h.frequency_hz, h.call.call) == ("Wrycu", 42, 127.6e6, "ball")
+
+
+class GearHooks(WireHooks):
+    """The server hook's gear and hook for every aircraft (a dedicated server's stream has neither)."""
+
+    def __init__(self, gear, hook):
+        super().__init__(None)
+        self.state = (gear, hook)
+        self.pilots = set()
+
+    def gear_for(self, tacview_id, pilot=None):
+        self.pilots.add(pilot)
+        return self.state
+
+
+@pytest.mark.parametrize("gear, hook, call", [(0.0, 1.0, Call.WAVE_OFF_GEAR), (1.0, 0.0, Call.WAVE_OFF_HOOK),
+                                              (1.0, 1.0, None)])
+def test_gear_and_hook_from_the_server_hook(tmp_path, clips, gear, hook, call):
+    """A dedicated server's copy of a client jet (no gear in Tacview): the server hook's gear and hook make the
+    wave-offs."""
+    hooks = GearHooks(gear, hook)
+    _, _, sink = asyncio.run(run_collector(FIXTURES / "live" / "trap-server.zip.acmi", tmp_path / "edge", clips,
+                                           hooks=hooks))
+    said = [c for c, _ in sink.said]
+    wave_offs = [c for c in said if c in (Call.WAVE_OFF_GEAR, Call.WAVE_OFF_HOOK)]
+    assert wave_offs == ([call] if call else [])
+    assert hooks.pilots == {"Wrycu"}  # asked for the jet Tacview names
