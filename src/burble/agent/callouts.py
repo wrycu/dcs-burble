@@ -20,7 +20,7 @@ from ..acmi import ObjectTrack, Sample
 from ..callouts import CallEvent, CalloutEngine, LiveEstimator, LiveInput, Thresholds
 from ..callouts.estimator import GrooveState
 from ..callouts.heard import describe
-from ..callouts.rules import WAVE_OFFS, WELCOME_WIRE, Call
+from ..callouts.rules import URGENT_CALLS, WAVE_OFFS, WELCOME_WIRE, Call
 from ..callouts.voice import Clip, ClipLibrary
 from ..detect.wire import wire_at_stop
 from ..grading import Grade
@@ -35,6 +35,11 @@ MATCH_FRESH_S = 5.0  # a pass the pilot's call can be from: tracked this recentl
 MATCH_MAX_ALONG_M = 4000.0  # ...and no farther out than this (about 2 nm)
 # A call that couldn't be spoken within this long is dropped: late calls are worse than none.
 MAX_CALL_AGE_S = 1.5
+# Someone else is transmitting on a frequency while we've heard them this recently (SRS sends 40 ms frames).
+ON_AIR_GAP_S = 0.3
+# An urgent call waits at most this long for them to finish; other calls aren't said over anyone (dropped).
+ON_AIR_WAIT_S = 3.0
+SAME_FREQUENCY_HZ = 1000.0
 
 # Bolter: the hook touched the landing area, and the jet is then this far past the last wire
 # still holding at least this fraction of its touchdown speed (a bolter at full power holds or gains
@@ -133,14 +138,17 @@ class CalloutSettings:
 class CallSink(Protocol):
     async def start(self) -> None: ...
 
-    async def say(self, call: Call, clip: Clip, radio: Radio, issued_at: float) -> None: ...
+    async def say(self, call: Call, clip: Clip, radio: Radio, issued_at: float) -> bool | None:
+        """False: not said (dropped)."""
 
     async def close(self) -> None: ...
 
 
 class SrsSink:
     """Speaks calls through one persistent SRS connection. A wave-off cuts off whatever is
-    being said; other calls queue, and are dropped if they can no longer be said in time."""
+    being said; other calls queue, and are dropped if they can no longer be said in time. Nothing but a wave-off
+    is said over someone else transmitting on the frequency (e.g. the pilot answering "call the ball"): an urgent
+    call waits for them to finish (up to ON_AIR_WAIT_S), any other is dropped."""
 
     def __init__(self, settings: SrsSettings, radios: list[Radio], recording: bool = False) -> None:
         self.settings = settings
@@ -155,6 +163,7 @@ class SrsSink:
         self.on_voice: Callable | None = None
         # Told when we start a transmission (its radio); returns a list to put the frames in as they're sent.
         self.on_transmit: Callable[[Radio], list[bytes]] | None = None
+        self._others: dict[float, float] = {}  # frequency (Hz) -> when someone else was last heard on it (perf)
 
     @property
     def name(self) -> str:
@@ -168,12 +177,26 @@ class SrsSink:
         if self._client is None or not self._client.connected:
             s = self.settings
             client = SrsClient(s.host, s.port, name=self.name, coalition=s.coalition, radios=tuple(self.radios[:10]),
-                               on_voice=lambda packet, at: self.on_voice(packet, at) if self.on_voice else None)
+                               on_voice=self._heard)
             await client.connect()
             log.info("SRS connected: %s:%d as %r on %s", s.host, s.port, self.name,
                      ", ".join(f"{r.frequency_mhz:.3f} {r.modulation.name}" for r in self.radios))
             self._client = client
         return self._client
+
+    def _heard(self, packet, at: float) -> None:
+        client = self._client
+        if packet.audio and (client is None or packet.client_guid != client.guid):
+            for frequency in packet.frequencies:
+                self._others[frequency] = at
+        if self.on_voice is not None:
+            self.on_voice(packet, at)
+
+    def on_air(self, radio: Radio) -> bool:
+        """Is someone else transmitting on this radio's frequency now?"""
+        now = time.perf_counter()
+        return any(abs(f - radio.frequency_hz) < SAME_FREQUENCY_HZ and now - at < ON_AIR_GAP_S
+                   for f, at in self._others.items())
 
     async def start(self) -> None:
         """Connect ahead of the first call. SRS clients drop audio from a sender they haven't been
@@ -200,13 +223,23 @@ class SrsSink:
             except OSError as exc:
                 log.debug("SRS still unavailable: %s", exc)
 
-    async def say(self, call: Call, clip: Clip, radio: Radio, issued_at: float) -> None:
+    async def say(self, call: Call, clip: Clip, radio: Radio, issued_at: float) -> bool:
         if call in WAVE_OFFS and self._current is not None:
             self._current.cancel()
         async with self._lock:
             if call not in WAVE_OFFS and time.monotonic() - issued_at > MAX_CALL_AGE_S:
                 log.info("dropped stale call %r", call.value)
-                return
+                return False
+            if call not in WAVE_OFFS and self.on_air(radio):
+                if call not in URGENT_CALLS:
+                    log.info("dropped call %r: someone is transmitting on %.3f", call.value, radio.frequency_mhz)
+                    return False
+                while self.on_air(radio):
+                    if time.monotonic() - issued_at > ON_AIR_WAIT_S:
+                        log.info("dropped call %r: someone kept transmitting on %.3f", call.value,
+                                 radio.frequency_mhz)
+                        return False
+                    await asyncio.sleep(0.05)
             try:
                 client = await self._connected()
                 if radio not in self.radios and len(self.radios) < MAX_SRS_RADIOS:
@@ -229,8 +262,10 @@ class SrsSink:
             except OSError as exc:
                 log.warning("SRS unavailable (%s); call %r not spoken", exc, call.value)
                 self._client = None
+                return False
             finally:
                 self._current = None
+            return True
 
     async def close(self) -> None:
         if self._keepalive is not None:
@@ -395,7 +430,7 @@ class LiveCallouts:
             side_number = self._side_number(carrier.id, plane, event.time) if event.call not in (Call.BOLTER,) else None
             clip = self._clip(event.call, made, side_number=side_number)
             self._made(made)
-            welcome = self._say(carrier, plane, event.call, event, clip)
+            welcome = self._say(carrier, plane, event.call, event, clip, made)
         task = asyncio.get_running_loop().create_task(welcome)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -437,7 +472,7 @@ class LiveCallouts:
                and random.random() < self.settings.thresholds.rough_dig_chance)
         call = call if call in self.clips else event.call
         clip = self._clip(call, made, praise=grade in PRAISE_GRADES, home=home, dig=dig)
-        await self._say(carrier, plane, call, event, clip)
+        await self._say(carrier, plane, call, event, clip, made)
 
     def case_iii(self, carrier: ObjectTrack, now: float) -> bool:
         """A Case III recovery: as the config says, or (auto) at night or in the mission's poor weather."""
@@ -476,11 +511,13 @@ class LiveCallouts:
             made.said, made.voice = clip.text, self.clips.voice
         return clip
 
-    async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent, clip: Clip) -> None:
+    async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent, clip: Clip,
+                   made: MadeCall | None = None) -> None:
         radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
         log.info("CALL %s -> %s (%.2f nm, %s): %r", call.value, plane.pilot or hex(plane.id),
                  event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}", clip.text)
-        await self.sink.say(call, clip, radio, time.monotonic())
+        if await self.sink.say(call, clip, radio, time.monotonic()) is False and made is not None:
+            self.made = [m for m in self.made if m is not made]  # not said (e.g. the pilot was transmitting)
 
     def _outcome(self, key: tuple[int, int], t: float, pos, frame: DeckFrame) -> Call | None:
         """Once per pass, after touchdown: BOLTER when the jet rolls past the wires at speed, TRAPPED

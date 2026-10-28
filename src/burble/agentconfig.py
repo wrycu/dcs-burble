@@ -160,6 +160,8 @@ THRESHOLD_NOTES = {
     "paddles_contact_m": "Case III: \"Paddles contact\" once inside this, inbound.",
     "call_the_ball_m": "Case III: \"call the ball\" inside this, if the pilot hasn't called it (or \"Clara\").",
     "ball_wait_s": "After \"call the ball\": only urgent calls for this long, or until the pilot answers.",
+    "ball_reply_s": "After \"call the ball\": only wave-offs and urgent calls for this long (the start of the wait "
+                    "above), while the pilot keys up to answer.",
     "clara_talk_s": "After \"Clara\": \"on glideslope\" when steady, this long after the last call.",
     "quiet_inside_m": "No calls at all inside this (at the ramp: too late to act on them).",
     "wave_off_inside_m": "Wave-offs for a dangerous pass are called inside this.",

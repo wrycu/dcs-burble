@@ -60,6 +60,60 @@ def test_case_iii_waits_for_the_ball_call():
     assert names[at + 1] is Call.POWER and calls[at + 1][1] >= calls[at][1] - 0.05
 
 
+def test_case_iii_gives_the_pilot_time_to_answer():
+    # High (a call still made while waiting for the ball call), but not in the first moments: the pilot is keying up.
+    calls = fly(CalloutEngine(case_iii=True), 1.5 * NM, 0.2 * NM, gs=1.2)
+    names = [c for c, _ in calls]
+    at = names.index(Call.CALL_THE_BALL)
+    th = CalloutEngine().thresholds
+    assert names[at + 1] is Call.HIGH
+    assert calls[at + 1][1] <= calls[at][1] - (th.default_call_s + th.ball_reply_s) * 70.0 / NM + 0.01
+
+
+def test_nothing_but_a_wave_off_is_said_over_a_transmission():
+    import time
+
+    from burble.agent.callouts import SrsSink
+    from burble.srs import Radio
+    from burble.srs.packet import VoicePacket
+
+    class FakeClient:
+        connected = True
+        guid = "lso"
+
+        def __init__(self):
+            self.sent = []
+
+        async def transmit(self, frames, radios):
+            self.sent.append(len(frames))
+
+        async def close(self):
+            pass
+
+    def keyed(sink, frequency_mhz=127.5, who="pilot"):
+        sink._heard(VoicePacket(b"a", (frequency_mhz * 1e6,), (0,), (0,), 1, 1, who), time.perf_counter())
+
+    async def run():
+        sink = SrsSink(CalloutSettings().srs, [Radio(127.5)])
+        sink._client = client = FakeClient()
+        keyed(sink)
+        assert sink.on_air(Radio(127.5)) and not sink.on_air(Radio(127.75))
+        said = [await sink.say(Call.HIGH, Clip("h", [b"f"]), Radio(127.5), time.monotonic())]  # dropped
+        said.append(await sink.say(Call.WAVE_OFF, Clip("w", [b"f"] * 2), Radio(127.5), time.monotonic()))  # said
+        keyed(sink)
+        power = asyncio.create_task(sink.say(Call.POWER, Clip("p", [b"f"] * 3), Radio(127.5), time.monotonic()))
+        await asyncio.sleep(0.2)
+        keyed(sink)  # still talking...
+        await asyncio.sleep(0.1)
+        assert client.sent == [2]  # ...so the power call waits
+        said.append(await power)  # ...and is said once they've stopped
+        keyed(sink, who="lso")  # our own transmission doesn't count
+        said.append(await sink.say(Call.HIGH, Clip("h", [b"f"] * 4), Radio(127.5), time.monotonic()))
+        return said, client.sent
+
+    assert asyncio.run(run()) == ([False, True, True, True], [2, 3, 4])
+
+
 def test_clara_gets_talked_down_until_the_ball():
     engine = CalloutEngine()
     plain = [c for c, _ in fly(engine, 0.75 * NM, 0.1 * NM)]

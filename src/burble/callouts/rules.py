@@ -81,6 +81,8 @@ WELCOME_WIRE = {
 # Calls still made while waiting for the pilot's answer to "call the ball" (Thresholds.ball_wait_s): the big
 # deviations and anything urgent; the rest wait.
 BALL_WAIT_CALLS = WAVE_OFFS | URGENT_CALLS | {Call.EASY_WITH_IT, Call.HIGH, Call.RIGHT_FOR_LINEUP, Call.COME_LEFT}
+# ...and in its first moments (Thresholds.ball_reply_s), while the pilot keys up to answer, only these.
+BALL_REPLY_CALLS = WAVE_OFFS | URGENT_CALLS
 LINEUP_CALLS = frozenset({Call.RIGHT_FOR_LINEUP, Call.COME_LEFT, Call.LITTLE_RIGHT, Call.LITTLE_LEFT,
                           Call.DRIFTING_LEFT, Call.DRIFTING_RIGHT})
 
@@ -104,6 +106,8 @@ class Thresholds:
     # ...then quiet for this long after saying it (or until the pilot answers), so the pilot can call the ball;
     # only BALL_WAIT_CALLS are made meanwhile.
     ball_wait_s: float = 5.0
+    # ...the first this long of it only wave-offs and urgent calls (BALL_REPLY_CALLS): the pilot's reply starts.
+    ball_reply_s: float = 3.0
     # After "Clara": "on glideslope" when steady, this long after the last call (and again as long as it lasts).
     clara_talk_s: float = 2.5
     # Inside this the pilot is at the ramp: no calls at all (too late to act on them).
@@ -303,6 +307,7 @@ class CalloutEngine:
         self._contact_said = False
         self._call_ball_said = False
         self._ball_wait_until = float("-inf")  # waiting for the answer to "call the ball" until then
+        self._ball_reply_until = float("-inf")  # ...only wave-offs and urgent calls until then
 
     def heard(self, call: str) -> None:
         """What the pilot said (agent/listening.py): "ball" or "clara"."""
@@ -359,7 +364,8 @@ class CalloutEngine:
             ready.append(c)
         waiting = s.time < self._ball_wait_until and not (self.ball_called or self.clara_called)
         if waiting:
-            ready = [c for c in ready if c in BALL_WAIT_CALLS]
+            allowed = BALL_REPLY_CALLS if s.time < self._ball_reply_until else BALL_WAIT_CALLS
+            ready = [c for c in ready if c in allowed]
         if not ready:
             if waiting:
                 return None
@@ -419,6 +425,7 @@ class CalloutEngine:
             self._call_ball_said = self._contact_said = True
             event = self._say(s, Call.CALL_THE_BALL)
             self._ball_wait_until = self._busy_until + th.ball_wait_s
+            self._ball_reply_until = self._busy_until + th.ball_reply_s
             return event
         return None
 
