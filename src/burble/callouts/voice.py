@@ -95,6 +95,13 @@ SIDE_NUMBER_GAP_FRAMES = 2  # a short pause (80 ms) between the side number and 
 FOLLOW_GAP_FRAMES = 8  # and between a welcome and a remark after it (320 ms)
 SILENCE_LEVEL = 150  # trimmed from the ends of digit clips (16-bit samples)...
 TRIM_MARGIN = 480  # ...keeping 30 ms either side so soft consonants ("eight", "two") survive
+# Pauses in rendered phrases (user, 2026-10-28: Piper's sounded odd): Piper writes a phrase's sentences back to back,
+# with no pause, while its pauses at commas run 100-280 ms. So: this between sentences, pauses inside one cut to this,
+# and less of Piper's random timing (its default noise_w_scale is 0.8). Quiet below PAUSE_LEVEL (16-bit samples).
+SENTENCE_PAUSE_S = 0.22
+MAX_PAUSE_S = 0.12
+PAUSE_LEVEL = 400
+NOISE_W_SCALE = 0.4
 
 
 for _wire, _word in ((1, "one"), (2, "two"), (3, "three"), (4, "four")):
@@ -152,6 +159,42 @@ def clip_name(call: Call, variant: int = 0) -> str:
     return call.name.lower() + (f"_{variant + 1}" if variant else "") + ".wav"
 
 
+def _edges_trimmed(pcm: array) -> array:
+    loud = [i for i, v in enumerate(pcm) if abs(v) >= PAUSE_LEVEL]
+    return pcm[max(0, loud[0] - TRIM_MARGIN):loud[-1] + TRIM_MARGIN] if loud else pcm
+
+
+def _pauses_capped(pcm: array, rate: int) -> array:
+    """`pcm` with every quiet stretch longer than MAX_PAUSE_S cut to it (keeping its two ends)."""
+    block, keep = int(rate * 0.01), int(rate * MAX_PAUSE_S)
+    out, quiet = array("h"), array("h")
+    for i in range(0, len(pcm), block):
+        part = pcm[i:i + block]
+        if max(abs(v) for v in part) < PAUSE_LEVEL:
+            quiet.extend(part)
+            continue
+        out.extend(quiet[:keep // 2] + quiet[len(quiet) - (keep - keep // 2):] if len(quiet) > keep else quiet)
+        quiet = array("h")
+        out.extend(part)
+    out.extend(quiet)
+    return out
+
+
+def _render(voice, text: str, config, path: Path) -> None:
+    """One phrase to a WAV: each sentence Piper renders, edges trimmed and pauses capped, SENTENCE_PAUSE_S apart."""
+    pcm, rate = array("h"), None
+    for chunk in voice.synthesize(text, syn_config=config):
+        if rate is not None:
+            pcm.extend([0] * int(rate * SENTENCE_PAUSE_S))
+        rate = chunk.sample_rate
+        pcm.extend(_pauses_capped(_edges_trimmed(array("h", chunk.audio_int16_bytes)), rate))
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate or 22050)
+        wav.writeframes(pcm.tobytes())
+
+
 def build_clips(model: str | Path, out_dir: str | Path, speed: float = 1.15) -> Path:
     """Render every phrase with a Piper voice model (`.onnx`, with its `.onnx.json` beside it).
 
@@ -162,29 +205,25 @@ def build_clips(model: str | Path, out_dir: str | Path, speed: float = 1.15) -> 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     voice = PiperVoice.load(str(model))
-    config = SynthesisConfig(length_scale=1.0 / speed)
+    config = SynthesisConfig(length_scale=1.0 / speed, noise_w_scale=NOISE_W_SCALE)
     manifest = {"voice": Path(model).stem, "speed": speed, "clips": {}}
     for call in PHRASES:
         entries = manifest["clips"][call.name] = []
         for i, text in enumerate(variants(call)):
             path = out / clip_name(call, i)
-            with wave.open(str(path), "wb") as wav:
-                voice.synthesize_wav(text, wav, syn_config=config)
+            _render(voice, text, config, path)
             entries.append({"file": path.name, "text": text})
     manifest["numbers"] = {}
     for digit, word in DIGITS.items():
         path = out / f"number_{digit}.wav"
-        with wave.open(str(path), "wb") as wav:
-            voice.synthesize_wav(word, wav, syn_config=config)
+        _render(voice, word, config, path)
         manifest["numbers"][digit] = {"file": path.name, "text": word}
-    with wave.open(str(out / CALM_CLIP), "wb") as wav:
-        voice.synthesize_wav(ROGER_BALL_CALM, wav, syn_config=config)
+    _render(voice, ROGER_BALL_CALM, config, out / CALM_CLIP)
     manifest["roger_ball_wind"] = {"calm": {"file": CALM_CLIP, "text": ROGER_BALL_CALM}}
     for knots in WIND_KNOTS:
         for axial in (False, True):
             path, text = out / wind_clip_name(knots, axial), roger_ball_wind(knots, axial)
-            with wave.open(str(path), "wb") as wav:
-                voice.synthesize_wav(text, wav, syn_config=config)
+            _render(voice, text, config, path)
             manifest["roger_ball_wind"][f"{knots}{'a' if axial else ''}"] = {"file": path.name, "text": text}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return out

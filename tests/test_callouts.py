@@ -217,3 +217,40 @@ def test_welcome_kinds_and_picking():
         kinds = {welcome_kind(t) for t in variants(call)}
         assert ("home" in kinds or None in kinds) and ("aboard" in kinds or None in kinds), call
     assert len(variants(Call.ROUGH_LANDING)) >= 3 and Call.ROUGH_LANDING in PHRASES
+
+
+def test_rendered_phrases_pause_evenly(tmp_path):
+    """Piper's sentences come back to back and its comma pauses run long: the clip gets a pause between sentences,
+    and no pause inside one longer than MAX_PAUSE_S."""
+    import wave
+    from array import array
+    from types import SimpleNamespace
+    from burble.callouts import voice as v
+
+    rate = 22050
+
+    def sound(s):
+        return [3000 if i % 2 else -3000 for i in range(int(rate * s))]
+
+    def quiet(s):
+        return [0] * int(rate * s)
+
+    sentences = [quiet(0.1) + sound(0.3) + quiet(0.28) + sound(0.2) + quiet(0.05), sound(0.25)]  # "Wave off, hook. Two."
+    fake = SimpleNamespace(synthesize=lambda text, syn_config=None: [
+        SimpleNamespace(sample_rate=rate, audio_int16_bytes=array("h", s).tobytes()) for s in sentences])
+    v._render(fake, "Wave off, hook. Two.", None, tmp_path / "clip.wav")
+    with wave.open(str(tmp_path / "clip.wav")) as w:
+        pcm = array("h", w.readframes(w.getnframes()))
+    runs, n = [], 0
+    start = next(i for i, x in enumerate(pcm) if x)
+    for x in pcm[start:]:  # the gaps between sounds
+        if x == 0:
+            n += 1
+        elif n:
+            runs.append(n / rate)
+            n = 0
+    gaps = [r for r in runs if r > 0.01]
+    assert len(gaps) == 2
+    assert abs(gaps[0] - v.MAX_PAUSE_S) < 0.011  # the comma, cut down
+    assert gaps[1] >= v.SENTENCE_PAUSE_S  # between the sentences (plus what's left of their edges)
+    assert gaps[1] < v.SENTENCE_PAUSE_S + 2 * v.TRIM_MARGIN / rate + 0.01
