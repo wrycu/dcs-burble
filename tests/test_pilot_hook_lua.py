@@ -198,7 +198,7 @@ DCS = { setUserCallbacks = function(c) callbacks = c end, getMissionName = funct
           return 95.0, -12.5
         end }
 net = { get_my_player_id = function() return 2 end,
-        get_player_info = function() return { ucid = 'UCID', name = 'Wrycu', ipaddr = 'HOME' } end,
+        get_player_info = function() return { ucid = 'UCID', name = 'Wrycu', ipaddr = 'HOME', slot = MY_SLOT } end,
         get_server_host = function() return '192.168.1.238:10308' end }
 local export_calls = 0
 Export = { LoGetModelTime = function() export_calls = export_calls + 1 return clock end,
@@ -309,7 +309,7 @@ def test_uploader_logs_once_that_a_newer_version_is_out(tmp_path, recorded):
     run_uploader(tmp_path, recorded[0], send_to_all=True)
     sent = [line for line in run_uploader.log if "->" in line]
     updates = [line for line in run_uploader.log if "newer pilot hook" in line]
-    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 8): see http://hub1:8000"]
+    assert len(sent) == 2 and updates == ["a newer pilot hook is available (version 99, this is 9): see http://hub1:8000"]
 
 
 def test_uploader_sends_dcss_own_sun(tmp_path, recorded):
@@ -344,6 +344,38 @@ def test_without_carriers_in_the_mission_none_is_named(tmp_path, recorded):
     requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False)
     (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
     assert "mission_carrier" not in json.loads(body)
+
+
+SLOTS = ("MY_SLOT = '17'\nMISSION_COALITION = { blue = { country = { { plane = { group = {"
+         " { units = { { unitId = 16, livery_id = 'VFA-37', onboard_num = '300' } } },"
+         " { units = { { unitId = 17, livery_id = 'VFA-106 high visibility', onboard_num = '305' } } } } } } } } }\n")
+
+
+def test_uploader_sends_the_livery_and_side_number_of_the_pilots_slot(tmp_path, recorded):
+    """For a hub with no server agent: what the mission set for the slot the pilot took."""
+    requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False, driver=SLOTS + IN_MISSION)
+    (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
+    sent = json.loads(body)
+    assert (sent["livery"], sent["onboard_num"]) == ("VFA-106 high visibility", "305")
+
+
+def test_without_a_slot_no_livery_is_sent(tmp_path, recorded):
+    requests, _ = run_uploader(tmp_path, recorded[0], send_to_all=False, driver=SLOTS.replace("'17'", "nil") + IN_MISSION)
+    (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
+    assert "livery" not in json.loads(body) and "onboard_num" not in json.loads(body)
+
+
+def test_another_communitys_hub_shows_the_livery_and_side_number(tmp_path, recorded):
+    requests, _ = run_uploader(tmp_path / "game", recorded[0], send_to_all=False, driver=SLOTS + IN_MISSION)
+    (_, _, body), = [split(r) for r in requests if r.startswith("POST")]
+    hub = make_hub(tmp_path / "hub")  # no server agent: the pilot hook's upload alone
+    client = TestClient(create_app(hub), client=(HOME, 50000))
+    r = client.post("/api/v1/pilot-hook/approaches", content=body)
+    assert r.status_code == 200, r.text
+    (report,) = r.json()["reports"]
+    with hub.sessions() as s:
+        row = s.get(Pass, report["pass_id"])
+        assert (row.livery, row.pilot.modex) == ("VFA-106 high visibility", "305")
 
 
 def test_a_hub_that_was_down_while_flying_still_gets_the_approach(tmp_path, recorded):

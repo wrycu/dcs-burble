@@ -8,6 +8,7 @@ measure (e.g. "high" at 5 degrees above the glidepath).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
@@ -98,6 +99,11 @@ class Thresholds:
     groove_settle_s: float = 1.0
     # ...or, regardless, once this close.
     groove_always_inside_m: float = 0.4 * NM
+    # Either way only near the extended centerline: within this angle of it, seen from the aim point (or
+    # `groove_lateral_min_m`, close in), else it's a jet passing by, not an approach. Twice this off it, a jet
+    # in the groove has left it.
+    groove_lateral_deg: float = 10.0
+    groove_lateral_min_m: float = 60.0
     # Case III: "Paddles contact" once inside this, inbound (pointing within `groove_heading_deg` * 2 of the
     # landing area)...
     paddles_contact_m: float = 1.25 * NM
@@ -153,6 +159,7 @@ class Thresholds:
     keep_coming_to_m: float = 150.0
     # Before the groove: past the extended centerline by this much and still heading away from it.
     overshoot_lateral_m: float = 15.0
+    overshoot_max_lateral_m: float = 500.0  # farther out to the side than this it isn't the turn to final
     overshoot_heading_deg: float = 10.0
     overshoot_from_m: float = 1.5 * NM
     overshoot_to_m: float = 0.3 * NM
@@ -316,12 +323,21 @@ class CalloutEngine:
         elif call == "clara":
             self.clara_called = True
 
+    def _near_centerline(self, s: GrooveState, factor: float = 1.0) -> bool:
+        th = self.thresholds
+        allowed = max(th.groove_lateral_min_m, max(s.along, 0.0) * math.tan(math.radians(th.groove_lateral_deg)))
+        return abs(s.lateral_m) <= allowed * factor
+
     def _update_groove(self, s: GrooveState) -> None:
         th = self.thresholds
         if self.in_groove:
-            if s.along > th.groove_start_m * 1.2:  # flew back out: a new approach must re-qualify
+            # Flew back out, or off to the side: a new approach must re-qualify.
+            if s.along > th.groove_start_m * 1.2 or not self._near_centerline(s, 2.0):
                 self.in_groove = False
                 self._aligned_since = None
+            return
+        if not self._near_centerline(s):
+            self._aligned_since = None
             return
         if 0 < s.along <= th.groove_always_inside_m:
             self.in_groove = True
@@ -398,7 +414,8 @@ class CalloutEngine:
         """Before the groove: "keep your turn in" when overshooting the extended centerline (passing it
         to starboard while still heading away from it), once per pass."""
         th = self.thresholds
-        overshooting = (th.overshoot_to_m < s.along <= th.overshoot_from_m and s.lateral_m >= th.overshoot_lateral_m
+        overshooting = (th.overshoot_to_m < s.along <= th.overshoot_from_m
+                        and th.overshoot_lateral_m <= s.lateral_m <= th.overshoot_max_lateral_m
                         and s.heading_error >= th.overshoot_heading_deg)
         if not overshooting or self._overshoot_said:
             self._overshoot_since = None
@@ -416,7 +433,7 @@ class CalloutEngine:
         th = self.thresholds
         if s.time - self._busy_until < th.spacing_s or s.along <= th.quiet_inside_m:
             return None
-        inbound = abs(s.heading_error) <= th.groove_heading_deg * 2
+        inbound = abs(s.heading_error) <= th.groove_heading_deg * 2 and self._near_centerline(s)
         if not self._contact_said and inbound and th.call_the_ball_m < s.along <= th.paddles_contact_m:
             self._contact_said = True
             return self._say(s, Call.PADDLES_CONTACT)

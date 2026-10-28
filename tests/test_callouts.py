@@ -155,6 +155,25 @@ def test_keep_your_turn_in_when_overshooting():
                          for i in range(30)]) == []
 
 
+def test_a_jet_passing_far_off_to_the_side_gets_no_calls():
+    """Behind the carrier and close, but well off the extended centerline (an AI jet passing by, fast): not an
+    approach, whatever its glideslope and lineup look like."""
+    passing = [state(t=i * 0.1, along=0.35 * NM - i * 20, lateral=400.0, gs=2.0, lineup=-15.0) for i in range(30)]
+    assert feed(CalloutEngine(), passing) == []
+    assert feed(CalloutEngine(case_iii=True), [state(t=i * 0.1, along=1.2 * NM - i * 30, lateral=600.0)
+                                               for i in range(60)]) == []
+    # The same jet near the centerline is in the groove and gets its calls.
+    assert feed(CalloutEngine(), [state(t=i * 0.1, along=0.35 * NM - i * 5, gs=2.0) for i in range(30)])
+
+
+def test_a_jet_that_slides_far_off_the_centerline_leaves_the_groove():
+    engine = CalloutEngine()
+    feed(engine, [state(t=i * 0.1, along=0.5 * NM - i * 5) for i in range(20)])
+    assert engine.in_groove
+    feed(engine, [state(t=2.0, along=0.45 * NM, lateral=350.0)])
+    assert not engine.in_groove
+
+
 def test_urgent_calls_follow_quickly_others_wait_longer():
     # "You're high" from 0.4 s (0.5 s long, so said until 0.9 s); then from 1.0 s the jet is low and sinking.
     th = Thresholds()

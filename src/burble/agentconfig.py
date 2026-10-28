@@ -157,6 +157,9 @@ THRESHOLD_NOTES = {
     "groove_roll_deg": "...with the wings within this of level...",
     "groove_settle_s": "...for this long...",
     "groove_always_inside_m": "...or, whatever the attitude, once this close.",
+    "groove_lateral_deg": "Either way, only within this angle of the extended centerline (seen from the aim point); "
+                          "twice this off it, a jet has left the groove.",
+    "groove_lateral_min_m": "...or within this many meters of it, close in.",
     "paddles_contact_m": "Case III: \"Paddles contact\" once inside this, inbound.",
     "call_the_ball_m": "Case III: \"call the ball\" inside this, if the pilot hasn't called it (or \"Clara\").",
     "ball_wait_s": "After \"call the ball\": only urgent calls for this long, or until the pilot answers.",
@@ -193,6 +196,7 @@ THRESHOLD_NOTES = {
     "keep_coming_to_m": "...and this one.",
     "overshoot_lateral_m": "Before the groove: past the extended centerline by this much and still turning away: "
                            "\"keep your turn in\"...",
+    "overshoot_max_lateral_m": "...but no farther out to the side than this...",
     "overshoot_heading_deg": "...heading away from it by at least this...",
     "overshoot_from_m": "...between this distance...",
     "overshoot_to_m": "...and this one.",

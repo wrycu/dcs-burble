@@ -22,7 +22,7 @@ package.cpath = package.cpath .. ';.\\LuaSocket\\?.dll;'
 local socket = require('socket')
 local lfs = require('lfs')
 
-local VERSION = 8
+local VERSION = 9
 local HUB_SLOTS = 3
 local SCAN_EVERY_S = 2          -- look for new approach files
 local HERE_EVERY_S = 60         -- ask the hubs again whether we're on one of their servers
@@ -256,6 +256,31 @@ local function mission_carrier(x, z)
   if best then return tostring(best.type), tostring(best.name or best.type) end
 end
 
+-- The livery and side number (modex) of the player's own slot, from the mission (set per slot by the mission
+-- designer), for hubs with no server agent of their own to know them. The slot is the player's unit id (in
+-- multiplayer; a multicrew seat as "id_seat"), else DCS's player unit. Only for the mission running now.
+local function my_aircraft()
+  if not DCS.getCurrentMission then return nil end
+  local slot = net and net.get_player_info and (net.get_player_info(net.get_my_player_id()) or {}).slot
+  if (slot == nil or slot == '') and DCS.getPlayerUnit then slot = DCS.getPlayerUnit() end
+  local unit_id = tonumber(tostring(slot or ''):match('^(%d+)'))
+  if not unit_id then return nil end
+  local current = DCS.getCurrentMission()
+  local coalitions = current and current.mission and current.mission.coalition
+  if type(coalitions) ~= 'table' then return nil end
+  for _, side in pairs(coalitions) do
+    for _, country in ipairs(type(side) == 'table' and side.country or {}) do
+      for _, category in ipairs({ 'plane', 'helicopter' }) do
+        for _, group in ipairs(type(country[category]) == 'table' and country[category].group or {}) do
+          for _, unit in ipairs(group.units or {}) do
+            if tonumber(unit.unitId) == unit_id then return unit.livery_id, unit.onboard_num end
+          end
+        end
+      end
+    end
+  end
+end
+
 -- The hubs that said "you're on one of our servers" this session, as "url|url" (kept with the session and each
 -- file, so files sent after leaving the server still go to that server's hub).
 local function here_list()
@@ -287,7 +312,7 @@ local function stamp(name)
   local current = context.started and written >= context.started - 60
   local ctx = current and context or previous
   if not ctx or not ctx.mission then return end
-  local elevation, carrier_type, carrier_unit
+  local elevation, carrier_type, carrier_unit, livery, onboard_num
   if current then
     local _, csv = read_file(path)
     local last = csv:match('([^\n]+)$') or ''
@@ -296,6 +321,8 @@ local function stamp(name)
     elevation = sun_elevation(fields[9], fields[10], tonumber(meta.model_time))
     local ok, ctype, cunit = pcall(mission_carrier, fields[2], fields[4])
     if ok and ctype then carrier_type, carrier_unit = ctype, cunit end
+    local found, l, n = pcall(my_aircraft)
+    if found then livery, onboard_num = l, n end
   end
   local f = io.open(path, 'a')
   if not f then return end
@@ -310,6 +337,9 @@ local function stamp(name)
   if carrier_type then
     f:write('# mission_carrier_type=', (carrier_type:gsub('[\r\n]', ' ')), '\n')
     f:write('# mission_carrier_unit=', (carrier_unit:gsub('[\r\n]', ' ')), '\n')
+  end
+  for key, value in pairs({ livery = livery, onboard_num = onboard_num }) do
+    if value ~= nil and tostring(value) ~= '' then f:write('# ', key, '=', (tostring(value):gsub('[\r\n]', ' ')), '\n') end
   end
   f:close()
 end
@@ -328,6 +358,8 @@ local function upload_body(meta, csv, carrier, calls, here)
     .. ',"csv":' .. json_string(csv)
     .. (meta.mission_carrier_type and (',"mission_carrier":{"type":' .. json_string(meta.mission_carrier_type)
         .. ',"unit":' .. json_string(meta.mission_carrier_unit) .. '}') or '')
+    .. (meta.livery and (',"livery":' .. json_string(meta.livery)) or '')
+    .. (meta.onboard_num and (',"onboard_num":' .. json_string(meta.onboard_num)) or '')
     .. (meta.dcs_grade and (',"dcs_grade":' .. json_string(meta.dcs_grade)) or '')
     .. (calls and (',"calls":' .. calls.raw .. ',"calls_from":' .. json_string(calls.from)) or '')
     .. (carrier ~= '' and meta.carrier_type and (',"carrier":{"type":' .. json_string(meta.carrier_type)
