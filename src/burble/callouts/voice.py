@@ -1,4 +1,4 @@
-"""LSO voice clips: rendered once with Piper (neural TTS), loaded as Opus frames at startup.
+"""LSO voice clips: rendered once with Piper or Kokoro (neural TTS), loaded as Opus frames at startup.
 
 A clip set is a directory with one WAV per phrase plus `manifest.json`, so it can also be
 replaced by real recordings with the same file names. A call may have several phrasings
@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 from array import array
 import random
+import re
 import wave
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..srs.audio import load_wav
-from ..srs.opus import FRAME_SAMPLES, encode_pcm
+from ..srs.opus import FRAME_SAMPLES, SAMPLE_RATE, encode_pcm
 from .rules import Call
 
 # What the LSO says for each call (a tuple is a set of variants to pick from).
@@ -102,6 +104,16 @@ SENTENCE_PAUSE_S = 0.22
 MAX_PAUSE_S = 0.12
 PAUSE_LEVEL = 400
 NOISE_W_SCALE = 0.4
+# Kokoro's voices the LSO speaks with (`burble voice build --kokoro-voices`), one clip set each: its American (am_)
+# and British (bm_) men. Like Piper's, its sentences run together in a short phrase (it pauses only between the
+# batches it splits long texts into), so each is rendered on its own; its pauses at commas are short already.
+KOKORO_SPEAKERS = ("am_michael", "am_adam", "am_eric", "am_onyx", "am_fenrir", "am_liam", "bm_george", "bm_lewis")
+# The config's voice (callouts.voice) for a different clip set for each carrier (CarrierVoices).
+EACH_CARRIER = "each carrier"
+# Where distributions put espeak-ng's data, which Kokoro phonemizes with: the copy bundled with kokoro-onnx looks for
+# its data where it was built, so the system's espeak-ng is used when there is one (`dnf/apt install espeak-ng`).
+ESPEAK_DATA_DIRS = ("/usr/share/espeak-ng-data", "/usr/lib/x86_64-linux-gnu/espeak-ng-data",
+                    "/usr/lib/aarch64-linux-gnu/espeak-ng-data", "/usr/local/share/espeak-ng-data")
 
 
 for _wire, _word in ((1, "one"), (2, "two"), (3, "three"), (4, "four")):
@@ -188,10 +200,40 @@ def _render(voice, text: str, config, path: Path) -> None:
             pcm.extend([0] * int(rate * SENTENCE_PAUSE_S))
         rate = chunk.sample_rate
         pcm.extend(_pauses_capped(_edges_trimmed(array("h", chunk.audio_int16_bytes)), rate))
+    _write_wav(path, pcm, rate or 22050)
+
+
+def _build(out: Path, voice: str, speed: float, render) -> Path:
+    """Every phrase into `out` with `render(text, path)`, and the manifest naming `voice`."""
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = {"voice": voice, "speed": speed, "clips": {}}
+    for call in PHRASES:
+        entries = manifest["clips"][call.name] = []
+        for i, text in enumerate(variants(call)):
+            path = out / clip_name(call, i)
+            render(text, path)
+            entries.append({"file": path.name, "text": text})
+    manifest["numbers"] = {}
+    for digit, word in DIGITS.items():
+        path = out / f"number_{digit}.wav"
+        render(word, path)
+        manifest["numbers"][digit] = {"file": path.name, "text": word}
+    render(ROGER_BALL_CALM, out / CALM_CLIP)
+    manifest["roger_ball_wind"] = {"calm": {"file": CALM_CLIP, "text": ROGER_BALL_CALM}}
+    for knots in WIND_KNOTS:
+        for axial in (False, True):
+            path, text = out / wind_clip_name(knots, axial), roger_ball_wind(knots, axial)
+            render(text, path)
+            manifest["roger_ball_wind"][f"{knots}{'a' if axial else ''}"] = {"file": path.name, "text": text}
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return out
+
+
+def _write_wav(path: Path, pcm: array, rate: int) -> None:
     with wave.open(str(path), "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
-        wav.setframerate(rate or 22050)
+        wav.setframerate(rate)
         wav.writeframes(pcm.tobytes())
 
 
@@ -202,31 +244,48 @@ def build_clips(model: str | Path, out_dir: str | Path, speed: float = 1.15) -> 
     """
     from piper import PiperVoice, SynthesisConfig
 
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
     voice = PiperVoice.load(str(model))
     config = SynthesisConfig(length_scale=1.0 / speed, noise_w_scale=NOISE_W_SCALE)
-    manifest = {"voice": Path(model).stem, "speed": speed, "clips": {}}
-    for call in PHRASES:
-        entries = manifest["clips"][call.name] = []
-        for i, text in enumerate(variants(call)):
-            path = out / clip_name(call, i)
-            _render(voice, text, config, path)
-            entries.append({"file": path.name, "text": text})
-    manifest["numbers"] = {}
-    for digit, word in DIGITS.items():
-        path = out / f"number_{digit}.wav"
-        _render(voice, word, config, path)
-        manifest["numbers"][digit] = {"file": path.name, "text": word}
-    _render(voice, ROGER_BALL_CALM, config, out / CALM_CLIP)
-    manifest["roger_ball_wind"] = {"calm": {"file": CALM_CLIP, "text": ROGER_BALL_CALM}}
-    for knots in WIND_KNOTS:
-        for axial in (False, True):
-            path, text = out / wind_clip_name(knots, axial), roger_ball_wind(knots, axial)
-            _render(voice, text, config, path)
-            manifest["roger_ball_wind"][f"{knots}{'a' if axial else ''}"] = {"file": path.name, "text": text}
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    return out
+    return _build(Path(out_dir), Path(model).stem, speed, lambda text, path: _render(voice, text, config, path))
+
+
+def espeak_config():
+    """Kokoro's espeak-ng: the system's (its library and data), else None for the copy bundled with kokoro-onnx."""
+    import ctypes.util
+
+    from kokoro_onnx.config import EspeakConfig
+
+    lib = ctypes.util.find_library("espeak-ng")
+    data = next((d for d in ESPEAK_DATA_DIRS if Path(d).is_dir()), None)
+    return EspeakConfig(lib_path=lib, data_path=data) if lib and data else None
+
+
+def build_kokoro_clips(model: str | Path, voices: str | Path, out_dir: str | Path,
+                       speakers: tuple[str, ...] = KOKORO_SPEAKERS, speed: float = 1.15) -> list[Path]:
+    """Render every phrase with a Kokoro model (`kokoro-v1.0.onnx` and its `voices-v1.0.bin`) in each of `speakers`,
+    one clip set each in `out_dir` (named after the speaker). Written at 16 kHz, as SRS sends it."""
+    import numpy as np
+    from kokoro_onnx import Kokoro
+
+    kokoro = Kokoro(str(model), str(voices), espeak_config=espeak_config())
+    unknown = [s for s in speakers if s not in kokoro.get_voices()]
+    if unknown:
+        raise ValueError(f"no Kokoro voice {', '.join(unknown)} (it has {', '.join(kokoro.get_voices())})")
+
+    def render(speaker: str, text: str, path: Path) -> None:
+        lang = "en-gb" if speaker.startswith("b") else "en-us"
+        pcm = array("h")
+        for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
+            samples, rate = kokoro.create(sentence, voice=speaker, speed=speed, lang=lang)
+            n = int(len(samples) * SAMPLE_RATE / rate)
+            samples = np.interp(np.arange(n) * rate / SAMPLE_RATE, np.arange(len(samples)), samples)
+            if pcm:
+                pcm.extend([0] * int(SAMPLE_RATE * SENTENCE_PAUSE_S))
+            pcm.extend(_edges_trimmed(array("h", (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes())))
+        _write_wav(path, pcm, SAMPLE_RATE)
+
+    return [_build(Path(out_dir) / speaker, f"kokoro {speaker}", speed,
+                   lambda text, path, speaker=speaker: render(speaker, text, path)) for speaker in speakers]
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,8 +319,8 @@ def clip_sets(directory: str | Path) -> dict[str, Path]:
 
 def choose_clip_set(directory: str | Path, voice: str | None) -> tuple[Path | None, str]:
     """The clip set to use for `voice` (a folder name from the hub's config), and a note on the choice for the
-    log. A folder that is a single clip set is used whatever `voice` says; an unknown or missing `voice` gets
-    the first set by name."""
+    log. A folder that is a single clip set is used whatever `voice` says; an unknown or missing `voice` (or
+    EACH_CARRIER) gets the first set by name."""
     sets = clip_sets(directory)
     if not sets:
         return None, f"no voice clips in {directory} (build them with `burble voice build`)"
@@ -271,8 +330,38 @@ def choose_clip_set(directory: str | Path, voice: str | None) -> tuple[Path | No
     if voice in sets:
         return sets[voice], f"voice: {voice}"
     first = next(iter(sets))
+    if voice == EACH_CARRIER:
+        return sets[first], f"voices: a different one for each carrier ({', '.join(sets)}); {first} for the rest"
     why = f"no clip set {voice!r}" if voice else "no voice set in the config"
     return sets[first], f"voice: {first} ({why}; have {', '.join(sets)})"
+
+
+class CarrierVoices:
+    """The clip set each carrier speaks with (by its unit name): its own (`pinned`, from the config's carriers), else
+    the config's `voice`. With EACH_CARRIER, every other carrier gets a different one while they last: the same
+    carrier tends to get the same one from mission to mission (where it starts in `sets` comes from its name).
+    `sets`: the loaded clip sets by name (`clip_sets`); `default`: the config's voice, or the first by name."""
+
+    def __init__(self, sets: dict[str, ClipLibrary], default: ClipLibrary, voice: str | None = None,
+                 pinned: dict[str, str] | None = None) -> None:
+        self.sets = sets
+        self.default = default
+        self.each = voice == EACH_CARRIER
+        self.pinned = {unit: name for unit, name in (pinned or {}).items() if name in sets}
+        self._assigned: dict[str, str] = {}
+
+    def for_carrier(self, unit: str | None) -> ClipLibrary:
+        if unit in self.pinned:
+            return self.sets[self.pinned[unit]]
+        if not self.each or unit is None or not self.sets:
+            return self.default
+        if unit not in self._assigned:
+            names = sorted(self.sets)
+            used = set(self._assigned.values()) | set(self.pinned.values())
+            start = zlib.crc32(unit.encode()) % len(names)
+            turn = names[start:] + names[:start]
+            self._assigned[unit] = next((n for n in turn if n not in used), turn[0])
+        return self.sets[self._assigned[unit]]
 
 
 class ClipLibrary:

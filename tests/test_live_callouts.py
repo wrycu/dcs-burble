@@ -108,6 +108,25 @@ def test_the_hubs_config_picks_the_voice(tmp_path, clips):
     assert agent._clips("clips-amy") is not agent._clips("clips-ryan")
 
 
+def test_each_carrier_gets_its_own_voice():
+    from burble.callouts.voice import EACH_CARRIER, CarrierVoices
+    sets = {name: ClipLibrary({}, name) for name in ("a", "b", "c")}
+    default = sets["a"]
+    each = CarrierVoices(sets, default, EACH_CARRIER, {"CVN-71": "c", "CVN-70": "nope"})
+    assert each.for_carrier("CVN-71") is sets["c"]  # its own
+    first, second = each.for_carrier("CVN-75"), each.for_carrier("CVN-73")
+    assert len({first.voice, second.voice, "c"}) == 3  # all different while they last
+    assert each.for_carrier("CVN-75") is first  # and kept
+    assert each.for_carrier("CVN-74") in sets.values()  # run out: shared
+    # The same carrier gets the same voice in the next mission (with the same others there first).
+    again = CarrierVoices(sets, default, EACH_CARRIER, {"CVN-71": "c"})
+    assert again.for_carrier("CVN-75") is sets[first.voice]
+    # Otherwise the config's voice, unless a carrier has its own.
+    plain = CarrierVoices(sets, default, "a", {"CVN-71": "b"})
+    assert plain.for_carrier("CVN-75") is default and plain.for_carrier("CVN-71") is sets["b"]
+    assert plain.for_carrier(None) is default
+
+
 def test_clip_library(clips):
     lib = ClipLibrary.load(clips)
     assert set(lib.clips) == set(Call) and lib.voice == "test-tones"

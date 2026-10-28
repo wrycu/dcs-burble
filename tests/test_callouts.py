@@ -254,3 +254,49 @@ def test_rendered_phrases_pause_evenly(tmp_path):
     assert abs(gaps[0] - v.MAX_PAUSE_S) < 0.011  # the comma, cut down
     assert gaps[1] >= v.SENTENCE_PAUSE_S  # between the sentences (plus what's left of their edges)
     assert gaps[1] < v.SENTENCE_PAUSE_S + 2 * v.TRIM_MARGIN / rate + 0.01
+
+
+def test_kokoro_builds_a_clip_set_for_each_speaker(tmp_path, monkeypatch):
+    """One clip set per Kokoro speaker, at 16 kHz, its sentences rendered apart and SENTENCE_PAUSE_S between them, and
+    British speakers in British English."""
+    import json
+    import sys
+    import wave
+    from array import array
+    from types import ModuleType, SimpleNamespace
+
+    import numpy as np
+
+    from burble.callouts import voice as v
+
+    asked = []
+
+    class FakeKokoro:
+        def __init__(self, model, voices, espeak_config=None):
+            pass
+
+        def get_voices(self):
+            return ["am_adam", "bm_george"]
+
+        def create(self, text, voice, speed, lang):
+            asked.append((text, voice, lang))
+            return np.full(int(24000 * 0.3), 0.5, dtype=np.float32), 24000
+
+    kokoro = ModuleType("kokoro_onnx")
+    kokoro.Kokoro = FakeKokoro
+    config = ModuleType("kokoro_onnx.config")
+    config.EspeakConfig = lambda **kw: SimpleNamespace(**kw)
+    monkeypatch.setitem(sys.modules, "kokoro_onnx", kokoro)
+    monkeypatch.setitem(sys.modules, "kokoro_onnx.config", config)
+    outs = v.build_kokoro_clips("model.onnx", "voices.bin", tmp_path, ("am_adam", "bm_george"))
+    assert outs == [tmp_path / "am_adam", tmp_path / "bm_george"]
+    manifest = json.loads((tmp_path / "bm_george" / "manifest.json").read_text())
+    assert manifest["voice"] == "kokoro bm_george"
+    assert ("Welcome home.", "bm_george", "en-gb") in asked and ("Two wire.", "am_adam", "en-us") in asked
+    entry = next(e for e in manifest["clips"]["TRAPPED_WIRE_2"] if e["text"] == "Welcome home. Two wire.")
+    with wave.open(str(tmp_path / "bm_george" / entry["file"])) as w:
+        assert w.getframerate() == 16000
+        pcm = array("h", w.readframes(w.getnframes()))
+    assert len(pcm) == 2 * int(16000 * 0.3) + int(16000 * v.SENTENCE_PAUSE_S)
+    with pytest.raises(ValueError, match="no Kokoro voice am_nobody"):
+        v.build_kokoro_clips("model.onnx", "voices.bin", tmp_path, ("am_nobody",))

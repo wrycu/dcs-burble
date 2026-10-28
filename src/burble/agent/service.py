@@ -37,7 +37,7 @@ from ..geometry import AIRCRAFT, WindProfile
 from ..grading import Grade, grade_pass
 from ..slices import (LEAD_S, TAIL_S, _collector_version, apply_hooks, approach_window, sidecar, slice_name,
                       slice_objects, track_sidecar, track_slice_name)
-from ..callouts.voice import ClipLibrary, choose_clip_set, clip_sets
+from ..callouts.voice import EACH_CARRIER, CarrierVoices, ClipLibrary, choose_clip_set, clip_sets
 from ..srs import Modulation, Radio
 from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink, recovery_case_iii
 from .lights import LIGHTS_FILE, CarrierLights, lights_settings
@@ -480,6 +480,9 @@ class Agent:
         callouts = LiveCallouts(settings, clips, self.sink_factory(settings),
                                 wind_for=self.hooks.wind_for if self.hooks is not None else None,
                                 wire_for=self.hooks.live_wire if self.hooks is not None else None)
+        if extra := self._carrier_clip_sets(settings):
+            sets = {name: self._load_clips(path) for name, path in extra.items()}
+            callouts.voices = CarrierVoices(sets, clips, settings.voice, settings.carrier_voices).for_carrier
         if self.hooks is not None:
             callouts.carrier_radio = self.hooks.carrier_radio  # the mission's frequency for each carrier
         return callouts
@@ -527,9 +530,37 @@ class Agent:
             log.warning("live callouts OFF: %s", note)
             return None
         log.info(note)
+        return self._load_clips(path)
+
+    def _carrier_clip_sets(self, settings: CalloutSettings) -> dict[str, Path]:
+        """The clip sets carriers may speak with besides the default (by name): every one with a different voice for
+        each carrier (callouts.voice), else those set for carriers of their own (callouts.carriers)."""
+        sets = clip_sets(self.config.voice_dir) if self.config.voice_dir is not None else {}
+        if "" in sets:
+            return {}  # one clip set: used for everything
+        if settings.voice == EACH_CARRIER:
+            return sets
+        for unit, name in settings.carrier_voices.items():
+            if name not in sets:
+                log.warning("no clip set %r for %s (have %s)", name, unit, ", ".join(sets) or "none")
+        return {name: sets[name] for name in set(settings.carrier_voices.values()) if name in sets}
+
+    def _load_clips(self, path: Path) -> ClipLibrary:
         if path not in self._clip_sets:
             self._clip_sets[path] = ClipLibrary.load(path)
         return self._clip_sets[path]
+
+    def _preload_clips(self) -> None:
+        """Load the clip sets the next session will speak with (a few seconds each), so it doesn't wait for them."""
+        settings = CalloutSettings.from_config(self.remote_config)
+        if self.config.mode != "server" or not settings.enabled or self.config.voice_dir is None:
+            return
+        path, _ = choose_clip_set(self.config.voice_dir, settings.voice)
+        for path in ([path] if path is not None else []) + list(self._carrier_clip_sets(settings).values()):
+            try:
+                self._load_clips(path)
+            except (OSError, ValueError, KeyError) as exc:
+                log.warning("clip set %s didn't load: %s", path, exc)
 
     # -- top level ----------------------------------------------------------------------------
 
@@ -644,6 +675,7 @@ class Agent:
     async def run_session(self) -> Session:
         c = self.config
         client = TelemetryClient(c.tacview_host, c.tacview_port, password=c.tacview_password)
+        await asyncio.to_thread(self._preload_clips)  # with the cached config: the hub's is fetched once connected
         info = await client.connect()
         await self.refresh_config()
         callouts = self._callouts()

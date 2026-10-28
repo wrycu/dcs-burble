@@ -57,7 +57,8 @@ SECTIONS: tuple[tuple[str, tuple[Setting, ...]], ...] = (
         Setting(("callouts", "modulation"), "choice", "AM", "Default modulation", "", MODULATIONS),
         Setting(("callouts", "voice"), "text", None, "Voice",
                 "Which clip set the LSO speaks with, when the agent's --voice-dir is a folder of them (its folder "
-                "name). Unset or unknown: the first by name."),
+                "name), or \"each carrier\" for a different one at each carrier. Unset or unknown: the first by name. "
+                "A carrier with a voice of its own (carriers below) uses that."),
         Setting(("callouts", "case"), "choice", "auto", "Recovery case",
                 "Case III: \"Paddles contact\" coming down final, then \"call the ball\" at three quarters of a mile. "
                 "Auto uses it at night, or with a ceiling under 1,000 ft or visibility under 5 nm in the mission's "
@@ -302,10 +303,14 @@ def problems(config: object) -> list[str]:
         if (why := _check(setting, value)) is not None:
             out.append(f"{setting.key}: should be {why} (it's {_json(value)})")
     for unit, radio in (get(config, ("callouts", "carriers")) or {}).items():
-        if not isinstance(radio, dict) or not _number(radio.get("frequency_mhz")) or radio["frequency_mhz"] <= 0:
-            out.append(f"callouts.carriers.{unit}: should have a frequency_mhz (MHz)")
+        if not isinstance(radio, dict) or not ("frequency_mhz" in radio or radio.get("voice")):
+            out.append(f"callouts.carriers.{unit}: should have a frequency_mhz (MHz) or a voice")
+        elif "frequency_mhz" in radio and (not _number(radio["frequency_mhz"]) or radio["frequency_mhz"] <= 0):
+            out.append(f"callouts.carriers.{unit}.frequency_mhz: should be a frequency (MHz)")
         elif "modulation" in radio and radio["modulation"] not in Modulation.__members__:
             out.append(f"callouts.carriers.{unit}.modulation: should be AM or FM (it's {_json(radio['modulation'])})")
+        elif "voice" in radio and not isinstance(radio["voice"], str):
+            out.append(f"callouts.carriers.{unit}.voice: should be a clip set's name (it's {_json(radio['voice'])})")
     calls = get(config, ("callouts", "calls"))
     if calls is not None:
         known = {c.value for c in Call}
@@ -374,16 +379,23 @@ def apply_form(config: dict | None, form: Mapping[str, list[str]]) -> dict | Non
         unit = one(f"carrier.{i}.unit")
         if not unit:
             continue
-        try:
-            mhz = float(one(f"carrier.{i}.frequency_mhz"))
-        except ValueError:
-            raise ValueError(f"{unit}: its frequency isn't a number (MHz)") from None
-        if mhz <= 0:
-            raise ValueError(f"{unit}: its frequency isn't a frequency")
-        modulation = one(f"carrier.{i}.modulation") or "AM"
-        if modulation not in Modulation.__members__:
-            raise ValueError(f"{unit}: {modulation!r} isn't a modulation")
-        carriers[unit] = {"frequency_mhz": mhz} | ({"modulation": modulation} if modulation != "AM" else {})
+        entry: dict = {}
+        if raw_mhz := one(f"carrier.{i}.frequency_mhz"):
+            try:
+                mhz = float(raw_mhz)
+            except ValueError:
+                raise ValueError(f"{unit}: its frequency isn't a number (MHz)") from None
+            if mhz <= 0:
+                raise ValueError(f"{unit}: its frequency isn't a frequency")
+            modulation = one(f"carrier.{i}.modulation") or "AM"
+            if modulation not in Modulation.__members__:
+                raise ValueError(f"{unit}: {modulation!r} isn't a modulation")
+            entry = {"frequency_mhz": mhz} | ({"modulation": modulation} if modulation != "AM" else {})
+        if voice := one(f"carrier.{i}.voice"):
+            entry["voice"] = voice
+        if not entry:
+            raise ValueError(f"{unit}: give it a frequency or a voice (or clear its name)")
+        carriers[unit] = entry
     _put(out, ("callouts", "carriers"), carriers or None)
 
     chosen = set(form.get("call") or [])
@@ -494,9 +506,10 @@ def reference_markdown() -> str:
             lines.append(f"| `{s.key}` | {_types(s)} | {_show_default(s)} | {s.label}." + (f" {s.help}" if s.help else "")
                          + " |")
         if title == "Live calls":
-            lines.append("| `callouts.carriers` | object | none | A frequency per carrier, by its unit name in the "
-                         "mission: `{\"CVN-75 Truman\": {\"frequency_mhz\": 127.5, \"modulation\": \"AM\"}}`. Wins over "
-                         "the mission's frequency. |")
+            lines.append("| `callouts.carriers` | object | none | A frequency or a voice (or both) per carrier, by its "
+                         "unit name in the mission: `{\"CVN-75 Truman\": {\"frequency_mhz\": 127.5, \"modulation\": "
+                         "\"AM\", \"voice\": \"bm_george\"}}`. Its frequency wins over the mission's, and its voice "
+                         "(a clip set's folder name) over `callouts.voice`. |")
             lines.append("| `callouts.calls` | list | every call | Which calls the LSO makes (see below). |")
             lines.append("| `callouts.thresholds` | object | none | When calls are made (see below). |")
         lines.append("")

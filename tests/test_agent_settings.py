@@ -158,6 +158,25 @@ def test_the_form_refuses_what_wont_do(field, value, says):
         ac.apply_form(None, form)
 
 
+def test_a_carrier_may_have_just_a_voice():
+    form = default_form() | {"carriers": ["2"], "carrier.0.unit": ["CVN-75"], "carrier.0.voice": ["bm_george"],
+                             "carrier.0.modulation": ["AM"], "carrier.1.unit": ["CVN-71"],
+                             "carrier.1.frequency_mhz": ["305"], "carrier.1.voice": ["am_adam"]}
+    config = ac.apply_form(None, form)
+    assert config["callouts"]["carriers"] == {"CVN-75": {"voice": "bm_george"},
+                                              "CVN-71": {"frequency_mhz": 305.0, "voice": "am_adam"}}
+    assert ac.problems(config) == []
+    settings = CalloutSettings.from_config(config)
+    assert settings.carriers == {"CVN-71": (305.0, Modulation.AM)}
+    assert settings.carrier_voices == {"CVN-75": "bm_george", "CVN-71": "am_adam"}
+    with pytest.raises(ValueError, match="a frequency or a voice"):
+        ac.apply_form(None, form | {"carrier.0.voice": [""]})
+    assert ac.problems({"callouts": {"carriers": {"CVN-75": {}}}}) == [
+        "callouts.carriers.CVN-75: should have a frequency_mhz (MHz) or a voice"]
+    assert ac.problems({"callouts": {"carriers": {"CVN-75": {"voice": 3}}}}) == [
+        "callouts.carriers.CVN-75.voice: should be a clip set's name (it's 3)"]
+
+
 # -- on the hub --------------------------------------------------------------------------------------------------
 
 def test_only_admins_edit_settings(hub):
@@ -232,6 +251,8 @@ def test_the_agent_says_which_voices_it_has(hub, tmp_path):
     page = client_for(hub, "Viper", "viper password").get("/admin/agents/server1").text
     assert '<select name="callouts.voice">' in page and '<option value="clips-amy">clips-amy</option>' in page
     assert "clips-joe (not on the agent)" in page and "wasn't started with --listen-model" in page
+    assert '<option value="each carrier">A different one for each carrier</option>' in page
+    assert '<select name="carrier.0.voice" aria-label="Voice"><option value="" selected>The LSO&#x27;s voice' in page
     asyncio.run(run(AgentConfig(work_dir=tmp_path / "edge", voice_dir=voices / "clips-ryan")))
     assert hub.server_agent("server1").agent_info["voices"] == ["clips-ryan"]
     assert "one clip set (clips-ryan)" in client_for(hub, "Viper", "viper password").get("/admin/agents/server1").text

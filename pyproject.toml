@@ -21,6 +21,9 @@ burble = "burble.cli:main"
 listen = [
     "vosk>=0.3.45",
 ]
+kokoro = [
+    "kokoro-onnx>=0.6.1",
+]
 
 [build-system]
 requires = ["hatchling"]

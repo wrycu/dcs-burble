@@ -9,6 +9,7 @@ from datetime import datetime
 from html import escape
 from urllib.parse import quote
 
+from ..callouts.voice import EACH_CARRIER
 from ..cards.overlay import GRADE_COLORS
 from ..cards.theme import COLOR_VARS, FONT_VAR, GRADE_VARS, MAX_CSS, safe_css
 from ..geometry import airframe
@@ -1176,7 +1177,9 @@ def agent_settings_page(agent, done: str | None = None, error: str | None = None
         elif setting.kind == "choice" or setting.path == ("callouts", "voice") and info:
             choices = list(setting.choices)
             if setting.path == ("callouts", "voice"):
-                choices = [("", "First by name")] + [(v, v) for v in info.get("voices") or []]
+                voices = info.get("voices") or []
+                choices = [("", "First by name")] + [(v, v) for v in voices] + (
+                    [(EACH_CARRIER, "A different one for each carrier")] if len(voices) > 1 else [])
             value = typed_value(key) if typed else shown(current if current is not None else setting.default)
             if setting.path[-1] == "case" and value.upper() in ("I", "III"):
                 value = value.upper()
@@ -1197,7 +1200,7 @@ def agent_settings_page(agent, done: str | None = None, error: str | None = None
     for title, group in ac.SECTIONS:
         sections.append(f"<h2>{escape(title)}</h2>" + "".join(field(st) for st in group))
         if title == "Live calls":
-            sections.append(_carrier_rows(config, form if typed else None))
+            sections.append(_carrier_rows(config, form if typed else None, info))
         if title == "Listening and recording":
             if (ac.get(config, ("callouts", "listen")) is True and info and not info.get("listen_model")):
                 sections.append('<p class="warn">Listening is on, but this agent wasn\'t started with --listen-model, '
@@ -1261,33 +1264,49 @@ def agent_settings_page(agent, done: str | None = None, error: str | None = None
     return _page(f"{agent.name}: settings", body)
 
 
-def _carrier_rows(config: dict, form: dict[str, list[str]] | None) -> str:
-    """Per-carrier frequencies (callouts.carriers), with two empty rows to add more."""
+def _carrier_rows(config: dict, form: dict[str, list[str]] | None, info: dict | None = None) -> str:
+    """Per-carrier frequencies and voices (callouts.carriers), with two empty rows to add more. `info`: what the agent
+    said about itself (its clip sets, for the voice)."""
     from .. import agentconfig as ac
 
+    keys = ("unit", "frequency_mhz", "modulation", "voice")
     if form is not None:
         n = int((form.get("carriers") or ["0"])[-1] or 0)
-        rows = [tuple((form.get(f"carrier.{i}.{k}") or [""])[-1] for k in ("unit", "frequency_mhz", "modulation"))
-                for i in range(n)]
-        rows = [r for r in rows if any(r[:2])]
+        rows = [tuple((form.get(f"carrier.{i}.{k}") or [""])[-1] for k in keys) for i in range(n)]
+        rows = [r for r in rows if r[0] or r[1] or r[3]]
     else:
         carriers = ac.get(config, ("callouts", "carriers"))
-        rows = [(unit, f"{radio.get('frequency_mhz', '')}", str(radio.get("modulation", "AM")))
+        rows = [(unit, f"{radio.get('frequency_mhz', '')}", str(radio.get("modulation", "AM")), str(radio.get("voice", "")))
                 for unit, radio in (carriers.items() if isinstance(carriers, dict) else []) if isinstance(radio, dict)]
-    rows += [("", "", "AM")] * 2
+    rows += [("", "", "AM", "")] * 2
+    voices = (info or {}).get("voices") or []
+
+    def voice_cell(i: int, voice: str) -> str:
+        if not voices or (info or {}).get("one_voice"):
+            return (f'<input name="carrier.{i}.voice" value="{escape(voice)}" placeholder="the LSO\'s" '
+                    'aria-label="Voice (clip set)">')
+        choices = [("", "The LSO's voice")] + [(v, v) for v in voices]
+        if voice not in [c for c, _ in choices]:
+            choices.append((voice, f"{voice} (not on the agent)"))
+        return f'<select name="carrier.{i}.voice" aria-label="Voice">' + "".join(
+            f'<option value="{escape(c)}"{" selected" if c == voice else ""}>{escape(label)}</option>'
+            for c, label in choices) + "</select>"
+
     cells = "".join(
         f'<tr><td><input class="unit" name="carrier.{i}.unit" value="{escape(unit)}" placeholder="e.g. CVN-75 Truman" '
         f'aria-label="Carrier unit name"></td><td><input name="carrier.{i}.frequency_mhz" type="number" step="any" '
         f'value="{escape(mhz)}" placeholder="MHz" aria-label="Frequency (MHz)"></td>'
         f'<td><select name="carrier.{i}.modulation" aria-label="Modulation">' + "".join(
-            f'<option{" selected" if m == mod else ""}>{m}</option>' for m, _ in ac.MODULATIONS) + "</select></td></tr>"
-        for i, (unit, mhz, mod) in enumerate(rows))
-    return ('<p style="margin:12px 0 4px"><strong>Carriers\' frequencies</strong></p><p class="sub" style="margin:0">'
-            "By the carrier's unit name in the mission. A carrier listed here uses this frequency; one that isn't uses "
-            "the frequency set for it in the mission, else the default above. Clear a name to remove it.</p>"
+            f'<option{" selected" if m == mod else ""}>{m}</option>' for m, _ in ac.MODULATIONS) + "</select></td>"
+        f"<td>{voice_cell(i, voice)}</td></tr>"
+        for i, (unit, mhz, mod, voice) in enumerate(rows))
+    return ('<p style="margin:12px 0 4px"><strong>Carriers</strong></p><p class="sub" style="margin:0">'
+            "By the carrier's unit name in the mission. A carrier listed with a frequency uses it; one without uses "
+            "the frequency set for it in the mission, else the default above. A carrier with a voice speaks with it, "
+            "whatever the voice above says. Clear a name to remove it.</p>"
             f'<input type="hidden" name="carriers" value="{len(rows)}">'
             '<div class="scroll carriers"><table class="results"><thead><tr><th>Carrier</th><th>MHz</th><th>Modulation'
-            f"</th></tr></thead><tbody>{cells}</tbody></table></div>")
+            f"</th><th>Voice</th></tr></thead><tbody>{cells}</tbody></table></div>")
 
 
 def _board_access(members_only: bool, approval: bool, post) -> str:

@@ -118,3 +118,31 @@ def test_hub_keeps_the_carrier_of_each_landing(tmp_path, recording):
     from burble.hub.app import create_app
     landings = TestClient(create_app(hub)).get("/api/v1/passes", params={"days": 0}).json()
     assert sorted((x["pilot"], x["carrier"]) for x in landings) == [("Maverick", WASHINGTON), ("Wrycu", TRUMAN)]
+
+
+@pytest.mark.parametrize("voices", [
+    {"voice": "each carrier"},  # a different one for each
+    {"voice": "lso-a", "carriers": {WASHINGTON: {"voice": "lso-b"}}},  # one carrier has its own
+])
+def test_carriers_speak_with_their_own_voices(tmp_path, clips, recording, voices):
+    import json
+    import shutil
+
+    import test_live_callouts
+    folder = tmp_path / "voices"
+    for name in ("lso-a", "lso-b"):
+        shutil.copytree(clips, folder / name)
+        manifest = json.loads((folder / name / "manifest.json").read_text())
+        (folder / name / "manifest.json").write_text(json.dumps(manifest | {"voice": name}))
+    config = {"callouts": {k: v for k, v in CONFIG["callouts"].items() if k != "carriers"} | voices}
+    original, test_live_callouts.CONFIG = test_live_callouts.CONFIG, config
+    try:
+        _, session, _ = asyncio.run(run_collector(
+            recording, tmp_path / "edge", folder, hooks=CarrierSlotHooks({"Wrycu": "301", "Maverick": "302"})))
+    finally:
+        test_live_callouts.CONFIG = original
+    spoken = {(m.aircraft_id, m.voice) for m in session.callouts.made if m.by != "pilot"}
+    by_jet = {a: {v for j, v in spoken if j == a} for a in (0x2C02, 0x3C02)}
+    assert len(by_jet[0x2C02]) == 1 and len(by_jet[0x3C02]) == 1 and by_jet[0x2C02] != by_jet[0x3C02]
+    if "carriers" in voices:
+        assert by_jet == {0x2C02: {"lso-a"}, 0x3C02: {"lso-b"}}

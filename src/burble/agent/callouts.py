@@ -89,11 +89,14 @@ class CalloutSettings:
     srs: SrsSettings = SrsSettings()
     frequency_mhz: float = 127.5  # default LSO frequency
     modulation: Modulation = Modulation.AM
-    # Per-carrier overrides, keyed by the carrier's unit name: (frequency MHz, modulation).
+    # Per-carrier overrides, keyed by the carrier's unit name: (frequency MHz, modulation), and the clip set to speak
+    # with (its folder name).
     carriers: dict[str, tuple[float, Modulation]] = field(default_factory=dict)
+    carrier_voices: dict[str, str] = field(default_factory=dict)
     calls: frozenset[Call] = frozenset(Call)
     thresholds: Thresholds = Thresholds()
-    # Which clip set to speak with, when the server agent's --voice-dir holds several: its folder name.
+    # Which clip set to speak with, when the server agent's --voice-dir holds several: its folder name, or EACH_CARRIER
+    # (a different one for each carrier). A carrier's own (`carrier_voices`) wins.
     voice: str | None = None
     # Listen to pilots on the LSO frequencies and answer their calls ("Roger ball"); needs --listen-model.
     listen: bool = False
@@ -118,7 +121,8 @@ class CalloutSettings:
             frequency_mhz=float(c.get("frequency_mhz", 127.5)),
             modulation=Modulation[c.get("modulation", "AM")],
             carriers={name: (float(v["frequency_mhz"]), Modulation[v.get("modulation", "AM")])
-                      for name, v in (c.get("carriers") or {}).items()},
+                      for name, v in (c.get("carriers") or {}).items() if v.get("frequency_mhz") is not None},
+            carrier_voices={name: str(v["voice"]) for name, v in (c.get("carriers") or {}).items() if v.get("voice")},
             calls=frozenset(Call(x) for x in c["calls"]) if "calls" in c else frozenset(Call),
             thresholds=replace(Thresholds(), **overrides),
             voice=str(c["voice"]) if c.get("voice") else None,
@@ -363,7 +367,9 @@ class LiveCallouts:
         # An aircraft's landing gear and tail hook (Tacview id, its pilot) from the hook, for gear and hook wave-offs.
         self.gear_for: Callable[[int, str | None], tuple[float | None, float | None]] | None = None
         self._groove_seen: dict[tuple[int, int], float] = {}  # (carrier, aircraft) -> last time in the groove
-        self.clips = clips
+        self.clips = clips  # the voice, or the default one when carriers have their own (`voices`)
+        # The clip set a carrier (by unit name) speaks with, when they may differ (CarrierVoices.for_carrier).
+        self.voices: Callable[[str | None], ClipLibrary] | None = None
         self.sink = sink
         self._engines: dict[tuple[int, int], tuple[LiveEstimator, CalloutEngine]] = {}
         self.made: list[MadeCall] = []
@@ -379,17 +385,20 @@ class LiveCallouts:
         # Passes in progress, for matching what pilots say on the radio: (carrier, plane, sim time, along).
         self._live: dict[tuple[int, int], tuple[ObjectTrack, ObjectTrack, float, float]] = {}
         self._answered: set[tuple[int, int, Call]] = set()  # e.g. "Roger ball" once a pass
+        self._carriers: dict[int, ObjectTrack] = {}  # carriers seen this session, by id
 
     def on_sample(self, carrier: ObjectTrack, plane: ObjectTrack, pose: CarrierPose, sample: Sample,
                   frame: DeckFrame) -> CallEvent | None:
         key = (carrier.id, plane.id)
+        self._carriers[carrier.id] = carrier
+        clips = self._clips_for(carrier)
         entry = self._engines.get(key)
         if entry is None:
             aircraft = frame.aircraft
             case_iii = self.case_iii(carrier, sample.time)
             entry = self._engines[key] = (
                 LiveEstimator(aircraft.glideslope, aoa_offset=aircraft.derived_aoa_offset),
-                CalloutEngine(self.settings.thresholds.for_aircraft(aircraft.on_speed_aoa), self.clips.durations(),
+                CalloutEngine(self.settings.thresholds.for_aircraft(aircraft.on_speed_aoa), clips.durations(),
                               case_iii=case_iii))
             if case_iii:
                 log.info("Case III for %s at %s", plane.pilot or hex(plane.id), carrier.pilot or carrier.name)
@@ -422,7 +431,7 @@ class LiveCallouts:
             outcome = Call.TRAPPED_WAVED_OFF  # landed through our wave-off: a saltier welcome
         if outcome is not None:
             event = CallEvent(sample.time, pos.along, outcome, state)
-        if event is None or event.call not in self.settings.calls or event.call not in self.clips:
+        if event is None or event.call not in self.settings.calls or event.call not in clips:
             return None
         made = MadeCall(plane.id, event.time, event.along, event.call)
         if event.call in WELCOME_WIRE:
@@ -434,7 +443,7 @@ class LiveCallouts:
         else:
             # Decided now (the groove may have changed by the time the call is spoken).
             side_number = self._side_number(carrier.id, plane, event.time) if event.call not in (Call.BOLTER,) else None
-            clip = self._clip(event.call, made, side_number=side_number)
+            clip = self._clip(clips, event.call, made, side_number=side_number)
             self._made(made)
             welcome = self._say(carrier, plane, event.call, event, clip, made)
         task = asyncio.get_running_loop().create_task(welcome)
@@ -468,16 +477,17 @@ class LiveCallouts:
             if wire is None and stop.stopped:
                 wire = wire_at_stop(stop.along, stop.frame, stop.own)
                 log.info("wire for %s from where it stopped: %s", plane.pilot or hex(plane.id), wire or "not clear")
+        clips = self._clips_for(carrier)
         call = WELCOME_WIRE[event.call].get(wire, event.call) if wire is not None else event.call
-        if made is not None and call in self.clips:
+        if made is not None and call in clips:
             made.call = call  # e.g. "welcome aboard, two wire"
         # "Welcome home" for a jet back on the carrier it launched from, "welcome aboard" for a visitor.
         home = self.departed_from(carrier.id, plane.id, event.time) if self.departed_from is not None else None
         # A dig about a poor or cut landing, now and then (a trap through a wave-off already gets the salty one).
-        dig = (event.call is Call.TRAPPED and grade in ROUGH_GRADES and Call.ROUGH_LANDING in self.clips
+        dig = (event.call is Call.TRAPPED and grade in ROUGH_GRADES and Call.ROUGH_LANDING in clips
                and random.random() < self.settings.thresholds.rough_dig_chance)
-        call = call if call in self.clips else event.call
-        clip = self._clip(call, made, praise=grade in PRAISE_GRADES, home=home, dig=dig)
+        call = call if call in clips else event.call
+        clip = self._clip(clips, call, made, praise=grade in PRAISE_GRADES, home=home, dig=dig)
         await self._say(carrier, plane, call, event, clip, made)
 
     def case_iii(self, carrier: ObjectTrack, now: float) -> bool:
@@ -506,15 +516,19 @@ class LiveCallouts:
             return None
         return self.side_number_for(plane.pilot, now)
 
-    def _clip(self, call: Call, made: MadeCall | None, praise: bool = False, side_number: str | None = None,
-              home: bool | None = None, dig: bool = False) -> Clip:
-        """The clip to say for `call`, noted on `made` (what was said, in which voice)."""
-        clip = self.clips.pick(call, praise, home)
+    def _clips_for(self, carrier: ObjectTrack | None) -> ClipLibrary:
+        """The voice this carrier speaks with."""
+        return self.voices(carrier.pilot) if self.voices is not None and carrier is not None else self.clips
+
+    def _clip(self, clips: ClipLibrary, call: Call, made: MadeCall | None, praise: bool = False,
+              side_number: str | None = None, home: bool | None = None, dig: bool = False) -> Clip:
+        """The clip to say for `call` in `clips`, noted on `made` (what was said, in which voice)."""
+        clip = clips.pick(call, praise, home)
         if dig:
-            clip = self.clips.followed_by(clip, self.clips.pick(Call.ROUGH_LANDING))
-        clip = self.clips.with_side_number(clip, side_number)  # whose call, if busy
+            clip = clips.followed_by(clip, clips.pick(Call.ROUGH_LANDING))
+        clip = clips.with_side_number(clip, side_number)  # whose call, if busy
         if made is not None:
-            made.said, made.voice = clip.text, self.clips.voice
+            made.said, made.voice = clip.text, clips.voice
         return clip
 
     async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent, clip: Clip,
@@ -580,7 +594,8 @@ class LiveCallouts:
             if (*key, heard.call.call) not in self._answered:  # a call repeated (e.g. no answer yet) once
                 self._made(MadeCall(plane.id, sim_time, along, heard.call.call, describe(heard.call), "pilot"))
         answer = {"ball": Call.ROGER_BALL, "clara": Call.ROGER_CLARA, "paddles": Call.LOUD_AND_CLEAR}[heard.call.call]
-        if answer not in self.settings.calls or answer not in self.clips:
+        clips = self._clips_for(found[1][0] if found is not None else self._carrier_on(heard.frequency_hz))
+        if answer not in self.settings.calls or answer not in clips:
             return
         if found is None and answer is not Call.LOUD_AND_CLEAR:
             log.info("heard %r from %s, but no jet in the groove on %.3f MHz to match it", heard.call.text,
@@ -592,23 +607,31 @@ class LiveCallouts:
                 return  # said already this pass
             self._answered.add((*key, answer))
             self._answered.add((*key, heard.call.call))
-            clip, said = self.clips.pick(answer), None
+            clip, said = clips.pick(answer), None
             if answer is Call.ROGER_BALL and (wind := self.deck_wind(carrier)) is not None:
-                if (with_wind := self.clips.roger_ball(wind.speed / KT, wind.off_axis)) is not None:
+                if (with_wind := clips.roger_ball(wind.speed / KT, wind.off_axis)) is not None:
                     clip = with_wind  # "Roger ball, 25 knots."
                     said = clip.text.rstrip(".")
-            self._made(MadeCall(plane.id, sim_time, along, answer, said, said=clip.text, voice=self.clips.voice))
+            self._made(MadeCall(plane.id, sim_time, along, answer, said, said=clip.text, voice=clips.voice))
             radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
             who = plane.pilot or hex(plane.id)
         else:
             radio = next((r for r in self._radios() if abs(r.frequency_hz - heard.frequency_hz) < 1000.0),
                          Radio(heard.frequency_hz / 1e6))
             who = heard.speaker or "?"
-            clip = self.clips.pick(answer)
+            clip = clips.pick(answer)
         log.info("ANSWER %s -> %s (%.3f %s): %r", answer.value, who, radio.frequency_mhz, radio.modulation.name, clip.text)
         task = asyncio.get_running_loop().create_task(self.sink.say(answer, clip, radio, time.monotonic()))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def _carrier_on(self, frequency_hz: float) -> ObjectTrack | None:
+        """A carrier seen this session whose LSO frequency this is."""
+        for carrier in self._carriers.values():
+            radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
+            if abs(radio.frequency_hz - frequency_hz) < 1000.0:
+                return carrier
+        return None
 
     def _radios(self) -> list[Radio]:
         radios = [Radio(self.settings.frequency_mhz, self.settings.modulation)]

@@ -439,8 +439,24 @@ def _hub_config_reference(_args: argparse.Namespace) -> int:
 
 
 def _voice_build(args: argparse.Namespace) -> int:
-    from .callouts.voice import ClipLibrary, build_clips
+    from .callouts.voice import KOKORO_SPEAKERS, ClipLibrary, build_clips, build_kokoro_clips
 
+    if args.kokoro_voices:
+        try:
+            outs = build_kokoro_clips(args.model, args.kokoro_voices, args.out_dir,
+                                      tuple(args.speaker or KOKORO_SPEAKERS), speed=args.speed)
+        except ImportError:
+            print("Kokoro isn't installed: uv run --extra kokoro burble voice build ...", file=sys.stderr)
+            return 1
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        for out in outs:
+            print(f"clips written to {out}")
+        return 0
+    if args.speaker:
+        print("--speaker is for Kokoro (with --kokoro-voices)", file=sys.stderr)
+        return 1
     out = build_clips(args.model, args.out_dir, speed=args.speed)
     lib = ClipLibrary.load(out)
     for call, clips in lib.clips.items():
@@ -799,10 +815,16 @@ def main(argv: list[str] | None = None) -> int:
 
     voice = sub.add_parser("voice", help="LSO voice clips")
     voice_sub = voice.add_subparsers(dest="voice_command", required=True)
-    build = voice_sub.add_parser("build", help="render the LSO phrases with a Piper voice model")
-    build.add_argument("model", help="Piper .onnx voice (e.g. from `python -m piper.download_voices en_US-ryan-high`)")
-    build.add_argument("--out-dir", "-o", default="voice")
-    build.add_argument("--speed", type=float, default=1.15, help="speaking speed (1 = Piper's normal pace)")
+    build = voice_sub.add_parser("build", help="render the LSO phrases with a Piper or Kokoro voice model")
+    build.add_argument("model", help="Piper .onnx voice (e.g. from `python -m piper.download_voices en_US-ryan-high`), "
+                                     "or Kokoro's kokoro-v1.0.onnx with --kokoro-voices")
+    build.add_argument("--out-dir", "-o", default="voice",
+                       help="the clip set (Piper), or the folder to put a clip set for each speaker in (Kokoro)")
+    build.add_argument("--speed", type=float, default=1.15, help="speaking speed (1 = the voice's normal pace)")
+    build.add_argument("--kokoro-voices", metavar="BIN", help="Kokoro's voices-v1.0.bin: build with Kokoro (needs "
+                       "`uv run --extra kokoro`, and espeak-ng installed)")
+    build.add_argument("--speaker", action="append", metavar="NAME",
+                       help="a Kokoro voice to build (repeat for more; default: its American and British men)")
     build.set_defaults(func=_voice_build)
 
     upload = sub.add_parser("upload", help="slice recordings and upload every pass to the hub")
