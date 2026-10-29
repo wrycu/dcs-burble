@@ -171,6 +171,12 @@ def test_a_viewer_gets_the_ship_and_the_recent_traffic_then_each_update():
             assert event == "update" and update["calls"] == [
                 {"aircraft": 42, "t": 299.5, "text": "Power", "by": "lso", "say": "Power."}]
             assert broker.may_say("Power.") and not broker.may_say("Anything else.")
+            # The voice that said it, for the hub to say it in too.
+            broker.publish("server1", batch(301.0, calls=[{"aircraft": 42, "time": 300.5, "along": 250.0,
+                                                           "call": "power", "said": "301, Power.",
+                                                           "voice": "kokoro am_adam"}]))
+            ((_, update),) = drain(queue)
+            assert update["calls"][0]["say"] == "301, Power." and update["calls"][0]["voice"] == "kokoro am_adam"
             broker.announce("server1", "CVN-75 Harry S. Truman", 42, {"pass_id": 9, "url": "/passes/9"})
             assert drain(queue) == [("graded", {"aircraft": 42, "pass_id": 9, "url": "/passes/9"})]
             # A new mission: the carrier is another object; viewers start over with it.

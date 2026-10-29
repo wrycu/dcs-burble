@@ -121,6 +121,8 @@ class LiveBroker:
                          "by": call.get("by", "lso")}
                 if call.get("by") != "pilot":
                     shown["say"] = spoken_text(call)
+                    if call.get("voice"):
+                        shown["voice"] = call["voice"]
                     self._spoke(shown["say"])
                 update["calls"].append(shown)
             channel.updates.append((now, update))

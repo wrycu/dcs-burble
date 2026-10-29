@@ -6,8 +6,8 @@
 
 Recognition is Vosk (offline, CPU, about 40 ms a call), limited to the words of these calls (VOCABULARY): on
 synthetic calls through SRS's codec it got 36 of 36 fully right, where Whisper (tiny to small) was 3-12 times
-slower and heard "Paddles" as "pedals". Vosk is an optional dependency (`uv sync --extra listen`) with a model to
-download (e.g. vosk-model-small-en-us-0.15, 68 MB).
+slower and heard "Paddles" as "pedals". Its model (vosk-model-small-en-us-0.15, 68 MB) is downloaded by the
+agent when missing.
 """
 
 from __future__ import annotations
@@ -81,10 +81,8 @@ class Recogniser:
     """Vosk, limited to VOCABULARY. `model`: a Vosk model folder."""
 
     def __init__(self, model: str | Path) -> None:
-        try:
-            from vosk import KaldiRecognizer, Model, SetLogLevel
-        except ImportError as exc:
-            raise RuntimeError("speech recognition needs Vosk: `uv sync --extra listen`") from exc
+        from vosk import KaldiRecognizer, Model, SetLogLevel
+
         SetLogLevel(-1)
         self._recognizer = KaldiRecognizer
         self._model = Model(str(model))

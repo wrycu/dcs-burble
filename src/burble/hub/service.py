@@ -193,7 +193,7 @@ class Hub:
         self.engine = make_engine(database_url)
         self.sessions: sessionmaker[Session] = make_sessionmaker(self.engine)
         self.data_dir = Path(data_dir)
-        # The voice the replay page's LSO calls are spoken in (`hub serve --voice-model`); None: the browser's own.
+        # The LSO's calls as audio, from the agents' clip sets ([hub] voice_dir); None: the browser's own voice.
         self.voice: CallVoice | None = None
         self.store = SliceStore(Path(data_dir) / "slices")
         # Passes' radio recordings (PLAN #52), and the WAVs of their transmissions made for the replay.

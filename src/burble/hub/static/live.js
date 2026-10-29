@@ -26,7 +26,7 @@ let world = null, cameras = null, views = null, updatePlat = null, updateHud = n
 let anyCalls = false;  // the LSO has said something since the page opened (the sound button shows)
 let C = null, state = {}, types = {};
 const jets = new Map();  // id -> { id, type, pilot, track, groove, model, label, last }
-let calls = [];  // { aircraft, t, text, say, by }
+let calls = [];  // { aircraft, t, text, say, voice, by }
 const spoken = new Set();
 let follow = 'auto';
 let clockOffsetMs = null;  // mission clock (ms) = clockOffsetMs + t * 1000
@@ -107,7 +107,7 @@ function onUpdate(u) {
   for (const id of u.gone) removeJet(id);
   for (const c of u.calls) {
     calls.push(c);
-    if (c.say && hasVoice) voice.load(audioUrl(c.say));
+    if (c.say && hasVoice) voice.load(audioUrl(c));
   }
   calls = calls.filter((c) => c.t >= u.now - KEEP_S);
   if (!anyCalls && u.calls.some((c) => c.say)) voice.hasCalls = anyCalls = true;
@@ -125,7 +125,9 @@ function onGraded(g) {
   setTimeout(() => { li.remove(); gradedList.hidden = !gradedList.children.length; }, GRADED_SHOW_S * 1000);
 }
 
-function audioUrl(text) { return `/live/say.wav?text=${encodeURIComponent(text)}`; }
+function audioUrl(c) {
+  return `/live/say.wav?text=${encodeURIComponent(c.say)}${c.voice ? `&voice=${encodeURIComponent(c.voice)}` : ''}`;
+}
 
 // -- the scene ----------------------------------------------------------------------------------
 
@@ -300,7 +302,7 @@ function frame(now) {
     const key = `${c.aircraft}|${c.t}|${c.text}`;
     if (c.t <= at && !spoken.has(key)) {
       spoken.add(key);
-      if (at - c.t < 2) voice.say(c.say, c.say && hasVoice ? audioUrl(c.say) : null);
+      if (at - c.t < 2) voice.say(c.say, c.say && hasVoice ? audioUrl(c) : null);
     }
   }
   const mine = current ? calls.filter((c) => c.aircraft === current.id && c.t <= at && at - c.t < 3) : [];

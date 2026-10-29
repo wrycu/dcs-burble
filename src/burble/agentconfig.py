@@ -56,7 +56,7 @@ SECTIONS: tuple[tuple[str, tuple[Setting, ...]], ...] = (
                 "server hook reports the mission's).", minimum=1),
         Setting(("callouts", "modulation"), "choice", "AM", "Default modulation", "", MODULATIONS),
         Setting(("callouts", "voice"), "text", None, "Voice",
-                "Which clip set the LSO speaks with, when the agent's --voice-dir is a folder of them (its folder "
+                "Which clip set the LSO speaks with, when the agent's voice_dir is a folder of them (its folder "
                 "name), or \"each carrier\" for a different one at each carrier. Unset or unknown: the first by name. "
                 "A carrier with a voice of its own (carriers below) uses that."),
         Setting(("callouts", "case"), "choice", "auto", "Recovery case",
@@ -67,7 +67,7 @@ SECTIONS: tuple[tuple[str, tuple[Setting, ...]], ...] = (
     ("Listening and recording", (
         Setting(("callouts", "listen"), "bool", False, "Listen to pilots and answer them",
                 "\"Roger ball\" with the wind, \"Roger, Clara\" with a talk-down, and radio checks. Needs the agent "
-                "started with --listen-model."),
+                "given a listen_model (a Vosk model; by default ~/.burble/models/vosk-model-small-en-us-0.15)."),
         Setting(("callouts", "record_radio"), "bool", True, "Record the carrier frequency's radio with each pass",
                 "Played in the pass's replay: the pass's own pilot (only if their SRS client has \"Allow "
                 "Transmissions To Be Recorded\" on) and the LSO, nobody else. Tell your players, e.g. in the "

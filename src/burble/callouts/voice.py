@@ -13,6 +13,7 @@ import random
 import re
 import wave
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -110,6 +111,9 @@ NOISE_W_SCALE = 0.4
 KOKORO_SPEAKERS = ("am_michael", "am_adam", "am_eric", "am_onyx", "am_fenrir", "am_liam", "bm_george", "bm_lewis")
 # The config's voice (callouts.voice) for a different clip set for each carrier (CarrierVoices).
 EACH_CARRIER = "each carrier"
+# Told after each clip a build renders: (its clip set, clips done, clips in the set).
+Progress = Callable[[str, int, int], None]
+
 # Where distributions put espeak-ng's data, which Kokoro phonemizes with: the copy bundled with kokoro-onnx looks for
 # its data where it was built, so the system's espeak-ng is used when there is one (`dnf/apt install espeak-ng`).
 ESPEAK_DATA_DIRS = ("/usr/share/espeak-ng-data", "/usr/lib/x86_64-linux-gnu/espeak-ng-data",
@@ -203,27 +207,38 @@ def _render(voice, text: str, config, path: Path) -> None:
     _write_wav(path, pcm, rate or 22050)
 
 
-def _build(out: Path, voice: str, speed: float, render) -> Path:
-    """Every phrase into `out` with `render(text, path)`, and the manifest naming `voice`."""
+def _build(out: Path, voice: str, speed: float, render, progress: Progress | None = None) -> Path:
+    """Every phrase into `out` with `render(text, path)`, and the manifest naming `voice`. `progress(out.name, done,
+    total)` after each clip."""
     out.mkdir(parents=True, exist_ok=True)
+    total = sum(len(variants(call)) for call in PHRASES) + len(DIGITS) + 1 + 2 * len(WIND_KNOTS)
+    done = 0
+
+    def say(text: str, path: Path) -> None:
+        nonlocal done
+        render(text, path)
+        done += 1
+        if progress is not None:
+            progress(out.name, done, total)
+
     manifest = {"voice": voice, "speed": speed, "clips": {}}
     for call in PHRASES:
         entries = manifest["clips"][call.name] = []
         for i, text in enumerate(variants(call)):
             path = out / clip_name(call, i)
-            render(text, path)
+            say(text, path)
             entries.append({"file": path.name, "text": text})
     manifest["numbers"] = {}
     for digit, word in DIGITS.items():
         path = out / f"number_{digit}.wav"
-        render(word, path)
+        say(word, path)
         manifest["numbers"][digit] = {"file": path.name, "text": word}
-    render(ROGER_BALL_CALM, out / CALM_CLIP)
+    say(ROGER_BALL_CALM, out / CALM_CLIP)
     manifest["roger_ball_wind"] = {"calm": {"file": CALM_CLIP, "text": ROGER_BALL_CALM}}
     for knots in WIND_KNOTS:
         for axial in (False, True):
             path, text = out / wind_clip_name(knots, axial), roger_ball_wind(knots, axial)
-            render(text, path)
+            say(text, path)
             manifest["roger_ball_wind"][f"{knots}{'a' if axial else ''}"] = {"file": path.name, "text": text}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return out
@@ -237,7 +252,7 @@ def _write_wav(path: Path, pcm: array, rate: int) -> None:
         wav.writeframes(pcm.tobytes())
 
 
-def build_clips(model: str | Path, out_dir: str | Path, speed: float = 1.15) -> Path:
+def build_clips(model: str | Path, out_dir: str | Path, speed: float = 1.15, progress: Progress | None = None) -> Path:
     """Render every phrase with a Piper voice model (`.onnx`, with its `.onnx.json` beside it).
 
     `speed` > 1 speaks faster (LSO calls are brisk).
@@ -246,7 +261,8 @@ def build_clips(model: str | Path, out_dir: str | Path, speed: float = 1.15) -> 
 
     voice = PiperVoice.load(str(model))
     config = SynthesisConfig(length_scale=1.0 / speed, noise_w_scale=NOISE_W_SCALE)
-    return _build(Path(out_dir), Path(model).stem, speed, lambda text, path: _render(voice, text, config, path))
+    return _build(Path(out_dir), Path(model).stem, speed, lambda text, path: _render(voice, text, config, path),
+                  progress)
 
 
 def espeak_config():
@@ -261,7 +277,8 @@ def espeak_config():
 
 
 def build_kokoro_clips(model: str | Path, voices: str | Path, out_dir: str | Path,
-                       speakers: tuple[str, ...] = KOKORO_SPEAKERS, speed: float = 1.15) -> list[Path]:
+                       speakers: tuple[str, ...] = KOKORO_SPEAKERS, speed: float = 1.15,
+                       progress: Progress | None = None) -> list[Path]:
     """Render every phrase with a Kokoro model (`kokoro-v1.0.onnx` and its `voices-v1.0.bin`) in each of `speakers`,
     one clip set each in `out_dir` (named after the speaker). Written at 16 kHz, as SRS sends it."""
     import numpy as np
@@ -285,7 +302,7 @@ def build_kokoro_clips(model: str | Path, voices: str | Path, out_dir: str | Pat
         _write_wav(path, pcm, SAMPLE_RATE)
 
     return [_build(Path(out_dir) / speaker, f"kokoro {speaker}", speed,
-                   lambda text, path, speaker=speaker: render(speaker, text, path)) for speaker in speakers]
+                   lambda text, path, speaker=speaker: render(speaker, text, path), progress) for speaker in speakers]
 
 
 @dataclass(frozen=True, slots=True)

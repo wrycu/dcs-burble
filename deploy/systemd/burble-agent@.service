@@ -1,13 +1,12 @@
 # Burble server agent for one DCS server instance (instance name = dcs-server-wine's, e.g. "server1"),
 # as a systemd *user* service next to dcs-server@.service.
-# Settings: ~/.config/burble/<instance>.env with
-#   BURBLE_URL=http://127.0.0.1:8000
-#   BURBLE_TOKEN=<server agent token from `burble hub add-agent <name>`>
-#   TACVIEW_PASSWORD=<tacviewRealTimeTelemetryPassword>
-#   TACVIEW_HOST=<where DCS's Tacview real-time telemetry is; optional, default 127.0.0.1>
-#   TACVIEW_PORT=<its port; optional, default 42674>
-# Listening to pilots' calls (answering "Roger ball"): the Vosk model in ~/burble-data (see --listen-model below),
-#   then turn it on in the hub's config for this server ("listen": true under "callouts").
+# Settings: [agent] in ~/.burble/config.toml for every instance, and [agent.<instance>] for this one's own, e.g.
+#   [agent.server1]
+#   token = "<server agent token from `burble hub add-agent <name>`>"
+#   tacview_password = "<tacviewRealTimeTelemetryPassword>"
+#   dcs_log = "~/.wine/drive_c/DCS_configs/DCS.server1/Logs/dcs.log"
+# Voice clips: `burble voice build` (into ~/.burble/voice). Listening to pilots' calls (answering "Roger ball"): turn it
+#   on in the hub's config for this server ("listen": true under "callouts"); the agent downloads its Vosk model.
 # Enable: systemctl --user enable --now burble-agent@server1
 [Unit]
 Description=Burble server agent for DCS.%i
@@ -18,12 +17,6 @@ WantedBy=default.target
 
 [Service]
 WorkingDirectory=%h/dcs-burble
-EnvironmentFile=%h/.config/burble/%i.env
-ExecStart=%h/.local/bin/uv run --frozen --extra listen burble agent \
-    --work-dir %h/burble-data/%i/collector \
-    --dcs-log %h/.wine/drive_c/DCS_configs/DCS.%i/Logs/dcs.log \
-    --tacview-password ${TACVIEW_PASSWORD} \
-    --voice-dir %h/burble-data/voice/clips-ryan \
-    --listen-model %h/burble-data/vosk-model-small-en-us-0.15
+ExecStart=%h/.local/bin/uv run --frozen burble agent %i
 Restart=always
 RestartSec=5

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -13,6 +12,7 @@ from pathlib import Path
 from .acmi import load_recording
 from .dcslog import attach_dcs_grades, load_debrief
 from .detect import find_passes
+from .models import download_model
 
 
 def _analyze(args: argparse.Namespace) -> int:
@@ -67,6 +67,7 @@ def _replay(args: argparse.Namespace) -> int:
     return 0
 
 
+# Kokoro's model files (`burble voice build`).
 DEFAULT_DCS_LOG = Path.home() / "Saved Games" / "DCS" / "Logs" / "dcs.log"
 
 
@@ -75,7 +76,7 @@ def _hook_listen(args: argparse.Namespace) -> int:
 
     from .dcslog import LsoGrade, follow, parse_hook_line
 
-    path = Path(args.log)
+    path = args.dcs_log
     print(f"following {path} for Burble hook events; Ctrl-C to stop", flush=True)
     try:
         for line in follow(path, from_start=args.from_start):
@@ -262,10 +263,12 @@ def _hub(args: argparse.Namespace):
     from .hub.service import Hub
 
     data_dir = Path(args.data_dir)
-    if not args.database_url and not (data_dir / "lso.db").exists() and not args.create:
-        # A typo'd or missing --data-dir would otherwise quietly start a new, empty hub.
-        raise SystemExit(f"error: no hub in {data_dir.resolve()} (no lso.db there). Point --data-dir at your hub's "
-                         "data, or add --create to start a new hub in that folder.")
+    default = getattr(args, "_given", {}).get("data_dir") == "default"
+    if not args.database_url and not (data_dir / "lso.db").exists() and not args.create and not default:
+        # A typo'd data folder would otherwise quietly start a new, empty hub.
+        raise SystemExit(f"error: no hub in {data_dir.resolve()} (no lso.db there). Point data_dir (in "
+                         f"{getattr(args, '_config_path', 'the config')}, or --data-dir) at your hub's data, or add "
+                         "--create to start a new hub in that folder.")
     url = args.database_url or f"sqlite:///{(data_dir / 'lso.db').resolve()}"
     data_dir.mkdir(parents=True, exist_ok=True)
     return Hub(url, data_dir, require_upload_token=args.require_upload_token, pilot_hook_accept=args.pilot_hook_accept,
@@ -278,9 +281,9 @@ def _hub_serve(args: argparse.Namespace) -> int:
     from .hub.app import create_app
 
     hub = _hub(args)
-    if args.voice_model:
+    if args.voice_dir:
         from .hub.voice import CallVoice
-        hub.voice = CallVoice(args.voice_model, hub.data_dir / "voice-cache")
+        hub.voice = CallVoice(args.voice_dir, args.default_voice)
     if args.discord_board_webhook or args.discord_traps_webhook:
         from .hub.discord import Discord
         Discord(hub, args.discord_board_webhook, args.discord_traps_webhook, args.public_url or "")
@@ -438,26 +441,50 @@ def _hub_config_reference(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _voice_build(args: argparse.Namespace) -> int:
-    from .callouts.voice import KOKORO_SPEAKERS, ClipLibrary, build_clips, build_kokoro_clips
+def _build_progress(sets: int):
+    """`voice build`'s progress: each clip set's count of clips as it goes (on a terminal), and each set when done."""
+    started: list[str] = []
 
-    if args.kokoro_voices:
+    def progress(name: str, done: int, total: int) -> None:
+        if not started or started[-1] != name:
+            started.append(name)
+        where = f"  {name} ({len(started)} of {sets}): " if sets > 1 else f"  {name}: "
+        if sys.stderr.isatty():
+            print(f"\r{where}{done} of {total} clips", end="\n" if done == total else "", file=sys.stderr,
+                  flush=True)
+        elif done == total:
+            print(f"{where}done", file=sys.stderr, flush=True)
+    return progress
+
+
+def _voice_build(args: argparse.Namespace) -> int:
+    from .callouts.voice import ClipLibrary, build_clips, build_kokoro_clips
+
+    engine = args.engine
+    if args._given["model"] == "flag" and args._given["engine"] != "flag":
+        engine = "kokoro" if args.model.name.startswith("kokoro") else "piper"
+    needed = [args.model] + ([args.kokoro_voices] if engine == "kokoro" else [])
+    for path in [p for p in needed if not p.exists()]:
         try:
-            outs = build_kokoro_clips(args.model, args.kokoro_voices, args.out_dir,
-                                      tuple(args.speaker or KOKORO_SPEAKERS), speed=args.speed)
-        except ImportError:
-            print("Kokoro isn't installed: uv run --extra kokoro burble voice build ...", file=sys.stderr)
+            download_model(path, engine)
+        except (OSError, ValueError) as exc:
+            print(f"error: no {path}, and it couldn't be downloaded: {exc}", file=sys.stderr)
             return 1
+    if engine == "kokoro":
+        count = f"{len(args.speakers)} voices" if len(args.speakers) != 1 else "1 voice"
+        print(f"building {count} into {args.out_dir} (this takes a while: about a minute each)", file=sys.stderr)
+        try:
+            outs = build_kokoro_clips(args.model, args.kokoro_voices, args.out_dir, tuple(args.speakers),
+                                      speed=args.speed, progress=_build_progress(len(args.speakers)))
         except ValueError as exc:
             print(exc, file=sys.stderr)
             return 1
         for out in outs:
             print(f"clips written to {out}")
         return 0
-    if args.speaker:
-        print("--speaker is for Kokoro (with --kokoro-voices)", file=sys.stderr)
-        return 1
-    out = build_clips(args.model, args.out_dir, speed=args.speed)
+    print(f"building the voice {args.model.stem} (this takes a minute or so)", file=sys.stderr)
+    out = build_clips(args.model, args.out_dir / (args.name or args.model.stem), speed=args.speed,
+                      progress=_build_progress(1))
     lib = ClipLibrary.load(out)
     for call, clips in lib.clips.items():
         for clip in clips:
@@ -534,9 +561,9 @@ def _upload(args: argparse.Namespace) -> int:
 
     from .slices import slice_recording
 
-    token = args.token or os.environ.get("BURBLE_TOKEN")
+    token = args.token
     if not token and not args.dry_run:
-        print("error: no token (use --token or BURBLE_TOKEN)", file=sys.stderr)
+        print(f"error: no token (token in [upload] in {args._config_path}, or --token)", file=sys.stderr)
         return 2
     hooks = None
     if args.dcs_log:
@@ -587,14 +614,26 @@ def _agent(args: argparse.Namespace) -> int:
                         format="%(asctime)s %(levelname)s %(message)s")
     if not args.verbose:
         logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per request is just noise
-    dcs_log = Path(args.dcs_log) if args.dcs_log else None
-    debrief = Path(args.debrief) if args.debrief else (dcs_log.with_name("debrief.log") if dcs_log else None)
+    dcs_log = args.dcs_log
+    debrief = args.debrief or (dcs_log.with_name("debrief.log") if dcs_log else None)
+    log = logging.getLogger("burble")
+    log.info("settings from %s", args._config_path)
+    voice_dir = getattr(args, "voice_dir", None)
+    if voice_dir is not None and not voice_dir.exists():
+        log.info("no voice clips in %s (build them with `burble voice build`)", voice_dir)
+        voice_dir = None
+    listen_model = getattr(args, "listen_model", None)
+    if listen_model is not None and not listen_model.exists():
+        try:
+            download_model(listen_model, "vosk")
+        except (OSError, ValueError) as exc:
+            log.warning("no listen_model %s, and it couldn't be downloaded (%s): listening stays off", listen_model,
+                        exc)
+            listen_model = None
     config = AgentConfig(
-        work_dir=Path(args.work_dir), tacview_host=args.tacview_host, tacview_port=args.tacview_port,
-        tacview_password=args.tacview_password, dcs_log=dcs_log, debrief=debrief,
-        url=args.url, token=args.token or os.environ.get("BURBLE_TOKEN"),
-        mode=args.mode, voice_dir=Path(args.voice_dir) if args.voice_dir else None,
-        listen_model=Path(args.listen_model) if getattr(args, "listen_model", None) else None,
+        work_dir=args.work_dir, tacview_host=args.tacview_host, tacview_port=args.tacview_port,
+        tacview_password=args.tacview_password, dcs_log=dcs_log, debrief=debrief, url=args.url, token=args.token,
+        mode=args.mode, voice_dir=voice_dir, listen_model=listen_model,
         keep_archives_days=args.keep_archives_days, keep_sent_days=args.keep_sent_days,
         keep_rejected_days=args.keep_rejected_days,
     )
@@ -610,7 +649,13 @@ def _agent(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import localconfig as lc
+    from .callouts.voice import KOKORO_SPEAKERS
+
+    lc.SECTIONS.clear()  # (built afresh with the parser: defaults under $BURBLE_HOME)
     parser = argparse.ArgumentParser(prog="burble")
+    parser.add_argument("--config", metavar="PATH", help="the settings file (default: ~/.burble/config.toml, written "
+                                                         "with every default on first use)")
     sub = parser.add_subparsers(dest="command", required=True)
     analyze = sub.add_parser("analyze", help="find and classify carrier passes in a Tacview recording")
     analyze.add_argument("recording", help="path to a .acmi / .zip.acmi file")
@@ -639,7 +684,8 @@ def main(argv: list[str] | None = None) -> int:
     replay.set_defaults(func=_replay)
 
     hook = sub.add_parser("hook-listen", help="P4: print events from the burble server hook as they reach dcs.log")
-    hook.add_argument("--log", default=str(DEFAULT_DCS_LOG), help="path to dcs.log")
+    lc.add(hook, "agent", "--dcs-log", "--log", kind="path", default=DEFAULT_DCS_LOG, help="DCS Logs/dcs.log",
+           template=False)
     hook.add_argument("--from-start", action="store_true", help="also show events already in the file")
     hook.set_defaults(func=_hook_listen)
 
@@ -672,8 +718,8 @@ def main(argv: list[str] | None = None) -> int:
     srs_args(srs_listen)
     srs_listen.add_argument("--coalition", type=int, default=2, help="0 spectator, 1 red, 2 blue")
     srs_listen.add_argument("--name", default="LSO (listening)", help="client name shown in SRS")
-    srs_listen.add_argument("--model", help="Vosk model folder (e.g. vosk-model-small-en-us-0.15; needs "
-                                            "`uv sync --extra listen`); without it, transmissions are only recorded")
+    srs_listen.add_argument("--model", help="Vosk model folder (e.g. "
+                                            "~/.burble/models/vosk-model-small-en-us-0.15); without it, transmissions are only recorded")
     srs_listen.add_argument("--save", metavar="DIR", help="keep each transmission as a WAV here")
     srs_listen.add_argument("--seconds", type=float, help="stop after this long (default: until Ctrl-C)")
     srs_listen.set_defaults(func=_srs_listen)
@@ -704,42 +750,43 @@ def main(argv: list[str] | None = None) -> int:
                        help="DCS debrief.log for all recordings (default: <name>.debrief.log next to each one)")
     cards.set_defaults(func=_cards)
 
-    hub = sub.add_parser("hub", help="run or manage the hub (website, database, grading)")
-    hub.add_argument("--data-dir", default=os.environ.get("BURBLE_DATA_DIR", "data"),
-                     help="where slices (and the default SQLite database) live [$BURBLE_DATA_DIR]")
+    hub = sub.add_parser("hub", help="serve the hub (website, database, grading), or manage it with a command")
+
+    def hub_opt(*flags: str, **kw) -> None:
+        lc.add(hub, "hub", *flags, **kw)
+
+    hub_opt("--data-dir", kind="path", default=lc.home() / "hub", help="where the hub's database and slices live")
     hub.add_argument("--create", action="store_true",
-                     help="start a new hub if the data folder has none yet (otherwise an empty folder is an error)")
-    hub.add_argument("--database-url", default=os.environ.get("BURBLE_DATABASE_URL"),
-                     help="SQLAlchemy URL; default sqlite in the data dir [$BURBLE_DATABASE_URL]")
-    hub.add_argument("--require-upload-token", action="store_true",
-                     default=os.environ.get("BURBLE_REQUIRE_UPLOAD_TOKEN", "").lower() in ("1", "true", "yes"),
-                     help="only accept recordings uploaded with a token (by default anyone can upload "
-                          "a recording and import their own passes from it) [$BURBLE_REQUIRE_UPLOAD_TOKEN]")
-    hub.add_argument("--pilot-hook-accept", choices=["ours", "any"],
-                     default=os.environ.get("BURBLE_PILOT_HOOK_ACCEPT", "ours"),
-                     help="pilot hook traps accepted: flown on this hub's own servers only (ours, the default), or "
-                          "from any server with a pilot token (any) [$BURBLE_PILOT_HOOK_ACCEPT]")
-    hub.add_argument("--other-servers", choices=["shown", "hidden"],
-                     default=os.environ.get("BURBLE_OTHER_SERVERS", "shown"),
-                     help="landings pilots flew on other servers (pilot hooks): on the greenie board by default "
-                          "(shown, the default), or only when a viewer picks \"All servers\" (hidden; also left off "
-                          "Discord) [$BURBLE_OTHER_SERVERS]")
-    hub_sub = hub.add_subparsers(dest="hub_command", required=True)
-    serve = hub_sub.add_parser("serve", help="serve the API, greenie board, and pass pages")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8000)
-    serve.add_argument("--public-url", default=os.environ.get("BURBLE_PUBLIC_URL"),
-                       help="the hub's address as people reach it (e.g. https://lso.example.com), for links in "
-                            "Discord messages [$BURBLE_PUBLIC_URL]")
-    serve.add_argument("--discord-board-webhook", default=os.environ.get("BURBLE_DISCORD_BOARD_WEBHOOK"),
-                       help="Discord webhook for the greenie board: one message, kept up to date by editing it "
-                            "[$BURBLE_DISCORD_BOARD_WEBHOOK]")
-    serve.add_argument("--discord-traps-webhook", default=os.environ.get("BURBLE_DISCORD_TRAPS_WEBHOOK"),
-                       help="Discord webhook for a post per landing, with its trap card [$BURBLE_DISCORD_TRAPS_WEBHOOK]")
-    serve.add_argument("--voice-model", default=os.environ.get("BURBLE_VOICE_MODEL"), metavar="ONNX",
-                       help="a Piper voice (.onnx) the replay page speaks the LSO's calls in, rendered on the hub "
-                            "(without it, the browser's own voice) [$BURBLE_VOICE_MODEL]")
-    serve.set_defaults(func=_hub_serve)
+                     help="start a new hub in --data-dir (or data_dir in the config) if it has none yet: otherwise a "
+                          "folder without one is an error, so a mistyped path never starts an empty hub (the default "
+                          "folder is created as needed)")
+    hub_opt("--database-url", help="SQLAlchemy URL, for a database other than SQLite in the data folder")
+    hub_opt("--host", default="127.0.0.1", help="the address to serve on (publish it through a reverse proxy)")
+    hub_opt("--port", kind="int", default=8000, help="the port to serve on")
+    hub_opt("--public-url", help="the hub's address as people reach it (e.g. https://lso.example.com), for links in "
+                                 "Discord messages")
+    hub_opt("--discord-board-webhook", help="Discord webhook for the greenie board: one message, kept up to date by "
+                                            "editing it")
+    hub_opt("--discord-traps-webhook", help="Discord webhook for a post per landing, with its trap card")
+    hub_opt("--voice-dir", kind="path", default=lc.home() / "voice",
+            help="the LSO's voice clips (`burble voice build`; the server agent's voice_dir, on the same machine), "
+                 "which the live view and replays without a radio recording say its calls with, in the voice that "
+                 "said each (without them, the browser's own voice)")
+    hub_opt("--default-voice", help="the clip set for calls that don't say which voice said them (recorded before "
+                                    "2026-10-27), or one this hub hasn't got (default: the first by name)")
+    hub_opt("--require-upload-token", kind="bool", default=False,
+            help="only accept recordings uploaded with a token (otherwise anyone can upload a recording and import "
+                 "their own passes from it)")
+    hub_opt("--pilot-hook-accept", choices=["ours", "any"], default="ours",
+            help="pilot hook traps accepted: flown on this hub's own servers only (ours), or from any server with a "
+                 "pilot token (any)")
+    hub_opt("--other-servers", choices=["shown", "hidden"], default="shown",
+            help="landings pilots flew on other servers (pilot hooks): on the greenie board (shown), or only when a "
+                 "viewer picks \"All servers\" (hidden; also left off Discord)")
+    hub.set_defaults(func=_hub_serve)
+    hub_sub = hub.add_subparsers(dest="hub_command")
+    hub_sub.add_parser("serve", help="serve the API, greenie board, and pass pages (what `burble hub` does on its own)"
+                       ).set_defaults(func=_hub_serve)
     add_agent = hub_sub.add_parser("add-agent", help="add a server agent and print its server agent token")
     add_agent.add_argument("name")
     add_agent.set_defaults(func=_hub_add_agent)
@@ -795,14 +842,16 @@ def main(argv: list[str] | None = None) -> int:
     tel_view.add_argument("--clear", action="store_true", help="disconnect it")
     tel_view.set_defaults(func=_hub_telemetry)
 
-    telemetry = sub.add_parser("telemetry", help="run a usage report receiver (without a hub)")
-    telemetry.add_argument("--data-dir", default=os.environ.get("BURBLE_TELEMETRY_DIR", "telemetry"),
-                           help="where its database (telemetry.db) lives [$BURBLE_TELEMETRY_DIR]")
-    telemetry_sub = telemetry.add_subparsers(dest="receiver_command", required=True)
-    t_serve = telemetry_sub.add_parser("serve", help="take hubs' reports; the Usage page at / (with the password)")
-    t_serve.add_argument("--host", default="127.0.0.1")
-    t_serve.add_argument("--port", type=int, default=8100)
-    t_serve.set_defaults(func=_telemetry_serve)
+    telemetry = sub.add_parser("telemetry", help="run a usage report receiver (without a hub), or manage it with a "
+                                                 "command")
+    lc.add(telemetry, "telemetry", "--data-dir", kind="path", default=lc.home() / "telemetry",
+           help="where its database (telemetry.db) lives")
+    lc.add(telemetry, "telemetry", "--host", default="127.0.0.1", help="the address to serve on")
+    lc.add(telemetry, "telemetry", "--port", kind="int", default=8100, help="the port to serve on")
+    telemetry.set_defaults(func=_telemetry_serve)
+    telemetry_sub = telemetry.add_subparsers(dest="receiver_command")
+    telemetry_sub.add_parser("serve", help="take hubs' reports; the Usage page at / (with the password); what "
+                                           "`burble telemetry` does on its own").set_defaults(func=_telemetry_serve)
     telemetry_sub.add_parser("set-password", help="set the password for the Usage page (and the API)").set_defaults(
         func=_telemetry_set_password)
     t_key = telemetry_sub.add_parser("new-key", help="make an API key for /api/v1/usage (e.g. for a hub's Usage page)")
@@ -815,23 +864,34 @@ def main(argv: list[str] | None = None) -> int:
 
     voice = sub.add_parser("voice", help="LSO voice clips")
     voice_sub = voice.add_subparsers(dest="voice_command", required=True)
-    build = voice_sub.add_parser("build", help="render the LSO phrases with a Piper or Kokoro voice model")
-    build.add_argument("model", help="Piper .onnx voice (e.g. from `python -m piper.download_voices en_US-ryan-high`), "
-                                     "or Kokoro's kokoro-v1.0.onnx with --kokoro-voices")
-    build.add_argument("--out-dir", "-o", default="voice",
-                       help="the clip set (Piper), or the folder to put a clip set for each speaker in (Kokoro)")
-    build.add_argument("--speed", type=float, default=1.15, help="speaking speed (1 = the voice's normal pace)")
-    build.add_argument("--kokoro-voices", metavar="BIN", help="Kokoro's voices-v1.0.bin: build with Kokoro (needs "
-                       "`uv run --extra kokoro`, and espeak-ng installed)")
-    build.add_argument("--speaker", action="append", metavar="NAME",
-                       help="a Kokoro voice to build (repeat for more; default: its American and British men)")
+    build = voice_sub.add_parser("build", help="render the LSO phrases with Kokoro (a clip set per speaker) or a Piper "
+                                               "voice model")
+
+    def voice_opt(*flags: str, **kw) -> None:
+        lc.add(build, "voice", *flags, **kw)
+
+    voice_opt("--engine", choices=["kokoro", "piper"], default="kokoro",
+              help="Kokoro (needs espeak-ng installed) or Piper; a model named on the "
+                   "command line picks it by its name")
+    voice_opt("model", kind="path", shown='"~/.burble/models/kokoro-v1.0.onnx"',
+              default=lambda a: lc.home() / "models" / ("kokoro-v1.0.onnx" if a.engine == "kokoro"
+                                                        else "en_US-ryan-high.onnx"),
+              help="the voice model: Kokoro's kokoro-v1.0.onnx, or a Piper .onnx with its .onnx.json beside it (for "
+                   "Piper, ~/.burble/models/en_US-ryan-high.onnx by default)")
+    voice_opt("--kokoro-voices", kind="path", default=lc.home() / "models" / "voices-v1.0.bin",
+              help="Kokoro's voices-v1.0.bin")
+    voice_opt("--speaker", dest="speakers", kind="list", default=KOKORO_SPEAKERS,
+              help="the Kokoro voices to build, a clip set each (repeat the flag for more)")
+    voice_opt("--out-dir", "-o", kind="path", default=lc.home() / "voice",
+              help="the folder the clip sets go in (the agent's voice_dir)")
+    voice_opt("--name", help="the Piper clip set's folder name (default: the model's name)")
+    voice_opt("--speed", kind="float", default=1.15, help="speaking speed (1 = the voice's normal pace)")
     build.set_defaults(func=_voice_build)
 
     upload = sub.add_parser("upload", help="slice recordings and upload every pass to the hub")
     upload.add_argument("recordings", nargs="+")
-    upload.add_argument("--url", default=os.environ.get("BURBLE_URL", "http://127.0.0.1:8000"),
-                        help="hub URL [$BURBLE_URL]")
-    upload.add_argument("--token", help="upload token [$BURBLE_TOKEN]")
+    lc.add(upload, "upload", "--url", default="http://127.0.0.1:8000", help="the hub's address")
+    lc.add(upload, "upload", "--token", help="an upload token (a pilot or server agent token)")
     upload.add_argument("--debrief", metavar="PATH",
                         help="DCS debrief.log for all recordings (default: <name>.debrief.log next to each one)")
     upload.add_argument("--dcs-log", metavar="PATH",
@@ -844,38 +904,49 @@ def main(argv: list[str] | None = None) -> int:
 
     from .acmi.stream import DEFAULT_PORT as TACVIEW_PORT
 
-    def agent_args(p: argparse.ArgumentParser, mode: str) -> None:
-        p.add_argument("--work-dir", default="agent", help="session archive and upload outbox")
-        p.add_argument("--tacview-host", default=os.environ.get("TACVIEW_HOST", "127.0.0.1"),
-                       help="Tacview real-time telemetry host [$TACVIEW_HOST; default 127.0.0.1]")
-        # A string default goes through `type` too, so a bad $TACVIEW_PORT is reported like a bad --tacview-port.
-        p.add_argument("--tacview-port", type=int, default=os.environ.get("TACVIEW_PORT", TACVIEW_PORT),
-                       help=f"Tacview real-time telemetry port [$TACVIEW_PORT; default {TACVIEW_PORT}]")
-        p.add_argument("--tacview-password")
-        p.add_argument("--dcs-log", metavar="PATH", help="DCS Logs/dcs.log, for the burble server hook's events")
-        p.add_argument("--debrief", metavar="PATH", help="DCS Logs/debrief.log (default: next to --dcs-log)")
-        p.add_argument("--url", default=os.environ.get("BURBLE_URL"), help="hub URL [$BURBLE_URL]")
-        p.add_argument("--token", help="server agent or pilot token [$BURBLE_TOKEN]")
-        p.set_defaults(mode=mode)
-        p.add_argument("--voice-dir", metavar="DIR", help="LSO voice clips (from `burble voice build`), or a folder of "
-                       "clip sets: the hub's config (callouts.voice) picks one by folder name")
-        p.add_argument("--listen-model", metavar="DIR", help="Vosk model, to hear pilots' calls on the LSO frequencies "
-                       "and answer them, if the hub's config says so (callouts.listen); needs `uv sync --extra listen`")
+    def agent_args(p: argparse.ArgumentParser, mode: str, section: str) -> None:
+        def opt(*flags: str, **kw) -> None:
+            lc.add(p, section, *flags, **kw)
+
+        folder = "agent" if mode == "server" else "pilot-uploader"
+        if mode == "server":
+            p.add_argument("instance", nargs="?", help="which DCS server, for several on one machine: its own table in "
+                                                       "the config ([agent.<instance>]) over [agent]")
+        opt("--work-dir", kind="path", default=lambda a: lc.home() / folder / (getattr(a, "instance", None) or ""),
+            shown=f'"~/.burble/{folder}"', help="session archive and upload outbox"
+            + (" (for an instance, by default ~/.burble/agent/<instance>)" if mode == "server" else ""))
+        opt("--url", default="http://127.0.0.1:8000", help="the hub's address")
+        opt("--token", help="a server agent token (`burble hub add-agent <name>`)" if mode == "server"
+            else "a pilot token (from your settings page on the hub)")
+        opt("--tacview-host", default="127.0.0.1", help="where DCS's Tacview real-time telemetry is")
+        opt("--tacview-port", kind="int", default=TACVIEW_PORT, help="its port")
+        opt("--tacview-password", help="its password (tacviewRealTimeTelemetryPassword), if set")
+        opt("--dcs-log", kind="path", help="DCS Logs/dcs.log, for the burble server hook's events")
+        opt("--debrief", kind="path", help="DCS Logs/debrief.log (default: next to dcs_log)")
+        if mode == "server":
+            opt("--voice-dir", kind="path", default=lc.home() / "voice",
+                help="the LSO's voice clips: a folder of clip sets (`burble voice build`), of which the hub's config "
+                     "picks (callouts.voice), or one clip set")
+            opt("--listen-model", kind="path", default=lc.home() / "models" / "vosk-model-small-en-us-0.15",
+                help="a Vosk model, to hear pilots' calls on the LSO frequencies and answer them, if the hub's "
+                     "config says so (callouts.listen); downloaded when missing, if named like vosk-model-...")
         for name, default, what in (("archives", 90, "session archives (raw recordings, for re-slicing)"),
                                     ("sent", 14, "local copies of uploaded slices (the hub keeps its own)"),
                                     ("rejected", 30, "slices the hub rejected")):
-            env = f"BURBLE_KEEP_{name.upper()}_DAYS"
-            p.add_argument(f"--keep-{name}-days", type=float,
-                           default=float(os.environ[env]) if os.environ.get(env) else None, metavar="DAYS",
-                           help=f"keep {what} this long; 0 = forever. Default: the hub's \"retention\" setting "
-                                f"for this agent, else {default} [${env}]")
-        p.add_argument("-v", "--verbose", action="store_true")
-        p.set_defaults(func=_agent)
+            opt(f"--keep-{name}-days", kind="float", metavar="DAYS", shown=str(default),
+                help=f"keep {what} this long; 0 = forever (unset: the hub's \"retention\" setting for this agent, else "
+                     f"{default})")
+        opt("-v", "--verbose", dest="verbose", kind="bool", default=False, help="log more")
+        p.set_defaults(func=_agent, mode=mode)
 
-    agent_args(sub.add_parser("agent", help="server agent: live Tacview stream -> passes, LSO calls -> hub"), "server")
+    agent_args(sub.add_parser("agent", help="server agent: live Tacview stream -> passes, LSO calls -> hub"), "server",
+               "agent")
     agent_args(sub.add_parser("pilot-uploader", help="pilot uploader: your own jet's passes from your PC -> hub "
-                                                     "(never transmits)"), "pilot")
+                                                     "(never transmits)"), "pilot", "pilot_uploader")
     args = parser.parse_args(argv)
+    if getattr(args, "_options", None):
+        config, path = lc.load(args.config)
+        lc.resolve(args, config, path)
     return args.func(args)
 
 

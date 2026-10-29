@@ -250,7 +250,7 @@ def test_the_agent_says_which_voices_it_has(hub, tmp_path):
     assert info["voices"] == ["clips-amy", "clips-ryan"] and not info["listen_model"] and not info["one_voice"]
     page = client_for(hub, "Viper", "viper password").get("/admin/agents/server1").text
     assert '<select name="callouts.voice">' in page and '<option value="clips-amy">clips-amy</option>' in page
-    assert "clips-joe (not on the agent)" in page and "wasn't started with --listen-model" in page
+    assert "clips-joe (not on the agent)" in page and "has no listen_model" in page
     assert '<option value="each carrier">A different one for each carrier</option>' in page
     assert '<select name="carrier.0.voice" aria-label="Voice"><option value="" selected>The LSO&#x27;s voice' in page
     asyncio.run(run(AgentConfig(work_dir=tmp_path / "edge", voice_dir=voices / "clips-ryan")))

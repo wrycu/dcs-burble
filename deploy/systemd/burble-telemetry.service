@@ -1,10 +1,11 @@
 # Burble usage report receiver (hubs' daily anonymous counts) as a systemd *user* service. Runs without a hub.
-# Listens on 127.0.0.1:8100 only; publish it through a reverse proxy (e.g. Caddy: `telemetry.example.com {
+# Listens on 127.0.0.1:8100 by default; publish it through a reverse proxy (e.g. Caddy: `telemetry.example.com {
 # reverse_proxy 127.0.0.1:8100 }`).
 # Install: cp deploy/systemd/*.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 #          systemctl --user enable --now burble-telemetry
-# Then: `uv run burble telemetry --data-dir ~/burble-data/telemetry set-password` (the Usage page at /), and
-# `... new-key NAME` for a hub's admins to show its stats on their Usage page.
+# Settings: [telemetry] in ~/.burble/config.toml (its data in ~/.burble/telemetry by default).
+# Then: `uv run burble telemetry set-password` (the Usage page at /), and `uv run burble telemetry new-key NAME` for a
+# hub's admins to show its stats on their Usage page.
 [Unit]
 Description=Burble usage report receiver
 
@@ -13,6 +14,6 @@ WantedBy=default.target
 
 [Service]
 WorkingDirectory=%h/dcs-burble
-ExecStart=%h/.local/bin/uv run --frozen burble telemetry --data-dir %h/burble-data/telemetry serve --host 127.0.0.1 --port 8100
+ExecStart=%h/.local/bin/uv run --frozen burble telemetry
 Restart=always
 RestartSec=5

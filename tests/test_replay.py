@@ -1,12 +1,20 @@
+import io
 import math
+import wave
+from array import array
 from pathlib import Path
+
+import pytest
 
 from burble.acmi import load_recording
 from burble.cards import render_lineup
 from burble.cards.replay import LEAD_S, TAIL_S, replay_data
 from burble.detect import find_passes
 from burble.geometry import AIRCRAFT, CARRIERS, DeckFrame
+from burble.callouts.voice import DIGITS, _build
 from burble.grading import grade_pass
+from burble.hub.voice import CallVoice
+from burble.srs.opus import SAMPLE_RATE
 
 from test_hub import PASS_FILES, client, hub, token, upload  # noqa: F401 (fixtures)
 
@@ -158,22 +166,66 @@ def test_call_audio_in_the_hubs_voice(client, token, hub, tmp_path):
         ("pilot", None, False), ("lso", "Roger ball, 20 knots.", False), ("lso", "Power.", False)]
     assert client.get(f"/passes/{pass_id}/calls/1.wav").status_code == 404
 
-    said = []
-
-    class Voice:  # stands in for Piper
-        def wav(self, text):
-            said.append(text)
-            path = tmp_path / "said.wav"
-            path.write_bytes(b"RIFF....WAVE")
-            return path
-
-    hub.voice = Voice()
+    # With the agents' clip sets: each call in the voice that said it, made from its clips.
+    voice_dir = tmp_path / "voice"
+    for name in ("am_adam", "bm_george"):
+        tone_clip_set(voice_dir / name, f"kokoro {name}")
+    hub.voice = CallVoice(voice_dir)
+    with hub.sessions() as s:
+        p = s.get(Pass, pass_id)
+        p.calls = [*p.calls,
+                   {"time": 3305.0, "along": 200.0, "call": "power", "said": "301, Power.", "voice": "kokoro bm_george"},
+                   {"time": 3306.0, "along": 100.0, "call": "trapped wire 2", "said": "Welcome aboard, two wire. The crew chief wants to talk to you.",
+                    "voice": "kokoro bm_george"}]
+        s.commit()
     calls = client.get(f"/passes/{pass_id}/replay.json").json()["calls"]
-    assert [c.get("audio") for c in calls] == [None, f"/passes/{pass_id}/calls/1.wav", f"/passes/{pass_id}/calls/2.wav"]
-    r = client.get(f"/passes/{pass_id}/calls/2.wav")
-    assert r.status_code == 200 and r.headers["content-type"] == "audio/wav" and said == ["Power."]
+    audio = {c["say"]: c["audio"] for c in calls if "audio" in c}
+    assert set(audio) == {"Roger ball, 20 knots.", "Power.", "301, Power.",
+                          "Welcome aboard, two wire. The crew chief wants to talk to you."}
+    r = client.get(audio["301, Power."])
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/wav"
+    # "3", "0", "1", the gap, then "Power." (each tone as long as its text), all in bm_george's clips.
+    assert _seconds(r.content) == pytest.approx(3 * 0.1 + 0.08 + _tone_s("Power."), abs=0.01)
+    # A welcome then a dig: two clips, the agent's pause between.
+    r = client.get(audio["Welcome aboard, two wire. The crew chief wants to talk to you."])
+    assert _seconds(r.content) == pytest.approx(
+        _tone_s("Welcome aboard, two wire.") + 0.32 + _tone_s("The crew chief wants to talk to you."), abs=0.01)
+    # A call naming no voice: the first set by name.
+    assert client.get(audio["Power."]).status_code == 200
     assert client.get(f"/passes/{pass_id}/calls/0.wav").status_code == 404  # the pilot's own call
     assert client.get(f"/passes/{pass_id}/calls/9.wav").status_code == 404
+
+
+def test_the_clip_voice_says_only_what_its_clips_can(tmp_path):
+    tone_clip_set(tmp_path / "voice" / "am_adam", "kokoro am_adam")
+    voice = CallVoice(tmp_path / "voice", default="am_adam")
+    assert voice.available()
+    assert voice.wav("Power.", "kokoro somebody else") is not None  # a voice it hasn't got: the default
+    assert voice.wav("Roger ball, 25 knots.") is not None and voice.wav("Roger ball, winds calm.") is not None
+    assert voice.wav("Power, now!") is None  # no such clip: the browser's voice says it
+    assert voice.wav("3x1, Power.") is None
+    assert not CallVoice(tmp_path / "nothing").available()
+
+
+def _tone_s(text: str) -> float:
+    return 0.1 if text.isdigit() or text in DIGITS.values() else 0.01 * len(text)
+
+
+def tone_clip_set(directory: Path, voice: str) -> None:
+    """A clip set as `burble voice build` writes it, each clip a tone as long as its text (a digit's 0.1 s)."""
+    def render(text, path):
+        n = int(SAMPLE_RATE * _tone_s(text))
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            w.writeframes(array("h", (int(8000 * math.sin(i / 5)) for i in range(n))).tobytes())
+    _build(directory, voice, 1.15, render)
+
+
+def _seconds(wav_bytes: bytes) -> float:
+    with wave.open(io.BytesIO(wav_bytes)) as w:
+        return w.getnframes() / w.getframerate()
 
 
 def test_lineup_plot_for_the_replay():

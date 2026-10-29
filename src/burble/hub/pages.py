@@ -1203,7 +1203,7 @@ def agent_settings_page(agent, done: str | None = None, error: str | None = None
             sections.append(_carrier_rows(config, form if typed else None, info))
         if title == "Listening and recording":
             if (ac.get(config, ("callouts", "listen")) is True and info and not info.get("listen_model")):
-                sections.append('<p class="warn">Listening is on, but this agent wasn\'t started with --listen-model, '
+                sections.append('<p class="warn">Listening is on, but this agent has no listen_model, '
                                 "so it can't hear anyone.</p>")
 
     calls = ac.get(config, ("callouts", "calls"))

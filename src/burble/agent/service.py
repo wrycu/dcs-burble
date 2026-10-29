@@ -492,7 +492,8 @@ class Agent:
         if not callouts.settings.listen:
             return None
         if self.config.listen_model is None:
-            log.warning("listening OFF: on in the hub's config, but no --listen-model was given")
+            log.warning("listening OFF: on in the hub's config, but there is no listen_model (a Vosk model; [agent] "
+                        "in ~/.burble/config.toml)")
             return None
         if not hasattr(callouts.sink, "on_voice"):
             return None  # (a test sink)
@@ -523,7 +524,8 @@ class Agent:
         """The voice for this session: `--voice-dir` is one clip set, or a folder of them where the hub's
         config (`callouts.voice`) picks one by folder name."""
         if self.config.voice_dir is None:
-            log.warning("live callouts OFF: enabled in the hub's config, but no --voice-dir was given")
+            log.warning("live callouts OFF: enabled in the hub's config, but there are no voice clips "
+                        "(`burble voice build`)")
             return None
         path, note = choose_clip_set(self.config.voice_dir, voice)
         if path is None:

@@ -963,7 +963,7 @@ def create_app(hub: Hub) -> FastAPI:
                            title=pages.card_title(p), radio=radio)
         for i, transmission in enumerate(data["radio"]):
             transmission["audio"] = f"/passes/{p.id}/radio/{i}.wav"
-        if hub.voice is not None:
+        if hub.voice is not None and hub.voice.available():
             for i, call in enumerate(data["calls"]):
                 if "say" in call:
                     call["audio"] = f"/passes/{p.id}/calls/{i}.wav"
@@ -971,15 +971,17 @@ def create_app(hub: Hub) -> FastAPI:
         return JSONResponse(data, headers={"Cache-Control": "no-cache"})
 
     @app.get("/passes/{pass_id}/calls/{index}.wav", dependencies=members)
-    def pass_call_audio(pass_id: int, index: int) -> FileResponse:
-        """One of the LSO's calls on the pass (by its place in the replay's list), in the hub's voice."""
+    def pass_call_audio(pass_id: int, index: int) -> Response:
+        """One of the LSO's calls on the pass (by its place in the replay's list), in the voice that said it."""
         if hub.voice is None:
-            raise HTTPException(404, "this hub has no voice (hub serve --voice-model)")
+            raise HTTPException(404, "this hub has no voice clips (voice_dir in [hub] in its config)")
         calls = ordered_calls(_get(pass_id).calls)
         if not 0 <= index < len(calls) or calls[index].get("by") == "pilot":
             raise HTTPException(404, "no such call")
-        path = hub.voice.wav(spoken_text(calls[index]))
-        return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
+        wav = hub.voice.wav(spoken_text(calls[index]), calls[index].get("voice"))
+        if wav is None:
+            raise HTTPException(404, "not in this hub's voice clips")
+        return Response(wav, media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/passes/{pass_id}/radio/{index}.wav", dependencies=members)
     def pass_radio_audio(pass_id: int, index: int) -> FileResponse:
@@ -1048,12 +1050,15 @@ def create_app(hub: Hub) -> FastAPI:
         return _signed_in_page(request) or pages.live_index_page(live.status(_agent_names()))
 
     @app.get("/live/say.wav")
-    def live_say(request: Request, text: str) -> FileResponse:
-        """A call said on a live view lately, in the hub's voice."""
+    def live_say(request: Request, text: str, voice: str | None = None) -> Response:
+        """A call said on a live view lately, in the voice that said it."""
         _may_watch(request)
         if hub.voice is None or not live.may_say(text):
             raise HTTPException(404, "no such call")
-        return FileResponse(hub.voice.wav(text), media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
+        wav = hub.voice.wav(text, voice)
+        if wav is None:
+            raise HTTPException(404, "not in this hub's voice clips")
+        return Response(wav, media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/live/{agent}", response_class=HTMLResponse)
     def live_server(request: Request, agent: str):
@@ -1070,7 +1075,7 @@ def create_app(hub: Hub) -> FastAPI:
 
     @app.get("/live/{agent}/{unit}", response_class=HTMLResponse)
     def live_view(request: Request, agent: str, unit: str):
-        return _signed_in_page(request) or pages.live_page(agent, unit, voice=hub.voice is not None)
+        return _signed_in_page(request) or pages.live_page(agent, unit, voice=hub.voice is not None and hub.voice.available())
 
     @app.get("/live/{agent}/{unit}/events")
     async def live_events(request: Request, agent: str, unit: str) -> StreamingResponse:

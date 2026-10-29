@@ -288,8 +288,13 @@ def test_kokoro_builds_a_clip_set_for_each_speaker(tmp_path, monkeypatch):
     config.EspeakConfig = lambda **kw: SimpleNamespace(**kw)
     monkeypatch.setitem(sys.modules, "kokoro_onnx", kokoro)
     monkeypatch.setitem(sys.modules, "kokoro_onnx.config", config)
-    outs = v.build_kokoro_clips("model.onnx", "voices.bin", tmp_path, ("am_adam", "bm_george"))
+    told = []
+    outs = v.build_kokoro_clips("model.onnx", "voices.bin", tmp_path, ("am_adam", "bm_george"),
+                                progress=lambda *p: told.append(p))
     assert outs == [tmp_path / "am_adam", tmp_path / "bm_george"]
+    # Progress after every clip: each set counts up to all of its clips (every WAV written).
+    total = len(list((tmp_path / "am_adam").glob("*.wav")))
+    assert told[0] == ("am_adam", 1, total) and told[-1] == ("bm_george", total, total) and len(told) == 2 * total
     manifest = json.loads((tmp_path / "bm_george" / "manifest.json").read_text())
     assert manifest["voice"] == "kokoro bm_george"
     assert ("Welcome home.", "bm_george", "en-gb") in asked and ("Two wire.", "am_adam", "en-us") in asked
