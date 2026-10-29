@@ -213,7 +213,8 @@ def section_table(config: dict, section: str, instance: str | None, path: Path) 
             raise SystemExit(f"error: {path}: [{section}.{instance}] should be a table")
         for key, value in own.items():
             if key not in keys:
-                raise SystemExit(f"error: {path}: no setting {key!r} in [{section}.{instance}]")
+                raise SystemExit(f"error: {path}: no setting {key!r} in [{section}.{instance}] (it has "
+                                 f"{', '.join(sorted(keys))})")
             merged[key] = value
     return merged
 
@@ -224,6 +225,10 @@ def resolve(args: argparse.Namespace, config: dict, path: Path) -> argparse.Name
     options: list[Option] = getattr(args, "_options", None) or []
     if not options:
         return args
+    for name in config:
+        if name not in SECTIONS:  # a misspelt section, or a setting above the first one, would do nothing
+            what = f"section [{name}]" if isinstance(config[name], dict) else f"setting {name!r} outside a section"
+            raise SystemExit(f"error: {path}: no {what} (the sections are {', '.join(SECTIONS)})")
     section = args._section
     instance = getattr(args, "instance", None)
     table = section_table(config, section, instance, path)

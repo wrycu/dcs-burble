@@ -60,12 +60,21 @@ def test_a_flag_wins_over_the_file_over_the_default(burble_home, tmp_path):
     ("[hub]\nnope = 1\n", "no setting 'nope' in [hub]"),
     ("[hub]\nother_servers = \"some\"\n", "should be one of shown, hidden"),
     ("[hub\n", "config.toml"),
+    ("[hubb]\nport = 8000\n", "no section [hubb]"),
+    ("port = 8000\n[hub]\n", "no setting 'port' outside a section"),
 ])
 def test_a_config_file_that_wont_do_says_why(burble_home, config, says):
     burble_home.mkdir()
     (burble_home / "config.toml").write_text(config)
     with pytest.raises(SystemExit, match=re.escape(says)):
         main(["hub", "add-agent", "server1"])
+
+
+def test_a_misspelt_setting_in_an_instances_table_says_what_it_has(burble_home):
+    burble_home.mkdir()
+    (burble_home / "config.toml").write_text("[agent.server1]\ntokn = \"x\"\n")
+    with pytest.raises(SystemExit, match=re.escape("no setting 'tokn' in [agent.server1] (it has")):
+        main(["agent", "server1"])
 
 
 def test_a_hub_folder_set_but_missing_needs_create(burble_home, tmp_path):
