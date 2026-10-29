@@ -108,6 +108,23 @@ def test_the_hubs_config_picks_the_voice(tmp_path, clips):
     assert agent._clips("clips-amy") is not agent._clips("clips-ryan")
 
 
+def test_a_clip_set_that_wont_load_is_passed_over(tmp_path, clips, caplog):
+    from burble.agent.service import Agent, AgentConfig
+    voices = tmp_path / "voices"
+    shutil.copytree(clips, voices / "clips-amy")
+    shutil.copytree(clips, voices / "clips-cut")
+    next(iter(sorted((voices / "clips-cut").glob("*.wav")))).unlink()  # a copy cut off part way
+    (voices / "clips-junk").mkdir()
+    (voices / "clips-junk" / "manifest.json").write_text("{not json")
+    agent = Agent(AgentConfig(work_dir=tmp_path / "edge", voice_dir=voices))
+    for broken in ("clips-cut", "clips-junk"):
+        assert agent._clips(broken) is agent._clips("clips-amy")  # the session (and its recording) goes on
+    assert "clips-junk unusable" in caplog.text and "clips-cut unusable" in caplog.text
+    for name in ("clips-amy", "clips-cut"):
+        shutil.rmtree(voices / name)
+    assert agent._clips("clips-junk") is None and "no clip set in" in caplog.text
+
+
 def test_each_carrier_gets_its_own_voice():
     from burble.callouts.voice import EACH_CARRIER, CarrierVoices
     sets = {name: ClipLibrary({}, name) for name in ("a", "b", "c")}

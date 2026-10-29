@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -470,6 +471,8 @@ def _voice_build(args: argparse.Namespace) -> int:
         except (OSError, ValueError) as exc:
             print(f"error: no {path}, and it couldn't be downloaded: {exc}", file=sys.stderr)
             return 1
+    # A build takes every core it can get (Kokoro: ~14 of 16): behind a DCS server and its agent on the same machine.
+    os.nice(10)
     if engine == "kokoro":
         count = f"{len(args.speakers)} voices" if len(args.speakers) != 1 else "1 voice"
         print(f"building {count} into {args.out_dir} (this takes a while: about a minute each)", file=sys.stderr)

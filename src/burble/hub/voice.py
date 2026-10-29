@@ -118,7 +118,11 @@ class CallVoice:
     def wav(self, text: str, voice: str | None = None) -> bytes | None:
         """`text` said in `voice` (a clip set's voice or folder name), as a WAV, or None when it can't be."""
         clip_set = self._set_for(voice)
-        pcm = clip_set.say(text) if clip_set is not None else None
+        try:
+            pcm = clip_set.say(text) if clip_set is not None else None
+        except (OSError, ValueError, EOFError) as exc:  # e.g. a clip missing from a set copied part way
+            log.warning("clip set for %r unusable: %s", voice or self.default, exc)
+            pcm = None
         if pcm is None:
             return None
         out = io.BytesIO()

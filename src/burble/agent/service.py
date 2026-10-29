@@ -481,7 +481,7 @@ class Agent:
                                 wind_for=self.hooks.wind_for if self.hooks is not None else None,
                                 wire_for=self.hooks.live_wire if self.hooks is not None else None)
         if extra := self._carrier_clip_sets(settings):
-            sets = {name: self._load_clips(path) for name, path in extra.items()}
+            sets = {name: lib for name, path in extra.items() if (lib := self._load_clips(path)) is not None}
             callouts.voices = CarrierVoices(sets, clips, settings.voice, settings.carrier_voices).for_carrier
         if self.hooks is not None:
             callouts.carrier_radio = self.hooks.carrier_radio  # the mission's frequency for each carrier
@@ -532,7 +532,14 @@ class Agent:
             log.warning("live callouts OFF: %s", note)
             return None
         log.info(note)
-        return self._load_clips(path)
+        if (clips := self._load_clips(path)) is not None:
+            return clips
+        for other in clip_sets(self.config.voice_dir).values():
+            if other != path and (clips := self._load_clips(other)) is not None:
+                log.info("voice: %s instead", other.name)
+                return clips
+        log.warning("live callouts OFF: no clip set in %s loads", self.config.voice_dir)
+        return None
 
     def _carrier_clip_sets(self, settings: CalloutSettings) -> dict[str, Path]:
         """The clip sets carriers may speak with besides the default (by name): every one with a different voice for
@@ -547,9 +554,15 @@ class Agent:
                 log.warning("no clip set %r for %s (have %s)", name, unit, ", ".join(sets) or "none")
         return {name: sets[name] for name in set(settings.carrier_voices.values()) if name in sets}
 
-    def _load_clips(self, path: Path) -> ClipLibrary:
+    def _load_clips(self, path: Path) -> ClipLibrary | None:
+        """The clip set in `path`, or None (with a warning) when it won't load, e.g. a copy cut off part way: a
+        broken voice mustn't stop the session, which records the passes whatever the callouts do."""
         if path not in self._clip_sets:
-            self._clip_sets[path] = ClipLibrary.load(path)
+            try:
+                self._clip_sets[path] = ClipLibrary.load(path)
+            except (OSError, ValueError, KeyError) as exc:
+                log.warning("clip set %s unusable (%s); build it again with `burble voice build`", path, exc)
+                return None
         return self._clip_sets[path]
 
     def _preload_clips(self) -> None:
@@ -559,10 +572,7 @@ class Agent:
             return
         path, _ = choose_clip_set(self.config.voice_dir, settings.voice)
         for path in ([path] if path is not None else []) + list(self._carrier_clip_sets(settings).values()):
-            try:
-                self._load_clips(path)
-            except (OSError, ValueError, KeyError) as exc:
-                log.warning("clip set %s didn't load: %s", path, exc)
+            self._load_clips(path)
 
     # -- top level ----------------------------------------------------------------------------
 
