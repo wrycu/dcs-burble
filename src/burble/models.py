@@ -55,7 +55,8 @@ def download(url: str, dest: Path) -> None:
                     done += len(chunk)
                     if total and sys.stderr.isatty() and (percent := 100 * done // total) != shown:
                         shown = percent
-                        print(f"\r  {done >> 20} of {total >> 20} MB ({percent}%)", end="", file=sys.stderr)
+                        print(f"\r  {round(done / 2**20)} of {round(total / 2**20)} MB ({percent}%)", end="",
+                              file=sys.stderr)
             if total and sys.stderr.isatty():
                 print(file=sys.stderr)
     except httpx.HTTPError as exc:
