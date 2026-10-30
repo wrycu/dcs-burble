@@ -395,13 +395,13 @@ class LiveCallouts:
         entry = self._engines.get(key)
         if entry is None:
             aircraft = frame.aircraft
-            case_iii = self.case_iii(carrier, sample.time)
+            case_iii, why = self.recovery_case(carrier, sample.time)
             entry = self._engines[key] = (
                 LiveEstimator(aircraft.glideslope, aoa_offset=aircraft.derived_aoa_offset),
                 CalloutEngine(self.settings.thresholds.for_aircraft(aircraft.on_speed_aoa), clips.durations(),
                               case_iii=case_iii))
-            if case_iii:
-                log.info("Case III for %s at %s", plane.pilot or hex(plane.id), carrier.pilot or carrier.name)
+            log.info("Case %s for %s at %s (%s)", "III" if case_iii else "I", plane.pilot or hex(plane.id),
+                     carrier.pilot or carrier.name, why)
         estimator, engine = entry
         t = sample.transform
         pos = frame.position(pose, t)
@@ -492,7 +492,11 @@ class LiveCallouts:
 
     def case_iii(self, carrier: ObjectTrack, now: float) -> bool:
         """A Case III recovery: as the config says, or (auto) at night or in the mission's poor weather."""
-        return recovery_case_iii(self.settings.case, self.night_at, self.weather, carrier, now)
+        return self.recovery_case(carrier, now)[0]
+
+    def recovery_case(self, carrier: ObjectTrack, now: float) -> tuple[bool, str]:
+        """Case III or not (`case_iii`), and why, for the log."""
+        return recovery_case(self.settings.case, self.night_at, self.weather, carrier, now)
 
     def deck_wind(self, carrier: ObjectTrack) -> DeckWind | None:
         """The wind over this carrier's angled deck now: the mission's wind (from the hook) less the carrier's
@@ -707,25 +711,62 @@ def recovery_case_iii(case: str, night_at: Callable[[ObjectTrack, float], bool |
                       weather: Callable[[], dict | None] | None, carrier: ObjectTrack, now: float) -> bool:
     """Case III at this carrier now: as the config's `case` says ("I", "III"), or (auto) at night or in the mission's
     poor weather. (The live calls and the carrier's lights decide it the same way.)"""
+    return recovery_case(case, night_at, weather, carrier, now)[0]
+
+
+def recovery_case(case: str, night_at: Callable[[ObjectTrack, float], bool | None] | None,
+                  weather: Callable[[], dict | None] | None, carrier: ObjectTrack, now: float) -> tuple[bool, str]:
+    """`recovery_case_iii`, and why, e.g. (True, "ceiling 820 ft, clouds preset Preset20") or (False, "day, no
+    ceiling, visibility 43.2 nm")."""
     if case in ("I", "III"):
-        return case == "III"
-    night = night_at(carrier, now) if night_at is not None else None
-    return is_case_iii(bool(night), weather() if weather is not None else None)
+        return case == "III", f"set to Case {case} in the config"
+    if night_at is not None and night_at(carrier, now):
+        return True, "night"
+    w = weather() if weather is not None else None
+    if not w:
+        return False, "day, no weather from the hook"
+    why = case_iii_weather(w)
+    return (True, why) if why else (False, f"day, {_weather_note(w)}")
 
 
 def is_case_iii(night: bool, weather: dict | None) -> bool:
     """Case III: at night, or (from the mission's weather, the hook's `weather` event) a ceiling under 1,000 ft
     or visibility under 5 nm (fog or dust included)."""
-    if night:
-        return True
-    if not weather:
-        return False
+    return night or (bool(weather) and case_iii_weather(weather) is not None)
+
+
+def _ceiling_m(weather: dict) -> float | None:
+    """The cloud base, if the clouds make a ceiling (broken or overcast)."""
     clouds = weather.get("clouds") or {}
-    base = clouds.get("base_m")
     layer = clouds.get("preset") in CEILING_PRESETS or (not clouds.get("preset") and (clouds.get("density") or 0)
                                                          >= CEILING_DENSITY)
-    if layer and base is not None and base < CASE_III_CEILING_M:
-        return True
-    seen = [v for v in (weather.get("visibility_m"), (weather.get("fog") or {}).get("visibility_m"),
-                        weather.get("dust_m")) if v]
-    return any(v < CASE_III_VISIBILITY_M for v in seen)
+    return clouds.get("base_m") if layer else None
+
+
+def _visibility(weather: dict) -> list[tuple[str, float]]:
+    seen = (("visibility", weather.get("visibility_m")), ("fog", (weather.get("fog") or {}).get("visibility_m")),
+            ("dust", weather.get("dust_m")))
+    return [(what, v) for what, v in seen if v]
+
+
+def case_iii_weather(weather: dict) -> str | None:
+    """Why the mission's weather makes it Case III (a ceiling under 1,000 ft or visibility under 5 nm), or None."""
+    base = _ceiling_m(weather)
+    if base is not None and base < CASE_III_CEILING_M:
+        clouds = weather.get("clouds") or {}
+        layer = f"preset {clouds['preset']}" if clouds.get("preset") else f"density {clouds.get('density')}"
+        return f"ceiling {base / 0.3048:.0f} ft, clouds {layer}"
+    low = [(what, v) for what, v in _visibility(weather) if v < CASE_III_VISIBILITY_M]
+    if low:
+        what, v = min(low, key=lambda x: x[1])
+        return f"{what} {v / 1852:.1f} nm"
+    return None
+
+
+def _weather_note(weather: dict) -> str:
+    """The weather that decided against Case III, for the log."""
+    base = _ceiling_m(weather)
+    ceiling = f"ceiling {base / 0.3048:.0f} ft" if base is not None else "no ceiling"
+    seen = _visibility(weather)
+    visibility = f", visibility {min(v for _, v in seen) / 1852:.1f} nm" if seen else ""
+    return ceiling + visibility

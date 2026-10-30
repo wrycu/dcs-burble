@@ -6,7 +6,7 @@ import asyncio
 from burble.acmi import ObjectTrack
 from burble.acmi.reader import Sample
 from burble.acmi.parser import Transform
-from burble.agent.callouts import CalloutSettings, LiveCallouts, is_case_iii
+from burble.agent.callouts import CalloutSettings, LiveCallouts, is_case_iii, recovery_case
 from burble.agent.listening import Heard
 from burble.callouts import Call, CalloutEngine
 from burble.callouts.heard import describe, parse
@@ -139,6 +139,19 @@ def test_case_iii_from_night_and_weather():
     assert not is_case_iii(False, {**low, "clouds": {"preset": "Preset20", "base_m": 900}})
     assert is_case_iii(False, {"clouds": {}, "visibility_m": 80000, "fog": {"visibility_m": 1500}})
     assert is_case_iii(False, {"clouds": {"density": 8, "base_m": 200}})  # legacy clouds
+
+
+def test_the_case_is_logged_with_why():
+    carrier = ObjectTrack(1, {"Name": "CVN_75", "Pilot": "CVN-75 Harry S. Truman"})
+    low = {"clouds": {"preset": "Preset20", "base_m": 250}, "visibility_m": 80000}
+    clear = {"clouds": {"preset": "Preset2", "base_m": 2000}, "visibility_m": 80000}
+    day, night = (lambda c, t: False), (lambda c, t: True)
+    assert recovery_case("auto", day, lambda: low, carrier, 0.0) == (True, "ceiling 820 ft, clouds preset Preset20")
+    assert recovery_case("auto", day, lambda: clear, carrier, 0.0) == (False, "day, no ceiling, visibility 43.2 nm")
+    assert recovery_case("auto", day, lambda: {"fog": {"visibility_m": 1852}}, carrier, 0.0) == (True, "fog 1.0 nm")
+    assert recovery_case("auto", night, lambda: clear, carrier, 0.0) == (True, "night")
+    assert recovery_case("auto", day, None, carrier, 0.0) == (False, "day, no weather from the hook")
+    assert recovery_case("I", night, None, carrier, 0.0) == (False, "set to Case I in the config")
 
 
 def test_the_pilots_call_described():
