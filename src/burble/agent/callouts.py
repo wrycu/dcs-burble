@@ -534,8 +534,9 @@ class LiveCallouts:
     async def _say(self, carrier: ObjectTrack, plane: ObjectTrack, call: Call, event: CallEvent, clip: Clip,
                    made: MadeCall | None = None) -> None:
         radio = self.settings.radio_for(carrier.pilot, self.carrier_radio(carrier.pilot) if self.carrier_radio else None)
-        log.info("CALL %s -> %s (%.2f nm, %s): %r", call.value, plane.pilot or hex(plane.id),
-                 event.along / 1852, f"{radio.frequency_mhz:.3f} {radio.modulation.name}", clip.text)
+        log.info("CALL %s -> %s (%.2f nm, %s, %s%s): %r", call.value, plane.pilot or hex(plane.id),
+                 event.along / 1852, carrier.pilot or carrier.name, f"{radio.frequency_mhz:.3f} {radio.modulation.name}",
+                 f", {made.voice}" if made is not None and made.voice else "", clip.text)
         if await self.sink.say(call, clip, radio, time.monotonic()) is False and made is not None:
             self.made = [m for m in self.made if m is not made]  # not said (e.g. the pilot was transmitting)
 
