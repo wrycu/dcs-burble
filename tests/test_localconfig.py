@@ -85,6 +85,15 @@ def test_a_hub_folder_set_but_missing_needs_create(burble_home, tmp_path):
     assert main(["hub", "--create", "add-agent", "server1"]) == 0
 
 
+def test_a_new_hub_in_the_default_folder_says_so(burble_home, capsys):
+    burble_home.mkdir()
+    (burble_home / "config.toml").write_text("[hub]\n")  # data_dir left out: the default folder
+    assert main(["hub", "add-agent", "server1"]) == 0
+    assert "starting a NEW, empty hub in" in capsys.readouterr().err
+    assert main(["hub", "add-agent", "server2"]) == 0
+    assert "NEW" not in capsys.readouterr().err  # it's there now
+
+
 def test_another_config_file(tmp_path, burble_home):
     path = tmp_path / "other.toml"
     path.write_text(f'[hub]\ndata_dir = "{tmp_path / "hub"}"\n')

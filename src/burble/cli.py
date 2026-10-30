@@ -271,6 +271,11 @@ def _hub(args: argparse.Namespace):
                          f"{getattr(args, '_config_path', 'the config')}, or --data-dir) at your hub's data, or add "
                          "--create to start a new hub in that folder.")
     url = args.database_url or f"sqlite:///{(data_dir / 'lso.db').resolve()}"
+    if not args.database_url and not (data_dir / "lso.db").exists():
+        # Said aloud: a data_dir left out of the config also lands here (the default folder), and an empty hub
+        # otherwise looks like the real one that has forgotten everyone's password.
+        print(f"starting a NEW, empty hub in {data_dir.resolve()} (to use an existing one, set data_dir under [hub] "
+              f"in {getattr(args, '_config_path', 'the config')})", file=sys.stderr)
     data_dir.mkdir(parents=True, exist_ok=True)
     return Hub(url, data_dir)
 
@@ -281,6 +286,7 @@ def _hub_serve(args: argparse.Namespace) -> int:
     from .hub.app import create_app
 
     hub = _hub(args)
+    print(f"hub data: {args.database_url or (Path(args.data_dir) / 'lso.db').resolve()}", file=sys.stderr)
     if args.voice_dir:
         from .hub.voice import CallVoice
         hub.voice = CallVoice(args.voice_dir, lambda: hub.setting("default_voice"))
