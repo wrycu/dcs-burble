@@ -19,7 +19,7 @@ def test_the_config_file_is_written_on_first_use(burble_home, capsys):
     # Every setting is there, commented out at its default, and valid once uncommented.
     uncommented = tomllib.loads(re.sub(r"^#(\w+ = )", r"\1", text, flags=re.M))
     assert uncommented["hub"]["port"] == 8000 and uncommented["agent"]["tacview_port"] == 42674
-    assert uncommented["voice"]["speakers"][0] == "am_michael" and uncommented["hub"]["public_url"] == ""
+    assert uncommented["voice"]["speakers"][0] == "am_michael" and uncommented["hub"]["database_url"] == ""
     assert set(uncommented["agent"]) == {o.key for o in lc.SECTIONS["agent"]}
     # The hub went in the default folder (made as needed, no --create).
     assert (burble_home / "hub" / "lso.db").exists()
@@ -58,7 +58,7 @@ def test_a_flag_wins_over_the_file_over_the_default(burble_home, tmp_path):
 @pytest.mark.parametrize("config,says", [
     ("[hub]\nport = \"eighty\"\n", "hub.port should be a whole number"),
     ("[hub]\nnope = 1\n", "no setting 'nope' in [hub]"),
-    ("[hub]\nother_servers = \"some\"\n", "should be one of shown, hidden"),
+    ("[hub]\nother_servers = \"hidden\"\n", "no setting 'other_servers' in [hub]"),  # on /admin now
     ("[hub\n", "config.toml"),
     ("[hubb]\nport = 8000\n", "no section [hubb]"),
     ("port = 8000\n[hub]\n", "no setting 'port' outside a section"),

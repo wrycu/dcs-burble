@@ -246,7 +246,8 @@ def test_the_page_form_picks_the_pilot(hub, tmp_path):
 
 
 def test_a_server_can_require_a_token(tmp_path):
-    strict = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", require_upload_token=True)
+    strict = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    strict.set_settings({"require_upload_token": "on"})
     token = strict.add_source("server1")
     client = TestClient(create_app(strict))
     r = client.post("/api/v1/recordings", files={"recording": (AI_TRAP.name, AI_TRAP.read_bytes())})

@@ -4,7 +4,7 @@ from the same clip sets the server agent speaks with (`burble voice build`), so 
 Each call recorded since 2026-10-27 (PLAN #51) says exactly what was said ("301, Welcome home. Two wire.") and in
 which clip set's voice; it's made again from that set's clips (the side number's digits, then one phrase, or two
 with a pause between), with the agent's own gaps. A call naming no voice, or one this hub hasn't got, is said in the
-default voice (`[hub] default_voice`, else the first set by name); one that can't be made from the clips (e.g. a
+default voice (the hub setting "Default voice" on /admin, else the first set by name); one that can't be made from the clips (e.g. a
 phrase since reworded) isn't said by the hub, and the browser's own voice says it instead.
 """
 
@@ -18,6 +18,7 @@ import threading
 import time
 import wave
 from array import array
+from collections.abc import Callable
 from pathlib import Path
 
 from ..callouts.voice import FOLLOW_GAP_FRAMES, SIDE_NUMBER_GAP_FRAMES, _trim, clip_sets
@@ -34,6 +35,7 @@ class _ClipSet:
 
     def __init__(self, directory: Path) -> None:
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        self.name = directory.name
         self.voice = str(manifest.get("voice") or directory.name)
         self.phrases: dict[str, Path] = {}
         for entries in (manifest.get("clips") or {}).values():
@@ -76,9 +78,10 @@ class _ClipSet:
 class CallVoice:
     """The clip sets in `voice_dir` (a folder of them, or one), saying recorded calls in the voice they name."""
 
-    def __init__(self, voice_dir: str | Path, default: str | None = None) -> None:
+    def __init__(self, voice_dir: str | Path, default: str | Callable[[], str | None] | None = None) -> None:
         self.voice_dir = Path(voice_dir)
-        self.default = default
+        # The default voice, or how to get it now (the hub's setting, which admins may change).
+        self._default = default if callable(default) else (lambda: default)
         self._sets: dict[str, _ClipSet] = {}
         self._order: list[_ClipSet] = []
         self._scanned = None
@@ -110,9 +113,14 @@ class CallVoice:
         self._scan()
         return bool(self._order)
 
+    def names(self) -> list[str]:
+        """The clip sets' folder names (e.g. for choosing the default voice)."""
+        self._scan()
+        return [s.name for s in self._order]
+
     def _set_for(self, voice: str | None) -> _ClipSet | None:
         self._scan()
-        return (self._sets.get(voice or "") or self._sets.get(self.default or "")
+        return (self._sets.get(voice or "") or self._sets.get(self._default() or "")
                 or (self._order[0] if self._order else None))
 
     def wav(self, text: str, voice: str | None = None) -> bytes | None:
@@ -121,7 +129,7 @@ class CallVoice:
         try:
             pcm = clip_set.say(text) if clip_set is not None else None
         except (OSError, ValueError, EOFError) as exc:  # e.g. a clip missing from a set copied part way
-            log.warning("clip set for %r unusable: %s", voice or self.default, exc)
+            log.warning("clip set for %r unusable: %s", voice or self._default(), exc)
             pcm = None
         if pcm is None:
             return None

@@ -26,7 +26,7 @@ In DCS: **Options > Special > Burble**.
 - **Send my traps to all hubs:** on (the default) sends each trap to the hub of the server you're flying on,
   which recognises you without a token, and to every other hub listed that has a token. Off sends it only to
   the hub of the server you're on. A hub may still turn down traps flown on other communities' servers; that's
-  its admin's choice (`--pilot-hook-accept`).
+  its admin's choice ("Landings from pilot hooks" under /admin's Hub settings).
 
 ## What happens
 

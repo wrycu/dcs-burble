@@ -37,6 +37,7 @@ from .db import (Grade, Pass, Pilot, PilotAlias, PlayerSeen, Setting, Slice, Sou
 from .pilothook import HookUploadError, hook_reports, parse_upload
 from .passwords import MIN_LENGTH as MIN_PASSWORD_LENGTH, FailureLimiter, hash_password, verify_password
 from .radio import parse_radio, remove_cached, transmission_wav, transmissions
+from .settings import HUB_SETTINGS, checked
 from .storage import SliceStore
 from .voice import CallVoice
 
@@ -55,13 +56,11 @@ INTERNAL_SOURCES = (PUBLIC_UPLOADS, PILOT_HOOKS)
 PLAYER_RECENT = timedelta(hours=24)
 # A server agent's player list is current if it reported it this recently (it reports at least every 2 min).
 PLAYERS_FRESH = timedelta(minutes=10)
-PILOT_HOOK_ACCEPT = ("ours", "any")
 # A carrier rebuilt from a jet (detect/rebuild.py): the mission's carrier the approach ended nearest, as the pilot
 # hook names it (version 6); else unknown, and the Nimitz class's deck is assumed.
 REBUILT_CARRIER_TYPE = "CVN_71"
 REBUILT_CARRIER_UNIT = "rebuilt from the jet (Nimitz class assumed)"
 REBUILT_STOP_S = 20.0  # the trap found against the rebuilt carrier ends this close to the jet's stop
-OTHER_SERVERS = ("shown", "hidden")
 UPLOAD_PILOT_WAIT = timedelta(days=1)  # how long an upload waits for its uploader to pick a pilot
 DEFAULT_PILOT_REFUSED = ("passes flown under DCS's default pilot name aren't recorded, since they can't be "
                          "credited to a pilot")
@@ -173,20 +172,8 @@ class WireCheck:
 
 
 class Hub:
-    def __init__(self, database_url: str, data_dir: str | Path, require_upload_token: bool = False,
-                 pilot_hook_accept: str = "ours", other_servers: str = "shown") -> None:
-        if pilot_hook_accept not in PILOT_HOOK_ACCEPT:
-            raise ValueError(f"pilot_hook_accept must be one of {PILOT_HOOK_ACCEPT}")
-        if other_servers not in OTHER_SERVERS:
-            raise ValueError(f"other_servers must be one of {OTHER_SERVERS}")
-        # Landings flown on other servers (pilot hooks, see hub/accuracy.py): on the board by default ("shown"), or
-        # only when a viewer asks for them ("hidden": also left off the Discord board, and not posted there).
-        self.other_servers = other_servers
-        # Pilot hook uploads: only traps flown on this hub's own servers ("ours"), or from anywhere with a
-        # pilot token ("any"; traps from other communities' servers have no carrier here yet).
-        self.pilot_hook_accept = pilot_hook_accept
-        # Refuse recordings uploaded without a source's token (by default anyone may upload their passes).
-        self.require_upload_token = require_upload_token
+    def __init__(self, database_url: str, data_dir: str | Path) -> None:
+        self._settings: dict[str, str] | None = None  # the hub settings (hub/settings.py), read once, then as saved
         self._upload_passwords: dict[int, str] = {}  # given with an upload, until its pilot is known (memory only)
         self._upload_attempts: dict[int, int] = {}
         self.password_failures = FailureLimiter()
@@ -506,6 +493,55 @@ class Hub:
         if not passes:
             self.remove_pilot(name)
         return not passes
+
+    # -- the hub settings admins change on the website (hub/settings.py) ---------------------------------------
+
+    def settings(self) -> dict[str, str]:
+        """Every hub setting, by key: as saved on /admin, else its default."""
+        if self._settings is None:
+            with self.sessions() as s:
+                saved = {row.key: row.value or "" for row in
+                         s.scalars(select(Setting).where(Setting.key.in_([h.key for h in HUB_SETTINGS])))}
+            self._settings = {h.key: saved.get(h.key, h.default) for h in HUB_SETTINGS}
+        return dict(self._settings)
+
+    def setting(self, key: str) -> str:
+        return self.settings()[key]
+
+    def set_settings(self, values: dict[str, str]) -> list[str]:
+        """Save these hub settings (each checked first: ValueError, and nothing saved, if one won't do). Returns the
+        keys that changed."""
+        values = {key: checked(key, value) for key, value in values.items()}
+        current = self.settings()
+        changed = [key for key, value in values.items() if value != current[key]]
+        with self.sessions.begin() as s:
+            for key in changed:
+                row = s.get(Setting, key)
+                if row is None:
+                    s.add(Setting(key=key, value=values[key]))
+                else:
+                    row.value = values[key]
+        self._settings = {**current, **values}
+        if {"other_servers", "public_url", "discord_board_webhook"} & set(changed):
+            self._notify(None)  # the Discord board is redrawn (and posted, if its webhook is new)
+        return changed
+
+    @property
+    def pilot_hook_accept(self) -> str:
+        """Pilot hook uploads: only traps flown on this hub's own servers ("ours"), or from anywhere with a pilot
+        token ("any"; traps from other communities' servers have no carrier here yet)."""
+        return self.setting("pilot_hook_accept")
+
+    @property
+    def require_upload_token(self) -> bool:
+        """Refuse recordings uploaded without a source's token (by default anyone may upload their passes)."""
+        return self.setting("require_upload_token") == "on"
+
+    @property
+    def other_servers(self) -> str:
+        """Landings flown on other servers (pilot hooks, see hub/accuracy.py): on the board ("shown", the default),
+        or only when a viewer asks for them ("hidden": also left off the Discord board, and not posted there)."""
+        return self.setting("other_servers")
 
     def custom_css(self) -> str:
         """The CSS the hub's admins set for the website (its theme variables also colour the Discord images)."""

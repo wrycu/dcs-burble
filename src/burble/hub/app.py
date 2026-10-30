@@ -540,7 +540,8 @@ def create_app(hub: Hub) -> FastAPI:
         return HTMLResponse(pages.admin_page(hub.admin_pilots(q), hub.server_agents(), q, done, error, new_token,
                                              css=hub.custom_css(), telemetry=_telemetry_info(),
                                              pending=hub.pending_pilots(), approval=hub.join_approval(),
-                                             members_only=hub.members_only()),
+                                             members_only=hub.members_only(), settings=hub.settings(),
+                                             voices=hub.voice.names() if hub.voice is not None else []),
                             status_code=status)
 
     def _telemetry_info() -> dict:
@@ -592,6 +593,13 @@ def create_app(hub: Hub) -> FastAPI:
         on_ = on == "1"
         return _admin_step(request, lambda: hub.set_members_only(on_),
                            "The board is members-only now." if on_ else "The board is open to everyone now.", q)
+
+    @app.post("/admin/settings")
+    async def admin_settings(request: Request):
+        _admin(request)
+        form = await request.form()
+        values = {key: str(form[key]) for key in hub.settings() if key in form}
+        return _admin_step(request, lambda: hub.set_settings(values), "Hub settings saved.")
 
     @app.post("/admin/pilots/{name}/approve")
     def admin_approve_pilot(request: Request, name: str, q: Annotated[str, Form()] = ""):

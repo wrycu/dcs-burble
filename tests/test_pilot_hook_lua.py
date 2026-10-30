@@ -469,7 +469,8 @@ def test_another_communitys_hub_grades_it_on_its_own(tmp_path, recorded):
     (_, headers, body), = [split(r) for r in requests if r.startswith("POST") and "hub2" in r]
     assert json.loads(body)["carrier"]["type"] == "CVN_75"
     (tmp_path / "hub").mkdir()
-    hub = Hub(f"sqlite:///{tmp_path / 'hub' / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    hub = Hub(f"sqlite:///{tmp_path / 'hub' / 'lso.db'}", tmp_path / "hub")
+    hub.set_settings({"pilot_hook_accept": "any"})
     token = hub.add_pilot_token("Wrycu", "pilot hook")
     client = TestClient(create_app(hub), client=("8.8.4.4", 50000))
     r = client.post("/api/v1/pilot-hook/approaches", content=body, headers={"Authorization": f"Bearer {token}"})

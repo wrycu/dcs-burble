@@ -53,9 +53,10 @@ def server_report() -> tuple[bytes, dict]:
     return SERVER.read_bytes(), sidecar(r, p, "s", slice_objects(r, p))
 
 
-def make_hub(path: Path, **options) -> Hub:
+def make_hub(path: Path, **settings) -> Hub:
     path.mkdir(parents=True, exist_ok=True)
-    h = Hub(f"sqlite:///{path / 'lso.db'}", path / "hub", **options)
+    h = Hub(f"sqlite:///{path / 'lso.db'}", path / "hub")
+    h.set_settings(settings)
     h.add_source("server1")
     h.token = h.add_pilot_token("Wrycu", "pilot hook")
     # The server agent: Wrycu is connected to its DCS server.
@@ -128,8 +129,9 @@ def test_our_servers_or_any(tmp_path):
         # Flown somewhere else: this hub's servers never saw this UCID.
         r = post(client_at(hub, "8.8.4.4"), {**hook_upload(), "ucid": "flown elsewhere"}, hub.token)
         assert r.status_code == expected, r.text
-    with pytest.raises(ValueError):
-        Hub(f"sqlite:///{tmp_path / 'x.db'}", tmp_path / "x", pilot_hook_accept="maybe")
+    with pytest.raises(ValueError, match="should be one of"):
+        hub.set_settings({"pilot_hook_accept": "maybe"})
+    assert hub.pilot_hook_accept == "any"  # nothing saved
 
 
 def test_is_this_player_here(hub):
@@ -178,7 +180,8 @@ def carrier_upload(**extra) -> dict:
 
 def test_with_the_carrier_a_hook_upload_is_graded_on_its_own(tmp_path):
     # Another community's hub: no server agent, accepts traps from any server with the pilot's token.
-    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    hub.set_settings({"pilot_hook_accept": "any"})
     token = hub.add_pilot_token("Wrycu", "pilot hook")
     r = post(client_at(hub, "8.8.4.4"), carrier_upload(), token)
     assert r.status_code == 200, r.text
@@ -211,7 +214,8 @@ def test_unknown_ships_are_ignored(hub):
 
 @pytest.mark.parametrize(("elevation", "night"), [(-12.5, True), (30.0, False), (None, None)])
 def test_night_from_dccs_sun_without_a_server_agent(tmp_path, elevation, night):
-    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    hub.set_settings({"pilot_hook_accept": "any"})
     token = hub.add_pilot_token("Wrycu", "pilot hook")
     body = carrier_upload() if elevation is None else carrier_upload(sun_elevation=elevation)
     (report,) = post(client_at(hub, "8.8.4.4"), body, token).json()["reports"]
@@ -239,7 +243,8 @@ def test_relaying_calls_to_another_hub(tmp_path):
     assert client_at(a, "8.8.4.4").get("/api/v1/pilot-hook/calls", params={"pass_id": report["pass_id"], "ucid": UCID}).status_code == 401
     assert client_a.get("/api/v1/pilot-hook/calls", params={"pass_id": report["pass_id"], "ucid": "other"}).status_code in (401, 404)
     # Community B: no server agent; the pilot hook relays A's calls with its upload.
-    b = Hub(f"sqlite:///{tmp_path / 'b.db'}", tmp_path / "b", pilot_hook_accept="any")
+    b = Hub(f"sqlite:///{tmp_path / 'b.db'}", tmp_path / "b")
+    b.set_settings({"pilot_hook_accept": "any"})
     token = b.add_pilot_token("Wrycu", "pilot hook")
     body = carrier_upload(calls=answer["calls"], calls_from="lso.wrycu.com")
     (relayed,) = post(client_at(b, "8.8.4.4"), body, token).json()["reports"]
@@ -253,7 +258,8 @@ def test_relaying_calls_to_another_hub(tmp_path):
 
 def test_dcs_grade_added_by_a_later_upload(tmp_path):
     """The pilot hook sends an approach again once DCS's debrief.log has its grade: the hub adds it."""
-    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    hub.set_settings({"pilot_hook_accept": "any"})
     token = hub.add_pilot_token("Wrycu", "pilot hook")
     client = client_at(hub, "8.8.4.4")
     (first,) = post(client, carrier_upload(), token).json()["reports"]
@@ -300,7 +306,8 @@ def bolter_upload(**extra) -> dict:
 
 def other_communitys_hub(tmp_path) -> tuple[Hub, TestClient, str]:
     """A hub with no server agent of its own: the pilot hook sends it everything, with a pilot token."""
-    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any")
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    hub.set_settings({"pilot_hook_accept": "any"})
     return hub, client_at(hub, "8.8.4.4"), hub.add_pilot_token("Wrycu", "pilot hook")
 
 
@@ -410,7 +417,8 @@ def test_accuracy_is_rescored_when_dcss_grade_arrives_later(tmp_path):
 
 @pytest.mark.parametrize("default", ["shown", "hidden"])
 def test_landings_from_other_servers_can_be_hidden(tmp_path, default):
-    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub", pilot_hook_accept="any", other_servers=default)
+    hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "hub")
+    hub.set_settings({"pilot_hook_accept": "any", "other_servers": default})
     client, token = client_at(hub, "8.8.4.4"), hub.add_pilot_token("Wrycu", "pilot hook")
     post(client, {**carrier_upload(), "version": 3, "here": False}, token)  # flown on another community's server
 

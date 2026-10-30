@@ -40,7 +40,8 @@ class Option:
 # Every option the config file may set, by section, in the order the written file lists them.
 SECTIONS: dict[str, list[Option]] = {}
 SECTION_NOTES = {
-    "hub": "The hub: `burble hub` serves it; `burble hub <command>` manages it.",
+    "hub": ("The hub: `burble hub` serves it; `burble hub <command>` manages it. Its other settings (who can send "
+            "landings, Discord, its address, the default voice) are on its website, under /admin."),
     "agent": ("The server agent: `burble agent`. For several DCS servers on one machine, give each a table of its "
               "own after this one (`burble agent server1` reads [agent], then [agent.server1] over it), e.g.\n"
               "[agent.server1]\ntoken = \"...\"\ndcs_log = \"~/.wine/drive_c/DCS_configs/DCS.server1/Logs/dcs.log\""),

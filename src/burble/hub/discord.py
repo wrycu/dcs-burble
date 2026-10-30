@@ -67,9 +67,8 @@ class Discord:
     def __init__(self, hub, board_webhook: str | None = None, traps_webhook: str | None = None,
                  public_url: str = "", client: httpx.Client | None = None, start: bool = True) -> None:
         self.hub = hub
-        self.board_webhook = board_webhook or None
-        self.traps_webhook = traps_webhook or None
-        self.public_url = public_url.rstrip("/")
+        # Given here (tests), else the hub settings' (admins set them on /admin: in effect at once).
+        self._board_webhook, self._traps_webhook, self._public_url = board_webhook, traps_webhook, public_url
         self.client = client or httpx.Client(timeout=30)
         self._queue: queue.Queue[int | None] = queue.Queue()
         self._board_due = True  # bring the board up to date at start-up
@@ -78,6 +77,18 @@ class Discord:
         hub.listeners.append(self._queue.put)
         if start:
             threading.Thread(target=self._run, name="discord", daemon=True).start()
+
+    @property
+    def board_webhook(self) -> str | None:
+        return self._board_webhook or self.hub.setting("discord_board_webhook") or None
+
+    @property
+    def traps_webhook(self) -> str | None:
+        return self._traps_webhook or self.hub.setting("discord_traps_webhook") or None
+
+    @property
+    def public_url(self) -> str:
+        return (self._public_url or self.hub.setting("public_url")).rstrip("/")
 
     @property
     def enabled(self) -> bool:

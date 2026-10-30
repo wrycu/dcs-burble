@@ -2,10 +2,9 @@
 # Listens on 127.0.0.1:8000 by default; publish it through a reverse proxy (e.g. Caddy).
 # Install: cp deploy/systemd/*.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 #          systemctl --user enable --now burble-hub
-# Settings: [hub] in ~/.burble/config.toml (written with every default the first time Burble runs), e.g.
-#   public_url = "https://lso.example.com"
-#   discord_board_webhook = "https://discord.com/api/webhooks/..."
-#   discord_traps_webhook = "https://discord.com/api/webhooks/..."
+# Settings: [hub] in ~/.burble/config.toml (written with every default the first time Burble runs) has its folders,
+# database, address, and port; the rest (who can send landings, Discord, its public address, the default voice) are
+# on its website, under /admin's "Hub settings".
 # Its data is in ~/.burble/hub unless data_dir says otherwise (a data_dir set there must hold a hub already, so a
 # mistyped path never starts an empty one: start a new one with `uv run burble hub --create add-agent server1`).
 [Unit]

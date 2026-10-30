@@ -1064,9 +1064,11 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
 
 def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None, error: str | None = None,
                new_token: tuple[str, str] | None = None, css: str = "", telemetry: dict | None = None,
-               pending: list | None = None, approval: bool = False, members_only: bool = False) -> str:
+               pending: list | None = None, approval: bool = False, members_only: bool = False,
+               settings: dict | None = None, voices: list | None = None) -> str:
     """For admins (pilots with the role, signed in): pilots (admin role, password reset, removal, other names,
-    pilot tokens) and server agents (adding one, their configuration). `new_token`: (what, token), shown once."""
+    pilot tokens), server agents (adding one, their configuration), and the hub settings (`settings`, by key; `voices`:
+    the clip sets the hub has, for the default voice). `new_token`: (what, token), shown once."""
     me = CURRENT_PILOT.get()
     note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
         f'<p class="error">{escape(error)}</p>' if error else "")
@@ -1139,6 +1141,7 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
     body = ('<h1>Admin</h1><p class="sub">Regrading and the wire check are run on the hub\'s machine '
             f"(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).{usage_link}</p>"
             f'{note}{_telemetry_notice(tel)}<div class="admin">{_joining(pending or [], approval, post)}{_board_access(members_only, approval, post)}'
+            f'{_hub_settings(settings or {}, voices or [])}'
             f'<div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}'
             '<p class="sub">Only a pilot with a password can be an admin; resetting an admin\'s password removes the '
             "role. Deleting a pilot deletes their landings too; an admin can't be deleted (remove the role first).</p></div>"
@@ -1323,6 +1326,41 @@ def _board_access(members_only: bool, approval: bool, post) -> str:
         state = "<strong>Open:</strong> anyone can see the board, passes, and pilots' pages."
     return (f'<div class="panel" style="margin-bottom:12px"><h2 style="margin-top:0">Who can see the board</h2>'
             f'<div class="actions"><p class="sub" style="margin:0">{state}</p>{toggle}</div></div>')
+
+
+# The hub settings on /admin (hub/settings.py), in groups.
+HUB_SETTING_GROUPS = (("Who can send landings", ("pilot_hook_accept", "require_upload_token")),
+                      ("The board", ("other_servers",)),
+                      ("Discord", ("discord_board_webhook", "discord_traps_webhook", "public_url")),
+                      ("Voice", ("default_voice",)))
+
+
+def _hub_settings(settings: dict, voices: list) -> str:
+    """The hub settings admins change here (hub/settings.py), as one form."""
+    from .settings import BY_KEY
+
+    def field(key: str) -> str:
+        h, value = BY_KEY[key], settings.get(key, BY_KEY[key].default)
+        choices = list(h.choices)
+        if key == "default_voice" and voices:
+            choices = [("", "The first by name")] + [(v, v) for v in voices]
+            if value not in [c for c, _ in choices]:
+                choices.append((value, f"{value} (not on this hub)"))
+        if choices:
+            control = f'<select name="{key}">' + "".join(
+                f'<option value="{escape(c)}"{" selected" if c == value else ""}>{escape(label)}</option>'
+                for c, label in choices) + "</select>"
+        else:
+            kind = ' type="url" autocomplete="off" spellcheck="false"' if h.url else ""
+            control = f'<input name="{key}"{kind} value="{escape(value)}" maxlength="500">'
+        return (f'<label class="setting"><span>{escape(h.label)}</span>{control}'
+                f'<span class="hint">{escape(h.help)}</span></label>')
+
+    groups = "".join(f'<h3>{escape(title)}</h3>' + "".join(field(k) for k in keys) for title, keys in HUB_SETTING_GROUPS)
+    return ('<div class="settings" style="margin-bottom:12px"><form class="panel" method="post" action="/admin/settings">'
+            '<h2 style="margin-top:0">Hub settings</h2><p class="sub">In effect as soon as they\'re saved. The hub\'s '
+            "folders, database, address, and port are in <code>~/.burble/config.toml</code> on its machine.</p>"
+            f'{groups}<p><button type="submit">Save hub settings</button></p></form></div>')
 
 
 def _js_text(text: str) -> str:

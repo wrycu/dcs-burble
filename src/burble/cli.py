@@ -272,8 +272,7 @@ def _hub(args: argparse.Namespace):
                          "--create to start a new hub in that folder.")
     url = args.database_url or f"sqlite:///{(data_dir / 'lso.db').resolve()}"
     data_dir.mkdir(parents=True, exist_ok=True)
-    return Hub(url, data_dir, require_upload_token=args.require_upload_token, pilot_hook_accept=args.pilot_hook_accept,
-               other_servers=args.other_servers)
+    return Hub(url, data_dir)
 
 
 def _hub_serve(args: argparse.Namespace) -> int:
@@ -284,10 +283,9 @@ def _hub_serve(args: argparse.Namespace) -> int:
     hub = _hub(args)
     if args.voice_dir:
         from .hub.voice import CallVoice
-        hub.voice = CallVoice(args.voice_dir, args.default_voice)
-    if args.discord_board_webhook or args.discord_traps_webhook:
-        from .hub.discord import Discord
-        Discord(hub, args.discord_board_webhook, args.discord_traps_webhook, args.public_url or "")
+        hub.voice = CallVoice(args.voice_dir, lambda: hub.setting("default_voice"))
+    from .hub.discord import Discord
+    Discord(hub)  # posts once a webhook is set (the hub settings, on /admin)
     from .hub.telemetry import Telemetry
     Telemetry(hub)  # usage reports, once a day while on (see `burble hub telemetry`)
     # Live views keep their connections open: on a restart, close them after a few seconds rather than wait.
@@ -766,26 +764,10 @@ def main(argv: list[str] | None = None) -> int:
     hub_opt("--database-url", help="SQLAlchemy URL, for a database other than SQLite in the data folder")
     hub_opt("--host", default="127.0.0.1", help="the address to serve on (publish it through a reverse proxy)")
     hub_opt("--port", kind="int", default=8000, help="the port to serve on")
-    hub_opt("--public-url", help="the hub's address as people reach it (e.g. https://lso.example.com), for links in "
-                                 "Discord messages")
-    hub_opt("--discord-board-webhook", help="Discord webhook for the greenie board: one message, kept up to date by "
-                                            "editing it")
-    hub_opt("--discord-traps-webhook", help="Discord webhook for a post per landing, with its trap card")
     hub_opt("--voice-dir", kind="path", default=lc.home() / "voice",
             help="the LSO's voice clips (`burble voice build`; the server agent's voice_dir, on the same machine), "
                  "which the live view and replays without a radio recording say its calls with, in the voice that "
                  "said each (without them, the browser's own voice)")
-    hub_opt("--default-voice", help="the clip set for calls that don't say which voice said them (recorded before "
-                                    "2026-10-27), or one this hub hasn't got (default: the first by name)")
-    hub_opt("--require-upload-token", kind="bool", default=False,
-            help="only accept recordings uploaded with a token (otherwise anyone can upload a recording and import "
-                 "their own passes from it)")
-    hub_opt("--pilot-hook-accept", choices=["ours", "any"], default="ours",
-            help="pilot hook traps accepted: flown on this hub's own servers only (ours), or from any server with a "
-                 "pilot token (any)")
-    hub_opt("--other-servers", choices=["shown", "hidden"], default="shown",
-            help="landings pilots flew on other servers (pilot hooks): on the greenie board (shown), or only when a "
-                 "viewer picks \"All servers\" (hidden; also left off Discord)")
     hub.set_defaults(func=_hub_serve)
     hub_sub = hub.add_subparsers(dest="hub_command")
     hub_sub.add_parser("serve", help="serve the API, greenie board, and pass pages (what `burble hub` does on its own)"
