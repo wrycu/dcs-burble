@@ -132,8 +132,9 @@ class HookFeed:
         with self._lock:
             if event.event == "handler_installed":
                 # A new mission: its times restart at 0, so the previous mission's events would
-                # otherwise match this mission's passes.
-                self._events.clear()
+                # otherwise match this mission's passes. The hook logs the mission's weather just before this
+                # (from the same script): that's this mission's.
+                self._events = [e for e in self._events[-1:] if e.event == "weather"]
                 self._gear.clear()
             if event.event == "gear":
                 try:

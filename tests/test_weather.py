@@ -35,10 +35,13 @@ def _hooks(tmp_path) -> HookFeed:
     log_file = tmp_path / "dcs.log"
     prefix = "2026-10-07 20:{:02d}:00.000 INFO    BURBLE (Main): BURBLE "
     log_file.write_text("\n".join([
-        prefix.format(0) + '{"event":"handler_installed","t":0}',
+        prefix.format(0) + '{"event":"handler_installed","t":0}',  # the mission before, whose weather...
+        prefix.format(0) + '{"event":"weather","t":0,"clouds":{"preset":"Preset20","base_m":200}}',
+        # ...isn't this one's. The hook logs the weather just before it says it's installed (as on overlord).
         prefix.format(0) + '{"event":"weather","t":0,"dynamic":false,"ground_turbulence":12,"temperature":26,'
                            '"qnh_mmhg":755,"visibility_m":80000,"clouds":{"preset":"Preset6","base_m":2500,'
                            '"thickness_m":1150,"density":5,"precipitation":0}}',
+        prefix.format(0) + '{"event":"handler_installed","t":0}',
         # The carrier's unit name in this recording is "CVN-75 Harry S. Truman"; 8 m/s from the south-west.
         prefix.format(1) + '{"event":"wind","t":60,"carrier":"CVN-75 Harry S. Truman","type":"CVN_75",'
                            '"levels":[{"alt":10,"east":5.657,"north":5.657},{"alt":50,"east":6,"north":6}],'
