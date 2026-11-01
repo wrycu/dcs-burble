@@ -1038,14 +1038,17 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
            f'<form method="post" action="/pilots/{quoted}/settings/tokens/{t.id}/revoke" class="inline">'
            '<button type="submit">Revoke</button></form>')
         + "</td></tr>" for t in tokens or [])
-    listed = (f'<div class="scroll"><table class="results"><thead><tr><th>Token</th><th>Created</th><th>Last used</th>'
-              f'<th></th></tr></thead><tbody>{rows}</tbody></table></div>' if rows else "")
+    # The list (each Revoke its own form) goes after the create form, not in it: a form inside a form is dropped by
+    # browsers, and Revoke would submit the create form.
+    listed = (f'<div class="scroll" style="margin-top:12px"><table class="results"><thead><tr><th>Token</th>'
+              f'<th>Created</th><th>Last used</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>'
+              if rows else "")
     tokens_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/tokens"><h2>Pilot tokens</h2>'
         '<p class="sub">A pilot token lets the pilot hook or pilot uploader send your passes here. Everything sent '
-        "with it is credited to you, whatever name you fly under.</p>" + shown + listed
+        "with it is credited to you, whatever name you fly under.</p>" + shown
         + '<label>What it\'s for <input name="label" maxlength="100" placeholder="e.g. my PC"></label>'
-        '<button type="submit">Create a pilot token</button></form>')
+        '<button type="submit">Create a pilot token</button></form>' + listed)
     names = "".join(f'<li>{escape(a.name)}{"" if a.claimed else " (seen with your pilot token)"}</li>'
                     for a in aliases or [])
     aliases_form = (

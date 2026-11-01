@@ -2,6 +2,7 @@
 own jet."""
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -136,6 +137,8 @@ def test_settings_page_tokens_and_names(hub):
     assert hub.authenticate(token) is not None
     page = client.get("/pilots/Wrycu/settings").text
     assert "my PC" in page and token not in page  # listed, never shown again
+    tags = re.findall(r"</?form\b", page)
+    assert tags == ["<form", "</form"] * (len(tags) // 2)  # no form in a form (Revoke would submit the outer one)
     (t,) = hub.pilot_tokens("Wrycu")
     r = client.post(f"/pilots/Wrycu/settings/tokens/{t.id}/revoke", follow_redirects=False)
     assert r.status_code == 303 and hub.authenticate(token) is None
