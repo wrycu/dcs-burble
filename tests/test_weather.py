@@ -68,3 +68,19 @@ def test_wind_text_without_wind_or_turbulence():
     assert wind_text(p) == ("Wind over deck 25 kt, 12° port of the angled deck (5 kt across) · wind 10 kt from 300° "
                             "· smooth air, no turbulence")
     assert weather_text({"clouds": {}, "fog": {"visibility_m": 926}}) == "clear skies, fog (visibility 0.5 nm)"
+
+
+def test_an_agent_started_mid_mission_still_has_its_weather(tmp_path, caplog):
+    """The hook logs the weather once, as the mission starts: an agent (re)started after that reads it from what's
+    in dcs.log already, without logging that again."""
+    import logging
+    import time
+
+    with caplog.at_level(logging.INFO):
+        hooks = _hooks(tmp_path)
+        feed = HookFeed(hooks.path)
+        deadline = time.monotonic() + 5
+        while feed.weather() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert feed.weather()["clouds"]["base_m"] == 2500
+    assert "carrier in the mission" not in caplog.text

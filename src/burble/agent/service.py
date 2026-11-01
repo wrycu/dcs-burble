@@ -109,9 +109,19 @@ class HookFeed:
                         self.add(event)
 
     def _run(self) -> None:
-        for line in follow(self.path):
+        # From the start: an agent started part way through a mission still gets what the hook logs once per mission
+        # (the weather, the carriers), as `add` keeps only the last mission's events. What was there already isn't
+        # logged again.
+        try:
+            backlog = self.path.stat().st_size
+        except OSError:
+            backlog = 0
+        for line in follow(self.path, from_start=True):
+            backlog -= len(line.encode("utf-8")) + 1
             if (event := parse_hook_line(line)) is not None:
                 self.add(event)
+                if backlog > 0:
+                    continue
                 if event.event == "carrier" and (radio := self.carrier_radio(event.raw.get("name"))):
                     log.info("carrier in the mission: %s (%s) on %.3f %s", event.raw.get("name"), event.raw.get("type"),
                              radio.frequency_mhz, radio.modulation.name)
