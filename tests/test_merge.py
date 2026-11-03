@@ -2,17 +2,14 @@
 (own jet only, ~8 Hz, real AOA). Hub combines them into one landing graded from the pilot's
 track against the server's carrier, keeping the server's DCS grade, wire, and live calls."""
 
-import asyncio
 from pathlib import Path
 
 import pytest
 
 from burble.acmi import load_recording
-from burble.acmi.stream import serve_recording
 from burble.hub.service import Hub
 from burble.detect import find_passes
 from burble.detect.approaches import find_approaches
-from burble.agent.service import Agent, AgentConfig
 from burble.slices import sidecar, slice_objects, track_sidecar
 
 PAIRS = Path(__file__).parent / "fixtures" / "server_vs_client"
@@ -111,20 +108,6 @@ def test_regrade_grades_landings_only(hub):
     assert hub.regrade(force=True) == (1, 0)
 
 
-def test_pilot_mode_collector_uploads_its_own_track(tmp_path):
-    async def run():
-        server = await serve_recording(PAIRS / "client-trap.zip.acmi", port=0, speed=0)
-        async with server:
-            agent = Agent(AgentConfig(work_dir=tmp_path, tacview_port=server.sockets[0].getsockname()[1],
-                                                  mode="pilot"))
-            await agent.run_session()
-        return agent
-
-    agent = asyncio.run(run())
-    (item,) = agent.outbox.pending()
-    meta = item.meta()
-    assert meta["kind"] == "track" and meta["pass"]["aoa_recorded"] and meta["pass"]["pilot"] == "Wrycu"
-    assert meta["window"]["start"] <= meta["pass"]["start_time"] - 40
 
 
 def test_livery_and_side_number_are_kept_and_shown(hub):
@@ -154,52 +137,3 @@ def test_livery_and_side_number_are_kept_and_shown(hub):
     assert (trends["modex"], trends["last_livery"]) == ("301", "VFA-106 high visibility")
 
 
-def test_pilot_collector_adds_dcs_wire_from_its_debrief(tmp_path, hub):
-    """A multiplayer client's DCS writes its own traps' grades and wires to debrief.log at mission end;
-    the pilot's agent re-uploads its track report with it, and the landing gets DCS's wire."""
-    from burble.dcslog import Debrief, DcsEvent
-
-    async def run():
-        server = await serve_recording(PAIRS / "client-trap.zip.acmi", port=0, speed=0)
-        async with server:
-            agent = Agent(AgentConfig(work_dir=tmp_path, tacview_port=server.sockets[0].getsockname()[1],
-                                                  mode="pilot"))
-            session = await agent.run_session()
-        return agent, session
-
-    agent, session = asyncio.run(run())
-    (item,) = agent.outbox.pending()
-    info = item.meta()["pass"]
-    jet = info["aircraft_id"]
-    assert info["aircraft_first_seen"] == session.first_seen[jet]
-    # The client joined 129 s into the mission: debrief.log's times are 129 s ahead of the stream's.
-    dcs_id, offset = 0x1000000 | (jet - 1), 129.0
-    debrief_path = tmp_path / "debrief.log"
-    debrief = Debrief(None, [
-        DcsEvent("under control", info["aircraft_first_seen"] + offset, initiator_object_id=dcs_id),
-        DcsEvent("landing quality mark", info["end_time"] - 2.0 + offset, place="CVN-75 Harry S. Truman",
-                 initiator_unit_type="FA-18C_hornet", initiator_object_id=dcs_id,
-                 comment="LSO: GRADE:C : _EGTL_  3PTSIW  WIRE# 2[BC]"),
-    ])
-    import burble.agent.service as collector_mod
-    collector_mod.load_debrief = lambda path: debrief  # (the file's format is covered by test_dcslog)
-    try:
-        assert agent.apply_debrief(session.names, debrief_path) == 1
-    finally:
-        from burble.dcslog import load_debrief
-        collector_mod.load_debrief = load_debrief
-    (item,) = agent.outbox.pending()
-    assert item.meta()["dcs"]["wire"] == 2
-    # On hub: the server's report (no comms on the server, so no DCS grade there), the pilot's track as
-    # first uploaded, then its re-upload with the pilot's own DCS grade: the landing now has DCS's wire.
-    data, meta = server_report("trap")
-    meta["dcs"] = {"wire": None, "grade": None}
-    hub.ingest(1, data, meta)
-    track = item.meta()
-    hub.ingest(2, item.acmi.read_bytes(), dict(track, dcs={"wire": None, "grade": None}))
-    (landing,) = landings(hub)
-    assert landing["wire"] is None and landing["wire_estimated"] is not None  # until the debrief arrives: an estimate
-    again = hub.ingest(2, item.acmi.read_bytes(), track)
-    assert again.created is False
-    (landing,) = landings(hub)
-    assert landing["wire"] == 2 and landing["dcs_grade"].startswith("LSO: GRADE:C")  # DCS's own, from the pilot

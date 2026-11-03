@@ -1,4 +1,4 @@
-"""Server agent (or pilot uploader): live Tacview stream -> session archive -> per-pass slices -> hub.
+"""Server agent: live Tacview stream -> session archive -> per-pass slices -> hub.
 
 Runs next to DCS. For each stream connection (a "session") it:
 - writes the raw stream to `archive/<start>.txt.acmi` (zipped when the session ends);
@@ -6,8 +6,7 @@ Runs next to DCS. For each stream connection (a "session") it:
   same code as `burble slice`, attaches DCS's grade and wire from the Burble hook's
   events in dcs.log, and queues slice + sidecar in the outbox;
 - uploads the outbox to hub, retrying until accepted;
-- at session end, reads debrief.log and fills in DCS grades the hook didn't provide (in pilot mode,
-  the pilot's own DCS grades and wires for their track reports).
+- at session end, reads debrief.log and fills in DCS grades the hook didn't provide.
 """
 
 from __future__ import annotations
@@ -29,14 +28,12 @@ from ..acmi import AcmiParser, Frame, ObjectRemoved, ObjectUpdate, load_recordin
 from ..acmi.stream import DEFAULT_PORT, HandshakeError, TelemetryClient
 from ..acmi.writer import write_slice
 from ..dcslog import (Debrief, DcsEvent, HookEvent, LsoGrade, attach_dcs_grades, follow, load_debrief,
-                      parse_hook_line, track_dcs_grades)
+                      parse_hook_line)
 from ..dcslog.match import tacview_id_hint
 from ..detect import Outcome, PassResult, find_passes
-from ..detect.approaches import Approach, ApproachSegmenter
-from ..geometry import AIRCRAFT, WindProfile
+from ..geometry import WindProfile
 from ..grading import Grade, grade_pass
-from ..slices import (LEAD_S, TAIL_S, _collector_version, apply_hooks, approach_window, sidecar, slice_name,
-                      slice_objects, track_sidecar, track_slice_name)
+from ..slices import LEAD_S, TAIL_S, _collector_version, apply_hooks, sidecar, slice_name, slice_objects
 from ..callouts.voice import EACH_CARRIER, CarrierVoices, ClipLibrary, choose_clip_set, clip_sets
 from ..srs import Modulation, Radio
 from .callouts import CallSink, CalloutSettings, LiveCallouts, SrsSink, recovery_case_iii
@@ -78,9 +75,6 @@ class AgentConfig:
     debrief: Path | None = None
     url: str | None = None
     token: str | None = None
-    # "server": live callouts over SRS (if enabled in the hub's config); "pilot": record and upload
-    # only, never transmit (a pilot uploader would be talking on someone else's server).
-    mode: str = "server"
     voice_dir: Path | None = None  # a clip set from `burble voice build`, or a folder of them (see `_clips`)
     listen_model: Path | None = None  # a Vosk model, to hear pilots' calls (if the hub's config says listen)
     # Retention, in days (0: keep forever). Session archives allow re-slicing; uploaded slices are kept
@@ -369,13 +363,6 @@ class _Pending:
 
 
 @dataclass
-class _PendingApproach:
-    approach: Approach
-    due: float
-    ended_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-
-@dataclass
 class Session:
     archive: SessionArchive
     detector: LivePassDetector
@@ -387,12 +374,6 @@ class Session:
     names: list[str] = field(default_factory=list)  # outbox items produced by this session
     frames: int = 0
     last_frame_at: float = field(default_factory=time.monotonic)  # wall clock (monotonic) of the last frame
-    # Pilot mode: the own jet's approaches, found without a carrier (see `detect.approaches`).
-    segmenters: dict[int, ApproachSegmenter] | None = None
-    approaches: list[_PendingApproach] = field(default_factory=list)
-    pass_windows: list[tuple[int, float, float]] = field(default_factory=list)  # (aircraft, start, end)
-    # When each object first appeared in this session (to line debrief.log's clock up with the stream's).
-    first_seen: dict[int, float] = field(default_factory=dict)
     feed: LiveFeed | None = None  # what's flying around the carriers, for the hub's live view
     radio: RadioRecorder | None = None  # the carrier frequencies' radio, for each pass's replay (PLAN #52)
     lights: CarrierLights | None = None  # the carriers' landing lights for Case III (PLAN #54)
@@ -457,7 +438,7 @@ class Agent:
 
     async def report_info(self) -> bool:
         """Tell the hub about this agent (`info`) when it has changed (once a run, normally)."""
-        if self.client is None or self.config.mode != "server":
+        if self.client is None:
             return False
         info = self.info()
         if info == self._info_reported:
@@ -477,9 +458,6 @@ class Agent:
         return True
 
     def _callouts(self) -> LiveCallouts | None:
-        if self.config.mode != "server":
-            log.info("live callouts OFF (pilot mode)")
-            return None
         settings = CalloutSettings.from_config(self.remote_config)
         if not settings.enabled:
             log.info("live callouts OFF (not enabled in this source's config on the hub; "
@@ -579,7 +557,7 @@ class Agent:
     def _preload_clips(self) -> None:
         """Load the clip sets the next session will speak with (a few seconds each), so it doesn't wait for them."""
         settings = CalloutSettings.from_config(self.remote_config)
-        if self.config.mode != "server" or not settings.enabled or self.config.voice_dir is None:
+        if not settings.enabled or self.config.voice_dir is None:
             return
         path, _ = choose_clip_set(self.config.voice_dir, settings.voice)
         for path in ([path] if path is not None else []) + list(self._carrier_clip_sets(settings).values()):
@@ -668,7 +646,7 @@ class Agent:
         """Tell the hub who is connected to this DCS server (from the server hook), so it can recognise their
         pilot hooks without a token: when the list changes, and every PLAYERS_REPORT_S anyway (the hub treats
         an old list as stale). Returns whether it reported."""
-        if self.client is None or self.hooks is None or self.config.mode != "server":
+        if self.client is None or self.hooks is None:
             return False
         players = self.hooks.players()
         if players is None:
@@ -704,8 +682,7 @@ class Agent:
         callouts = self._callouts()
         feed = self._live_feed(callouts)
         listener = callouts if feed is None else Listeners(*([callouts] if callouts else []), feed)
-        session = Session(SessionArchive(self.archive_dir), LivePassDetector(listener), callouts,
-                          segmenters={} if c.mode == "pilot" else None, feed=feed)
+        session = Session(SessionArchive(self.archive_dir), LivePassDetector(listener), callouts, feed=feed)
         if feed is not None:
             feed.night_at = lambda carrier, t: _night_at(session, carrier, t)
             feed.globals = session.parser.globals
@@ -748,9 +725,6 @@ class Agent:
                 session.lights.close()
             for result in session.detector.flush():
                 self._queue(session, result)
-            for segmenter in (session.segmenters or {}).values():
-                if (approach := segmenter.flush()) is not None:
-                    session.approaches.append(_PendingApproach(approach, approach.end_time + TAIL_S))
             if session.callouts is not None:
                 await session.callouts.drain()  # finish calls first (a welcome may still be waiting for the wire)
             await self._slice_waiting(session)
@@ -764,10 +738,10 @@ class Agent:
         return session
 
     def _lights(self, session: Session) -> CarrierLights | None:
-        """The carriers' landing lights (server mode, with dcs.log: the server hook reads the agent's file next to
+        """The carriers' landing lights (with dcs.log: the server hook reads the agent's file next to
         it), unless the hub's config turns them off."""
         enabled, radius_m, hold_s = lights_settings(self.remote_config)
-        if self.config.mode != "server" or self.config.dcs_log is None or not enabled:
+        if self.config.dcs_log is None or not enabled:
             return None
         case = CalloutSettings.from_config(self.remote_config).case
         weather = getattr(self.hooks, "weather", None)
@@ -778,9 +752,9 @@ class Agent:
         return CarrierLights(self.config.dcs_log.parent / LIGHTS_FILE, case_iii, radius_m, hold_s)
 
     def _live_feed(self, callouts: LiveCallouts | None) -> LiveFeed | None:
-        """The live view's feed (server mode, with a hub to send to), unless the hub's config turns it off."""
+        """The live view's feed (with a hub to send to), unless the hub's config turns it off."""
         enabled, radius_m = live_settings(self.remote_config)
-        if self.config.mode != "server" or self.client is None or not enabled:
+        if self.client is None or not enabled:
             return None
         return LiveFeed(radius_m, callouts)
 
@@ -803,9 +777,9 @@ class Agent:
             if idle < WATCH_INTERVAL_S:
                 warned_at = None
                 continue
-            if idle >= STALLED_SLICE_S and (session.pending or session.approaches):
+            if idle >= STALLED_SLICE_S and session.pending:
                 log.info("no frames for %.0fs (DCS pauses an empty server); slicing %d waiting pass(es) now",
-                         idle, len(session.pending) + len(session.approaches))
+                         idle, len(session.pending))
                 await self._slice_waiting(session)
             if idle >= NO_FRAMES_WARNING_S and (warned_at is None or time.monotonic() - warned_at >= NO_FRAMES_REPEAT_S):
                 warned_at = time.monotonic()
@@ -816,11 +790,8 @@ class Agent:
 
     async def _slice_waiting(self, session: Session) -> None:
         pending, session.pending = session.pending, []
-        approaches, session.approaches = session.approaches, []
         for item in pending:
             await self._slice(session, item)
-        for waiting in approaches:
-            await self._slice_approach(session, waiting.approach, waiting.ended_at)
 
     async def _line(self, session: Session, line: str) -> None:
         session.archive.write(line)
@@ -838,13 +809,6 @@ class Agent:
                     session.pending = [p for p in session.pending if p.due > record.time]
                     for item in due:
                         await self._slice(session, item)
-                ready = [a for a in session.approaches if a.due <= record.time]
-                if ready:
-                    session.approaches = [a for a in session.approaches if a.due > record.time]
-                    for pending in ready:
-                        await self._slice_approach(session, pending.approach, pending.ended_at)
-            if isinstance(record, ObjectUpdate) and record.moved:
-                session.first_seen.setdefault(record.id, record.time)
             for result in session.detector.feed(record):
                 self._queue(session, result)
             if session.lights is not None:
@@ -859,46 +823,19 @@ class Agent:
                         session.feed.update(track)
                 elif isinstance(record, ObjectRemoved):
                     session.feed.removed(record.id)
-            if session.segmenters is not None:
-                self._own_track(session, record)
-
-    def _own_track(self, session: Session, record) -> None:
-        """Pilot mode: follow the own jet (the aircraft with recorded AOA) for approaches."""
-        assert session.segmenters is not None
-        if isinstance(record, ObjectRemoved):
-            segmenter = session.segmenters.pop(record.id, None)
-            approach = segmenter.flush() if segmenter else None
-        elif isinstance(record, ObjectUpdate) and record.moved and "AOA" in record.props:
-            track = session.detector.tracks.get(record.id)
-            if track is None or track.name not in AIRCRAFT or not track.samples:
-                return
-            segmenter = session.segmenters.setdefault(record.id, ApproachSegmenter(record.id))
-            approach = segmenter.feed(track.samples[-1])
-        else:
-            return
-        if approach is not None:
-            session.approaches.append(_PendingApproach(approach, approach.end_time + TAIL_S))
-            log.info("approach detected (own track): %.0fs-%.0fs; slicing in %.0fs",
-                     approach.start_time, approach.end_time, TAIL_S)
 
     def _queue(self, session: Session, result: PassResult) -> None:
-        if self.config.mode == "server" and (pilot_for := getattr(self.hooks, "pilot_for", None)) is not None:
+        if (pilot_for := getattr(self.hooks, "pilot_for", None)) is not None:
             result.pilot = pilot_for(result.pilot, result.aircraft_type, result.aircraft_id, result.start_time,
                                      result.end_time)
         players = getattr(self.hooks, "player_names", lambda: None)() if self.hooks is not None else None
-        if self.config.mode == "server" and players is not None and result.pilot not in players:
+        if players is not None and result.pilot not in players:
             # AI: the LSO still talks it down (live calls don't come through here), but it isn't graded or
             # put on the board.
             log.info("pass by %s not uploaded (AI: not a player in this mission)", result.pilot or hex(result.aircraft_id))
             return
-        if self.config.mode == "pilot" and not _own_jet(result):
-            # The pilot uploader sends only this PC's own jet (other players' jets are seen here at the
-            # same rate the server sees them, and they aren't the pilot's to send).
-            log.debug("pass by %s skipped (not this PC's own jet)", result.pilot or hex(result.aircraft_id))
-            return
         objects = slice_objects(session.detector.recording(dict(session.parser.globals)), result)
         session.pending.append(_Pending(result, objects, result.end_time + TAIL_S))
-        session.pass_windows.append((result.aircraft_id, result.start_time - LEAD_S, result.end_time + TAIL_S))
         log.info("pass detected: %s %s, %s; slicing in %.0fs", result.pilot or hex(result.aircraft_id),
                  result.aircraft_type, result.outcome.value, TAIL_S)
 
@@ -932,39 +869,6 @@ class Agent:
                                           live.end_time + TAIL_S)
         return radio_sidecar(recorded) if recorded else None
 
-    async def _slice_approach(self, session: Session, approach: Approach, ended_at: datetime) -> None:
-        """Upload the own track around an approach, unless it was already handled as a full pass
-        (the pilot's data had a carrier)."""
-        start, end = approach_window(approach)
-        if any(aircraft == approach.aircraft_id and s < end and start < e for aircraft, s, e in session.pass_windows):
-            return
-        session.archive.flush()
-        try:
-            name = await asyncio.get_running_loop().run_in_executor(None, self._make_track_slice, session, approach,
-                                                                    ended_at)
-        except Exception:  # never let one bad approach take the agent down
-            log.exception("could not slice approach at %.1fs", approach.start_time)
-            return
-        session.names.append(name)
-        self._wake_uploader.set()
-
-    def _make_track_slice(self, session: Session, approach: Approach, ended_at: datetime) -> str:
-        start, end = approach_window(approach)
-        start = max(start, session.first_frame or 0.0)
-        end = min(end, session.now - 1e-3)
-        with tempfile.TemporaryDirectory() as tmp:
-            path = write_slice(session.archive.path, Path(tmp) / "track.zip.acmi", start, end, {approach.aircraft_id})
-            recording = load_recording(path)
-            meta = track_sidecar(recording, approach, session.archive.path.name)
-            meta["recording"]["first_frame_time"] = session.first_frame
-            meta["window"] = {"start": start, "end": end}
-            meta["pass"]["occurred_at"] = (ended_at - timedelta(seconds=approach.end_time - approach.start_time)).isoformat()
-            meta["pass"]["aircraft_first_seen"] = session.first_seen.get(approach.aircraft_id)
-            name = track_slice_name(recording, approach)
-            self.outbox.put(name, path, meta)
-        log.info("queued %s (own track; the hub grades it with the server's report of this landing)", name)
-        return name
-
     def _make_slice(self, session: Session, item: _Pending, calls: list[dict] | None = None,
                     radio: dict | None = None) -> str | None:
         live = item.result
@@ -987,7 +891,7 @@ class Agent:
             if self.hooks is not None:
                 p.pilot = live.pilot  # as checked against the hook when detected (_queue)
                 # Again: DCS's LSO grade (naming the player) has likely arrived by now.
-                extra = apply_hooks(self.hooks, recording, p, end, check_pilot=self.config.mode == "server")
+                extra = apply_hooks(self.hooks, recording, p, end)
             meta = sidecar(recording, p, session.archive.path.name, item.objects)
             meta.update(extra)
             meta["recording"]["first_frame_time"] = session.first_frame
@@ -1036,8 +940,7 @@ class Agent:
                 continue
             recording = load_recording(item.acmi)
             info = meta["pass"]
-            grade = (_track_grade(recording, info, debrief) if meta.get("kind") == "track"
-                     else _pass_grade(recording, info, debrief))
+            grade = _pass_grade(recording, info, debrief)
             if grade is None:
                 continue
             meta["dcs"] = {"wire": grade.wire, "grade": asdict(grade)}
@@ -1057,17 +960,6 @@ def _pass_grade(recording, info: dict, debrief: Debrief) -> LsoGrade | None:
         return None
     attach_dcs_grades(passes, recording, debrief)
     return passes[0].dcs_grade
-
-
-def _track_grade(recording, info: dict, debrief: Debrief) -> LsoGrade | None:
-    """DCS's grade for an own-track report (the pilot uploader), from the pilot's debrief.log: a
-    multiplayer client's DCS grades its own traps (with the wire) and writes them there at mission end."""
-    aircraft = int(info["aircraft_id"])
-    approach = Approach(aircraft, float(info["start_time"]), float(info["end_time"]), 0.0)
-    first_seen = info.get("aircraft_first_seen")
-    grades = track_dcs_grades(recording, [approach], debrief,
-                              first_seen={aircraft: float(first_seen)} if first_seen is not None else None)
-    return grades.get(approach)
 
 
 def _night_at(session: Session, carrier, mission_time: float) -> bool | None:
@@ -1108,7 +1000,3 @@ def _radios(settings: CalloutSettings):
             radios.append(r)
     return radios
 
-
-def _own_jet(result: PassResult) -> bool:
-    """Flown on this PC: Tacview records AOA only for the local player's jet."""
-    return bool(result.samples) and not result.samples[0].aoa_derived

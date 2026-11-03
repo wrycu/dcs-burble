@@ -45,7 +45,6 @@ SECTION_NOTES = {
     "agent": ("The server agent: `burble agent`. For several DCS servers on one machine, give each a table of its "
               "own after this one (`burble agent server1` reads [agent], then [agent.server1] over it), e.g.\n"
               "[agent.server1]\ntoken = \"...\"\ndcs_log = \"~/.wine/drive_c/DCS_configs/DCS.server1/Logs/dcs.log\""),
-    "pilot_uploader": "The pilot uploader: `burble pilot-uploader` (your own jet's passes from your PC).",
     "upload": "Uploading recordings by hand: `burble upload <recordings>`.",
     "voice": "Building the LSO's voice clips: `burble voice build`.",
     "telemetry": "A usage report receiver: `burble telemetry` serves it.",

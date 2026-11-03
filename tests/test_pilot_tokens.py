@@ -1,7 +1,5 @@
-"""Pilot tokens (tied to one pilot), aliases (other in-game names), and the pilot uploader sending only its
-own jet."""
+"""Pilot tokens (tied to one pilot), aliases (other in-game names), and joining the board."""
 
-import asyncio
 import re
 from pathlib import Path
 
@@ -9,13 +7,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from burble.acmi import load_recording
-from burble.acmi.stream import serve_recording
-from burble.agent.service import Agent, AgentConfig
 from burble.detect import find_passes
 from burble.hub.app import create_app
 from burble.hub.service import Hub, IngestError
 from burble.slices import sidecar, slice_objects
-from test_backfill import two_pilots
 
 FIXTURES = Path(__file__).parent / "fixtures"
 OWN = FIXTURES / "passes" / "20260927-204347_Wrycu_4013s.zip.acmi"  # Wrycu's own recording (AOA), with the carrier
@@ -152,20 +147,6 @@ def test_settings_page_tokens_and_names(hub):
     assert api.post("/api/v1/pilots/Wrycu/tokens", data={"label": "hook"}).status_code == 403
 
 
-def test_pilot_uploader_sends_only_its_own_jet(tmp_path):
-    # Maverick's jet is in Wrycu's recording (another player), at the rate the server sees it.
-    path = two_pilots(OWN, tmp_path / "session.zip.acmi")
-
-    async def run():
-        server = await serve_recording(path, port=0, speed=0)
-        async with server:
-            agent = Agent(AgentConfig(work_dir=tmp_path / "agent", tacview_port=server.sockets[0].getsockname()[1],
-                                      mode="pilot"))
-            await agent.run_session()
-        return agent
-
-    agent = asyncio.run(run())
-    assert {item.meta()["pass"]["pilot"] for item in agent.outbox.pending()} == {"Wrycu"}
 
 
 def test_joining_the_board_before_flying_here(hub):

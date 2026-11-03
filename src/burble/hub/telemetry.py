@@ -192,7 +192,7 @@ def build_report(hub, now: datetime | None = None) -> dict:
                 elif r.source is not None and r.source.kind == "server":
                     server = True
                 else:
-                    pilot = True  # an uploaded recording, or the pilot uploader
+                    pilot = True  # an uploaded recording
             counts["server_only" if server and not pilot else "pilot_only" if pilot and not server else "both"] += 1
             if landing.calls:
                 counts["live_calls"] += 1

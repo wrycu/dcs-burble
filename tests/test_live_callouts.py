@@ -150,12 +150,12 @@ def test_clip_library(clips):
     assert lib[Call.POWER].seconds == pytest.approx(0.2) and lib[Call.POWER].text == "Power."
 
 
-async def run_collector(source: Path, work: Path, clips: Path, mode: str = "server", client=None, hooks=None):
+async def run_collector(source: Path, work: Path, clips: Path, client=None, hooks=None):
     server = await serve_recording(source, port=0, speed=0)
     port = server.sockets[0].getsockname()[1]
     sink = RecordingSink()
     async with server:
-        agent = Agent(AgentConfig(work_dir=work, tacview_port=port, mode=mode, voice_dir=clips),
+        agent = Agent(AgentConfig(work_dir=work, tacview_port=port, voice_dir=clips),
                               client=client)
         agent.hooks = hooks
         agent.remote_config = CONFIG
@@ -200,9 +200,6 @@ def test_live_calls_are_spoken_and_uploaded(tmp_path, clips):
     assert {c["voice"] for c in row["calls"]} == {"test-tones"}
 
 
-def test_pilot_mode_never_transmits(tmp_path, clips):
-    _, session, sink = asyncio.run(run_collector(FLAT_LOW_CUT, tmp_path / "edge", clips, mode="pilot"))
-    assert sink.said == [] and session.callouts is None
 
 
 def test_config_is_fetched_and_cached(tmp_path):

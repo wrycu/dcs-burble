@@ -15,7 +15,7 @@ def test_the_config_file_is_written_on_first_use(burble_home, capsys):
     path = burble_home / "config.toml"
     text = path.read_text()
     assert path.stat().st_mode & 0o777 == 0o600 and "wrote Burble's settings" in capsys.readouterr().err
-    assert tomllib.loads(text) == {s: {} for s in ("hub", "agent", "pilot_uploader", "upload", "voice", "telemetry")}
+    assert tomllib.loads(text) == {s: {} for s in ("hub", "agent", "upload", "voice", "telemetry")}
     # Every setting is there, commented out at its default, and valid once uncommented.
     uncommented = tomllib.loads(re.sub(r"^#(\w+ = )", r"\1", text, flags=re.M))
     assert uncommented["hub"]["port"] == 8000 and uncommented["agent"]["tacview_port"] == 42674

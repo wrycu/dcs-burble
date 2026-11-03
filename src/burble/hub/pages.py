@@ -1045,7 +1045,7 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
               if rows else "")
     tokens_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/tokens"><h2>Pilot tokens</h2>'
-        '<p class="sub">A pilot token lets the pilot hook or pilot uploader send your passes here. Everything sent '
+        '<p class="sub">A pilot token lets the pilot hook send your passes here. Everything sent '
         "with it is credited to you, whatever name you fly under.</p>" + shown
         + '<label>What it\'s for <input name="label" maxlength="100" placeholder="e.g. my PC"></label>'
         '<button type="submit">Create a pilot token</button></form>' + listed)

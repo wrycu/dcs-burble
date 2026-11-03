@@ -625,11 +625,11 @@ def _agent(args: argparse.Namespace) -> int:
     debrief = args.debrief or (dcs_log.with_name("debrief.log") if dcs_log else None)
     log = logging.getLogger("burble")
     log.info("settings from %s", args._config_path)
-    voice_dir = getattr(args, "voice_dir", None)
+    voice_dir = args.voice_dir
     if voice_dir is not None and not voice_dir.exists():
         log.info("no voice clips in %s (build them with `burble voice build`)", voice_dir)
         voice_dir = None
-    listen_model = getattr(args, "listen_model", None)
+    listen_model = args.listen_model
     if listen_model is not None and not listen_model.exists():
         try:
             download_model(listen_model, "vosk")
@@ -640,7 +640,7 @@ def _agent(args: argparse.Namespace) -> int:
     config = AgentConfig(
         work_dir=args.work_dir, tacview_host=args.tacview_host, tacview_port=args.tacview_port,
         tacview_password=args.tacview_password, dcs_log=dcs_log, debrief=debrief, url=args.url, token=args.token,
-        mode=args.mode, voice_dir=voice_dir, listen_model=listen_model,
+        voice_dir=voice_dir, listen_model=listen_model,
         keep_archives_days=args.keep_archives_days, keep_sent_days=args.keep_sent_days,
         keep_rejected_days=args.keep_rejected_days,
     )
@@ -895,45 +895,36 @@ def main(argv: list[str] | None = None) -> int:
 
     from .acmi.stream import DEFAULT_PORT as TACVIEW_PORT
 
-    def agent_args(p: argparse.ArgumentParser, mode: str, section: str) -> None:
-        def opt(*flags: str, **kw) -> None:
-            lc.add(p, section, *flags, **kw)
+    agent = sub.add_parser("agent", help="server agent: live Tacview stream -> passes, LSO calls -> hub")
 
-        folder = "agent" if mode == "server" else "pilot-uploader"
-        if mode == "server":
-            p.add_argument("instance", nargs="?", help="which DCS server, for several on one machine: its own table in "
-                                                       "the config ([agent.<instance>]) over [agent]")
-        opt("--work-dir", kind="path", default=lambda a: lc.home() / folder / (getattr(a, "instance", None) or ""),
-            shown=f'"~/.burble/{folder}"', help="session archive and upload outbox"
-            + (" (for an instance, by default ~/.burble/agent/<instance>)" if mode == "server" else ""))
-        opt("--url", default="http://127.0.0.1:8000", help="the hub's address")
-        opt("--token", help="a server agent token (`burble hub add-agent <name>`)" if mode == "server"
-            else "a pilot token (from your settings page on the hub)")
-        opt("--tacview-host", default="127.0.0.1", help="where DCS's Tacview real-time telemetry is")
-        opt("--tacview-port", kind="int", default=TACVIEW_PORT, help="its port")
-        opt("--tacview-password", help="its password (tacviewRealTimeTelemetryPassword), if set")
-        opt("--dcs-log", kind="path", help="DCS Logs/dcs.log, for the burble server hook's events")
-        opt("--debrief", kind="path", help="DCS Logs/debrief.log (default: next to dcs_log)")
-        if mode == "server":
-            opt("--voice-dir", kind="path", default=lc.home() / "voice",
-                help="the LSO's voice clips: a folder of clip sets (`burble voice build`), of which the hub's config "
-                     "picks (callouts.voice), or one clip set")
-            opt("--listen-model", kind="path", default=lc.home() / "models" / "vosk-model-small-en-us-0.15",
-                help="a Vosk model, to hear pilots' calls on the LSO frequencies and answer them, if the hub's "
-                     "config says so (callouts.listen); downloaded when missing, if named like vosk-model-...")
-        for name, default, what in (("archives", 90, "session archives (raw recordings, for re-slicing)"),
-                                    ("sent", 14, "local copies of uploaded slices (the hub keeps its own)"),
-                                    ("rejected", 30, "slices the hub rejected")):
-            opt(f"--keep-{name}-days", kind="float", metavar="DAYS", shown=str(default),
-                help=f"keep {what} this long; 0 = forever (unset: the hub's \"retention\" setting for this agent, else "
-                     f"{default})")
-        opt("-v", "--verbose", dest="verbose", kind="bool", default=False, help="log more")
-        p.set_defaults(func=_agent, mode=mode)
+    def opt(*flags: str, **kw) -> None:
+        lc.add(agent, "agent", *flags, **kw)
 
-    agent_args(sub.add_parser("agent", help="server agent: live Tacview stream -> passes, LSO calls -> hub"), "server",
-               "agent")
-    agent_args(sub.add_parser("pilot-uploader", help="pilot uploader: your own jet's passes from your PC -> hub "
-                                                     "(never transmits)"), "pilot", "pilot_uploader")
+    agent.add_argument("instance", nargs="?", help="which DCS server, for several on one machine: its own table in "
+                                                   "the config ([agent.<instance>]) over [agent]")
+    opt("--work-dir", kind="path", default=lambda a: lc.home() / "agent" / (a.instance or ""), shown='"~/.burble/agent"',
+        help="session archive and upload outbox (for an instance, by default ~/.burble/agent/<instance>)")
+    opt("--url", default="http://127.0.0.1:8000", help="the hub's address")
+    opt("--token", help="a server agent token (`burble hub add-agent <name>`)")
+    opt("--tacview-host", default="127.0.0.1", help="where DCS's Tacview real-time telemetry is")
+    opt("--tacview-port", kind="int", default=TACVIEW_PORT, help="its port")
+    opt("--tacview-password", help="its password (tacviewRealTimeTelemetryPassword), if set")
+    opt("--dcs-log", kind="path", help="DCS Logs/dcs.log, for the burble server hook's events")
+    opt("--debrief", kind="path", help="DCS Logs/debrief.log (default: next to dcs_log)")
+    opt("--voice-dir", kind="path", default=lc.home() / "voice",
+        help="the LSO's voice clips: a folder of clip sets (`burble voice build`), of which the hub's config "
+             "picks (callouts.voice), or one clip set")
+    opt("--listen-model", kind="path", default=lc.home() / "models" / "vosk-model-small-en-us-0.15",
+        help="a Vosk model, to hear pilots' calls on the LSO frequencies and answer them, if the hub's "
+             "config says so (callouts.listen); downloaded when missing, if named like vosk-model-...")
+    for name, default, what in (("archives", 90, "session archives (raw recordings, for re-slicing)"),
+                                ("sent", 14, "local copies of uploaded slices (the hub keeps its own)"),
+                                ("rejected", 30, "slices the hub rejected")):
+        opt(f"--keep-{name}-days", kind="float", metavar="DAYS", shown=str(default),
+            help=f"keep {what} this long; 0 = forever (unset: the hub's \"retention\" setting for this agent, else "
+                 f"{default})")
+    opt("-v", "--verbose", dest="verbose", kind="bool", default=False, help="log more")
+    agent.set_defaults(func=_agent)
     args = parser.parse_args(argv)
     if getattr(args, "_options", None):
         config, path = lc.load(args.config)
