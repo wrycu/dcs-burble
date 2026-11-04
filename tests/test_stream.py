@@ -44,3 +44,18 @@ def test_stream_round_trip_matches_file():
 def test_wrong_password_is_rejected():
     with pytest.raises(HandshakeError):
         asyncio.run(_stream_all("right", "wrong"))
+
+
+def test_a_connection_that_reaches_itself_is_refused(monkeypatch):
+    """Nothing listening, and the connection given the port it's connecting to: it would talk to itself and hold the
+    port Tacview needs (seen on overlord, 2026-11-04)."""
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    original = asyncio.open_connection
+    monkeypatch.setattr(asyncio, "open_connection",
+                        lambda host, p, **kw: original(host, p, local_addr=("127.0.0.1", port), **kw))
+    with pytest.raises(HandshakeError, match="reached itself"):
+        asyncio.run(TelemetryClient(port=port).connect(timeout=1))

@@ -68,6 +68,12 @@ class TelemetryClient:
     async def connect(self, timeout: float = 10.0) -> HostInfo:
         self._reader, self._writer = await asyncio.wait_for(
             asyncio.open_connection(self.host, self.port), timeout)
+        # With nothing listening on a port of this machine, the connection can be given that same port as its own and
+        # reach itself (TCP's simultaneous open): it reads its own handshake back, and holds the port, so the host
+        # can't open it when it starts.
+        if self._writer.get_extra_info("sockname") == self._writer.get_extra_info("peername"):
+            await self.close()
+            raise HandshakeError(f"nothing listening on {self.host}:{self.port} (the connection reached itself)")
         handshake = f"{_STREAM_ID}\n{_TELEMETRY_ID}\n{self.client_name}\n{password_hash(self.password)}\0"
         self._writer.write(handshake.encode("utf-8"))
         await self._writer.drain()
