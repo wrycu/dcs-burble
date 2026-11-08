@@ -510,9 +510,21 @@ def wind_text(p: PassResult) -> str:
     if off >= 1.0 and abs(w.crosswind) / KT >= 1.0:
         parts[0] += f" ({abs(w.crosswind) / KT:.0f} kt across)"
     parts.append(f"wind {w.wind_speed / KT:.0f} kt from {w.wind_from:03.0f}°" if w.wind_speed / KT >= 0.5 else "winds calm")
-    if w.turbulence is not None:
-        parts.append(f"turbulence ±{w.turbulence / KT:.0f} kt" if w.turbulence / KT >= 0.5 else "smooth air, no turbulence")
+    if (turbulence := turbulence_text(p.weather, w.turbulence)) is not None:
+        parts.append(turbulence)
     return " · ".join(parts)
+
+
+def turbulence_text(weather: dict | None, measured: float | None) -> str | None:
+    """The turbulence for the wind line: the mission's setting (the hook's `weather` event, `ground_turbulence`,
+    taken as m/s), the same over the whole map with static weather; else the hook's measure along the glide path
+    (RMS m/s), which reads far below the setting (2026-11-08: 0.2 m/s with the setting at 5.2)."""
+    setting = (weather or {}).get("ground_turbulence")
+    if setting is not None:
+        return f"turbulence {setting / KT:.0f} kt (mission setting)" if setting / KT >= 0.5 else "no turbulence"
+    if measured is None:
+        return None
+    return f"turbulence ±{measured / KT:.0f} kt" if measured / KT >= 0.5 else "turbulence under ±1 kt"
 
 
 def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc",

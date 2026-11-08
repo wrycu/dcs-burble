@@ -57,7 +57,7 @@ def test_backfill_carries_the_wind_and_weather_to_the_card(tmp_path):
     source = hub.authenticate(hub.add_source("server1"))
     pass_id = hub.ingest(source.id, acmi.read_bytes(), meta).pass_id
     page = TestClient(create_app(hub)).get(f"/passes/{pass_id}").text
-    assert "Wind over deck" in page and "wind 16 kt from 225°" in page and "turbulence ±2 kt" in page
+    assert "Wind over deck" in page and "wind 16 kt from 225°" in page and "turbulence 23 kt (mission setting)" in page
     assert "clouds from 8,202 ft, visibility 43 nm, 26 °C, QNH 29.72 inHg" in page
 
 
@@ -69,7 +69,11 @@ def test_wind_text_without_wind_or_turbulence():
     assert wind_text(p) == "Wind over deck 25 kt, straight down the angled deck · winds calm"
     p.deck_wind = DeckWind(25 * KT, -12.0, 10 * KT, 300.0, 0.1)
     assert wind_text(p) == ("Wind over deck 25 kt, 12° port of the angled deck (5 kt across) · wind 10 kt from 300° "
-                            "· smooth air, no turbulence")
+                            "· turbulence under ±1 kt")
+    p.weather = {"ground_turbulence": 5.154}  # the mission's setting wins over the measure (overlord, 2026-11-08)
+    assert wind_text(p).endswith("· turbulence 10 kt (mission setting)")
+    p.weather = {"ground_turbulence": 0}
+    assert wind_text(p).endswith("· no turbulence")
     assert weather_text({"clouds": {}, "fog": {"visibility_m": 926}}) == "clear skies, fog (visibility 0.5 nm)"
 
 
