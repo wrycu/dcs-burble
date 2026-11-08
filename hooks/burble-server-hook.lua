@@ -182,13 +182,22 @@ local function log_weather()
     return
   end
   local clouds, fog = w.clouds or {}, w.fog or {}
+  -- DCS 2.9.10's fog ("fog2": a mode, and in Manual mode keys of time, visibility and thickness), as saved.
+  local fog2 = nil
+  if type(w.fog2) == 'table' then
+    local keys = {}
+    for _, k in ipairs(type(w.fog2.manual) == 'table' and w.fog2.manual or {}) do
+      keys[#keys + 1] = { time = k.time, visibility_m = k.visibility, thickness_m = k.thickness }
+    end
+    fog2 = { mode = w.fog2.mode, keys = keys }
+  end
   log_event({ event = 'weather', t = timer.getTime(), dynamic = w.atmosphere_type == 1,
               ground_turbulence = w.groundTurbulence, temperature = w.season and w.season.temperature,
               qnh_mmhg = w.qnh, visibility_m = w.visibility and w.visibility.distance,
               clouds = { preset = clouds.preset, base_m = clouds.base, thickness_m = clouds.thickness,
                          density = clouds.density, precipitation = clouds.iprecptns },
               fog = w.enable_fog and { visibility_m = fog.visibility, thickness_m = fog.thickness } or nil,
-              dust_m = w.enable_dust and w.dust_density or nil })
+              fog2 = fog2, dust_m = w.enable_dust and w.dust_density or nil })
 end
 local weather_ok, weather_error = pcall(log_weather)
 if not weather_ok then log_event({ event = 'weather', t = timer.getTime(), error = tostring(weather_error) }) end

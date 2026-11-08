@@ -26,6 +26,7 @@ from ..detect.wire import wire_at_stop
 from ..grading import Grade
 from ..geometry import CARRIERS, CarrierPose, DeckFrame, DeckWind, WindProfile
 from ..srs import Modulation, Radio, SrsClient
+from ..weather import fog
 
 log = logging.getLogger(__name__)
 
@@ -744,7 +745,7 @@ def _ceiling_m(weather: dict) -> float | None:
 
 
 def _visibility(weather: dict) -> list[tuple[str, float]]:
-    seen = (("visibility", weather.get("visibility_m")), ("fog", (weather.get("fog") or {}).get("visibility_m")),
+    seen = (("visibility", weather.get("visibility_m")), ("fog", (fog(weather) or {}).get("visibility_m")),
             ("dust", weather.get("dust_m")))
     return [(what, v) for what, v in seen if v]
 

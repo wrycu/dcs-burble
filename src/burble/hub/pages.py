@@ -14,6 +14,7 @@ from ..cards.overlay import GRADE_COLORS
 from ..cards.theme import COLOR_VARS, FONT_VAR, GRADE_VARS, MAX_CSS, safe_css
 from ..geometry import airframe
 from ..grading import grade_name, grade_short
+from ..weather import fog
 from ..telemetry.pages import STYLE as USAGE_STYLE, usage_body
 from .accuracy import Accuracy
 from .db import Pass, Upload
@@ -342,8 +343,8 @@ def weather_text(weather: dict | None) -> str | None:
     precipitation = {1: "rain", 2: "thunderstorms", 3: "snow", 4: "snowstorms"}.get(clouds.get("precipitation") or 0)
     if precipitation:
         parts.append(precipitation)
-    if (fog := weather.get("fog")) and fog.get("visibility_m"):
-        parts.append(f"fog (visibility {fog['visibility_m'] / 1852:.1f} nm)")
+    if (mist := fog(weather)) is not None:
+        parts.append(f"fog (visibility {mist['visibility_m'] / 1852:.1f} nm)")
     if (vis := weather.get("visibility_m")) is not None:
         parts.append(f"visibility {vis / 1852:.0f} nm")
     if weather.get("dust_m"):

@@ -100,3 +100,13 @@ def test_the_hook_logs_gear_and_hook_as_they_move():
                                                                           (0.39, 0.41)]  # the last: back in range
     # Not the tanker (no such draw args) nor the drone 16 nm away; the jet at 4 km (2.2 nm) is out of range.
     assert {(e["object_id"], e["player"], e["name"]) for e in gear} == {(16777728, "Wrycu", "Aerial-5-1")}
+
+
+def test_the_hook_logs_dcs_2_9_10_fog():
+    # As the mission editor saved it (wrycu_training_syria_v1.14_night_test_fork, 2026-11-08): Manual, one key.
+    stubs = STUBS.replace("fog = { visibility = 0, thickness = 0 },",
+                          "fog = { visibility = 0, thickness = 0 }, fog2 = { mode = 4, manual = { "
+                          "{ thickness = 690, time = 0, visibility = 3657.6 } } },")
+    weather = {e["event"]: e for e in run_handler(stubs)}["weather"]
+    assert weather["fog2"] == {"mode": 4, "keys": {"1": {"time": 0, "visibility_m": 3657.6, "thickness_m": 690}}}
+    assert "fog" not in weather
