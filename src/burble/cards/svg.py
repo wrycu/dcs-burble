@@ -516,11 +516,12 @@ def wind_text(p: PassResult) -> str:
 
 
 def turbulence_text(weather: dict | None, measured: float | None) -> str | None:
-    """The turbulence for the wind line: the mission's setting (the hook's `weather` event, `ground_turbulence`,
-    taken as m/s), the same over the whole map with static weather; else the hook's measure along the glide path
-    (RMS m/s), which reads far below the setting (2026-11-08: 0.2 m/s with the setting at 5.2)."""
+    """The turbulence for the wind line: the mission's setting (the hook's `weather` event, `ground_turbulence`, in
+    tenths of a m/s: 5.154 showed as 1 kt in the mission editor, 2026-11-08), the same over the whole map with static
+    weather; else the hook's measure along the glide path (RMS m/s; 0.2 m/s with that 1 kt setting)."""
     setting = (weather or {}).get("ground_turbulence")
     if setting is not None:
+        setting /= 10.0
         return f"turbulence {setting / KT:.0f} kt (mission setting)" if setting / KT >= 0.5 else "no turbulence"
     if measured is None:
         return None
