@@ -63,6 +63,8 @@ def test_members_only_needs_a_signed_in_approved_pilot(hub):
     member = signed_in(hub, "Boss", "boss password")
     for path in PAGES + API:
         assert member.get(path, follow_redirects=False).status_code == 200, path
+    upload = member.get("/upload").text  # signed in: the form, without a password field
+    assert 'id="upload"' in upload and 'name="password"' not in upload and 'name="token"' not in upload
 
 
 def test_the_api_takes_a_token(hub):

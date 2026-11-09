@@ -263,10 +263,8 @@ form.upload input:not([type=checkbox]):not([type=file]), form.upload select, for
   min-height: 44px; padding: 9px 10px; border: 1px solid var(--border); background: var(--paper-button); color: var(--paper-button-text); }
 form.upload input[type=file] { padding: 18px; border: 1px dashed var(--border); background: var(--surface2); color: var(--text); }
 form.upload button[type=submit] { justify-self: start; min-height: 44px; padding: 10px 18px; cursor: pointer; font-weight: 750; }
-.steps { list-style: none; padding: 0; margin: 16px 0; }
-.steps li { border-top: 1px solid var(--border); display: grid; grid-template-columns: 30px 1fr; gap: 12px; padding: 15px 0; }
-.steps .n { color: var(--muted); font: 14px var(--mono); }
-.steps p { margin: 3px 0; color: var(--muted); font-size: 14px; }
+.upload-panel { max-width: 760px; }
+.upload-panel .actions { display: flex; gap: 9px; flex-wrap: wrap; }
 progress { width: 100%; accent-color: var(--accent); }
 table.results { border-collapse: collapse; width: 100%; }
 table.results th, table.results td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
@@ -393,10 +391,9 @@ THEME_SCRIPT = """
 def _nav(section: str | None = None) -> str:
     """The header: the brand, the sections (`section` is the current one), the theme toggle, and who's signed in."""
     me = CURRENT_PILOT.get()
-    links = [("board", "/", "Board")]
+    links = [("board", "/", "Board"), ("upload", "/upload", "Upload")]  # Upload in the same place for everyone
     if me and not CURRENT_WAITING.get():  # Live isn't open until an admin approves them
         links.append(("live", "/live", "Live"))
-    links.append(("upload", "/upload", "Upload"))
     if me and CURRENT_ADMIN.get():
         n = CURRENT_PENDING.get()
         links.append(("admin", "/admin", f"Admin{f' ({n})' if n else ''}"))
@@ -418,12 +415,12 @@ def _nav(section: str | None = None) -> str:
 def _header(title: str, sub: str = "", crumbs: tuple[tuple[str, str | None], ...] = (), actions: str = "",
             micro: str = "") -> str:
     """A page's heading: the way back (`crumbs`: label and link, the last one where you are) or a small label
-    (`micro`, under the title), the title (HTML), a line under it (HTML), and buttons on the right (`actions`, HTML)."""
+    (`micro`, under the title), the title (HTML; none where the header's tab says where you are), a line under it (HTML), and buttons on the right (`actions`, HTML)."""
     top = ('<div class="breadcrumb">' + " / ".join(
         f'<a href="{escape(href)}">{escape(label)}</a>' if href else escape(label) for label, href in crumbs) + "</div>"
         if crumbs else "")
     under = f'<div class="micro quiet under">{micro}</div>' if micro and not crumbs else ""
-    return (f'<div class="page-header"><div>{top}<h1>{title}</h1>{under}{f"<p>{sub}</p>" if sub else ""}</div>'
+    return (f'<div class="page-header"><div>{top}{f"<h1>{title}</h1>" if title else ""}{under}{f"<p>{sub}</p>" if sub else ""}</div>'
             + (f'<div class="actions">{actions}</div>' if actions else "") + "</div>")
 
 
@@ -945,9 +942,8 @@ def live_index_page(agents) -> str:
                  f"<th>Carriers</th></tr></thead><tbody>{rows}</tbody></table></div>")
     else:
         table = '<p class="sub">This hub has no server agents, so there\'s nothing to watch live.</p>'
-    body = (_header("Live.", "Watch the carriers on this hub's servers as it happens, from the LSO's view. A server "
-                    "shows its carriers while its server agent is connected to a mission with one.",
-                    crumbs=(("Board", "/"), ("Live", None)))
+    body = (_header("", "Watch the carriers on this hub's servers as it happens, from the LSO's view. A server "
+                    "shows its carriers while its server agent is connected to a mission with one.")
             + f'<div class="panel">{table}</div>'
 
             '<script>setTimeout(() => location.reload(), 15000);</script>')
@@ -992,8 +988,6 @@ def live_page(agent: str, unit: str, voice: bool = False) -> str:
 
 UPLOAD_SCRIPT = """
 const form = document.getElementById('upload');
-const tokenInput = form.elements.token;
-try { tokenInput.value = localStorage.getItem('burble-token') || ''; } catch (e) {}
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   const status = document.getElementById('status');
@@ -1001,11 +995,8 @@ form.addEventListener('submit', (event) => {
   const data = new FormData();
   data.append('recording', form.elements.recording.files[0]);
   if (form.elements.debrief.files.length) data.append('debrief', form.elements.debrief.files[0]);
-  if (form.elements.password && form.elements.password.value) data.append('password', form.elements.password.value);
-  try { localStorage.setItem('burble-token', tokenInput.value); } catch (e) {}
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/v1/recordings');
-  if (tokenInput.value.trim()) xhr.setRequestHeader('Authorization', 'Bearer ' + tokenInput.value.trim());
   bar.hidden = false;
   xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.value = e.loaded / e.total; };
   xhr.onload = () => {
@@ -1023,46 +1014,30 @@ form.addEventListener('submit', (event) => {
 
 
 def upload_page(token_required: bool) -> str:
-    me = CURRENT_PILOT.get()
+    """Upload a recording, signed in: your own passes in it. Signed out: a way to sign in. A hub that takes
+    recordings only with a source's token (`token_required`) says so: those come through the API."""
     if token_required:
-        token = ('<label>Upload token <input name="token" type="password" required autocomplete="off">'
-                 '<span class="hint">The token of a source on this service (kept in this browser).</span></label>')
-        intro = "Every carrier pass in it is graded and added to the board."
-    else:
-        if me:
-            password = (f'<p class="sub">Signed in as {escape(me)}: your passes are imported without your '
-                        "password.</p>")
-        else:
-            password = ('<label>Your pilot password (if you\'ve set one) <input name="password" type="password" '
-                        'autocomplete="current-password"><span class="hint">Needed only if you set a password for '
-                        'your pilot name; you can also give it after uploading, or <a href="/signin?next=/upload">'
-                        "sign in</a> first.</span></label>")
-        token = (password +
-                 '<label>Upload token (optional) <input name="token" type="password" autocomplete="off">'
-                 '<span class="hint">For a source on this service: imports every pilot\'s passes (kept in this '
-                 "browser). Without one, only your own passes are imported: those of the pilot flying on the "
-                 "PC that made the recording (a server's recording needs that server's token).</span></label>")
-        intro = "Your carrier passes in it are graded and added to the board."
-    guide = ('<aside class="panel"><div class="micro quiet">Quick guide</div><h3>How uploads work</h3><ol class="steps">'
-             '<li><span class="n">01</span><div><strong>Find the passes</strong><p>Every carrier approach in the '
-             "recording is found and graded.</p></div></li>"
-             '<li><span class="n">02</span><div><strong>Match the reports</strong><p>A server\'s and a pilot\'s report '
-             "of the same landing become one. From a multiplayer client's recording, which often has only your own "
-             "jet, your approaches are matched with the server's report of each landing.</p></div></li>"
-             '<li><span class="n">03</span><div><strong>Review the results</strong><p>Open a pass for its trap card '
-             "and 3D replay.</p></div></li></ol></aside>")
+        body = (_header("Upload a recording", "This hub takes recordings from its servers only.")
+                + '<div class="panel upload-panel"><p>Its servers send their recordings with their own upload '
+                "token, through the API (<code>POST /api/v1/recordings</code>).</p></div>")
+        return _page("Upload a recording", body, "upload")
+    if not CURRENT_PILOT.get():
+        body = (_header("Upload a recording", "Sign in to upload your recordings.")
+                + '<div class="panel upload-panel"><h3>Sign in first</h3><p>Uploads are imported as your pilot, so '
+                'the board needs to know who you are.</p><p class="actions"><a class="button dark" '
+                'href="/signin?next=/upload">Sign in</a> <a class="button paper" href="/join">Join the board</a></p></div>')
+        return _page("Upload a recording", body, "upload")
     body = (
-        _header("Upload a recording.", escape(intro), crumbs=(("Board", "/"), ("Upload", None)))
-        + f'<div class="upload-grid"><div class="panel"><div class="micro quiet">01 &nbsp;/&nbsp; Files</div>'
-        f'<form class="upload" id="upload" style="margin-top:12px">'
+        _header("Upload a recording", "Carrier passes are automatically extracted and added")
+        + '<div class="panel upload-panel"><form class="upload" id="upload">'
         '<label>Tacview recording <input name="recording" type="file" accept=".acmi" required>'
-        '<span class="hint">Required: a .zip.acmi or .txt.acmi file.</span></label>'
+        '<span class="hint">Required: a .zip.acmi or .txt.acmi file. Only your own passes in it are imported.'
+        '</span></label>'
         '<label>debrief.log (optional) <input name="debrief" type="file" accept=".log">'
         "<span class=\"hint\">DCS's Logs/debrief.log from the same session, for DCS's own grades and wires "
         "(DCS overwrites it at the next mission).</span></label>"
-        f'<div class="micro quiet" style="margin-top:10px">02 &nbsp;/&nbsp; Access</div>{token}'
         '<button type="submit">Upload recording ↗</button><progress id="bar" hidden value="0"></progress>'
-        f'<p id="status" class="error"></p></form></div>{guide}</div>'
+        '<p id="status" class="error"></p></form></div>'
         f"<script>{UPLOAD_SCRIPT}</script>"
     )
     return _page("Upload a recording", body, "upload")
@@ -1542,9 +1517,8 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
                  '<p class="sub">Its server agent token is shown once, here.</p>')
     tel = telemetry or {}
     usage_link = ' · <a href="/admin/usage">Usage</a>' if tel.get("view") else ""
-    body = (_header("Admin.", "Regrading and the wire check are run on the hub's machine "
-                    f"(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).{usage_link}",
-                    crumbs=(("Board", "/"), ("Admin", None)))
+    body = (_header("", "Regrading and the wire check are run on the hub's machine "
+                    f"(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).{usage_link}")
             + 
             f'{note}{_telemetry_notice(tel)}<div class="admin">{_joining(pending or [], approval, post)}{_board_access(members_only, approval, post)}'
             f'{_hub_settings(settings or {}, voices or [])}'
