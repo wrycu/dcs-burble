@@ -86,7 +86,7 @@ def test_pilot_page_and_api(tmp_path):
     # When the pilot was first and last seen, across all their landings.
     assert body["landings"] == 4 and body["first_seen"] < body["last_seen"]
     page = client.get("/pilots/Wrycu").text
-    assert "<h2" in page and ">Analysis</h2>" in page and ">Results</h2>" in page
+    assert ">Recurring faults</div>" in page and ">Results</div>" in page
     assert body["analysis"][0]["text"] in page
     assert "Traps overlaid" in page and page.count('class="ov-track') == 8  # 4 passes, 2 views
     # Hovering a pass's grade square previews its trap card, fetched on demand; the overlay's lines don't.
@@ -95,7 +95,7 @@ def test_pilot_page_and_api(tmp_path):
     card = client.get(f"/passes/{ids[0]}/card.svg")
     assert card.status_code == 200 and card.headers["content-type"].startswith("image/svg+xml")
     assert card.text.startswith("<svg") and f'id="hover{ids[0]}-side"' in card.text  # ids unique on the page
-    assert f"4 landings · first seen {body['first_seen'][:10]} · last seen {body['last_seen'][:10]}" in page
+    assert f"4 landings · last seen {body['last_seen'][:10]}" in page and f"first seen {body['first_seen'][:10]}" in page
     # Looking at fewer passes doesn't change when the pilot was seen.
     assert client.get("/api/v1/pilots/Wrycu/trends", params={"passes": 3}).json()["first_seen"] == body["first_seen"]
     assert client.get("/pilots/Wrycu", params={"passes": 3}).status_code == 200

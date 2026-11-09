@@ -367,7 +367,7 @@ def test_accuracy_rows(tmp_path, hub):
     assert parts == {"Server report": True, "Pilot hook": True, "DCS comms": False}
     assert scores == {"overall": "Full", "approach": "Full", "wire": "High", "comms": "None"}
     page = client.get(f"/passes/{client.get('/api/v1/passes?days=0').json()[0]['id']}").text
-    assert "<h2>Accuracy</h2>" in page and "level-Full" in page and "estimated from where the jet stopped" in page
+    assert "<h3>Accuracy</h3>" in page and "level-Full" in page and "estimated from where the jet stopped" in page
 
 
 def test_accuracy_of_a_landing_graded_by_dcs_alone(tmp_path):

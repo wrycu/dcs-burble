@@ -120,7 +120,7 @@ def test_admins_set_custom_css_for_every_page(hub):
     assert "done=" in r.headers["location"]
     page = goose.get("/").text  # every page, whoever's looking
     assert "text-transform: uppercase" in page and "--grade-ok: #00c853" in page
-    assert "<script>" not in page and "\\3c /style>" in page  # can't end the <style> early
+    assert "<script>alert(1)" not in page and "\\3c /style>" in page  # can't end the <style> early
     assert "var(--grade-ok, " in page  # the board's grade colours follow the variables
     assert "--grade-ok: #00c853" in viper.get("/admin").text  # shown back to edit
     r = viper.post("/admin/appearance", data={"css": "x" * 20_001}, follow_redirects=False)

@@ -781,7 +781,7 @@ def create_app(hub: Hub) -> FastAPI:
             return servers
         return "ours" if hub.other_servers == "hidden" else "all"
 
-    def _passes(days: int, pilot: str | None, source: str | None, servers: str = "all",
+    def _passes(days: int, pilots: list[str], source: str | None, servers: str = "all",
                 aircraft: str | None = None) -> list[Pass]:
         with hub.sessions() as s:
             # Landings only: reports merged into another (same landing) and lone track reports are hidden.
@@ -790,8 +790,8 @@ def create_app(hub: Hub) -> FastAPI:
                           selectinload(Pass.slice)))
             if days:
                 q = q.where(Pass.occurred_at >= datetime.now(UTC) - timedelta(days=days))
-            if pilot:
-                q = q.join(Pass.pilot).where(Pilot.name == pilot)
+            if pilots:
+                q = q.join(Pass.pilot).where(Pilot.name.in_(pilots))
             if source:
                 # A landing belongs to every source that reported it.
                 theirs = select(Pass.merged_into_id).join(Pass.source).where(Source.name == source)
@@ -817,12 +817,12 @@ def create_app(hub: Hub) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/v1/passes", dependencies=members)
-    def list_passes(days: int = 30, pilot: str | None = None, source: str | None = None,
+    def list_passes(days: int = 30, pilot: Annotated[list[str] | None, Query()] = None, source: str | None = None,
                     servers: str | None = None, aircraft: str | None = None) -> list[dict]:
-        """`servers`: "ours" (flown on this hub's servers, or unknown) or "all"; default per `--other-servers`.
+        """`pilot`: one or more (repeat it). `servers`: "ours" (flown on this hub's servers, or unknown) or "all"; default per `--other-servers`.
         `aircraft`: one airframe ("F-14 Tomcat": every F-14 variant) or aircraft type ("F-14B")."""
         out = []
-        for p in _passes(days, pilot, source, _servers(servers), aircraft or None):
+        for p in _passes(days, [n for n in pilot or [] if n], source, _servers(servers), aircraft or None):
             g = p.grade
             reports = hub.reports(p)
             out.append({"id": p.id, "pilot": p.pilot.name, "source": p.source.name,
@@ -881,17 +881,18 @@ def create_app(hub: Hub) -> FastAPI:
         return Response(svg, media_type="image/svg+xml")
 
     @app.get("/", response_class=HTMLResponse, dependencies=members)
-    def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None,
+    def board(days: Annotated[int, Query(ge=0)] = 30, pilot: Annotated[list[str] | None, Query()] = None,
               empty: bool = False, servers: str | None = None, aircraft: str | None = None) -> str:
-        pilot, source, aircraft = pilot or None, source or None, aircraft or None  # the form sends "" for All
+        """`pilot`: any number of pilots (repeated), none for everyone."""
+        aircraft = aircraft or None  # the form sends "" for All
+        chosen = list(dict.fromkeys(n for n in pilot or [] if n))
         servers = _servers(servers)
-        passes = _passes(days, pilot, source, servers, aircraft)
+        passes = _passes(days, chosen, None, servers, aircraft)
         with hub.sessions() as s:
             pilots = sorted(s.scalars(select(Pilot.name)), key=str.lower)
-            sources = sorted(s.scalars(select(Source.name)), key=str.lower)
             types = set(s.scalars(select(Pass.aircraft_type).distinct()))
         airframes = sorted({airframe(t) for t in types}, key=str.lower)
-        return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS, empty, servers,
+        return pages.board_page(passes, pilots, days, chosen, BOARD_COLUMNS, empty, servers,
                                 aircraft, airframes)
 
     def _badges(accuracy) -> dict:

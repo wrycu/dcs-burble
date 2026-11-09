@@ -57,7 +57,7 @@ def test_board_marks_night_passes(tmp_path):
         hub.ingest(source_id, path.read_bytes(), meta)
     board = TestClient(create_app(hub)).get("/", params={"days": 0}).text
     assert board.count(' night" href=') == 1 and "Night pass" in board
-    assert "· night ·" in board  # in the cell's tooltip
+    assert "· night\n" in board  # in the cell's tooltip, ending the grade line
     client = TestClient(create_app(hub))
     cards = {pilot: client.get(f"/passes/{i}/card.svg").text
              for i, pilot in ((1, "Day Bird"), (2, "Night Owl"))}

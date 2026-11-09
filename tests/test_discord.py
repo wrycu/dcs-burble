@@ -203,7 +203,7 @@ def test_trap_card_takes_the_theme():
     from burble.hub.discord import png
     (p,) = find_passes(load_recording(Path(__file__).parent / "fixtures" / "live" / "trap-server.zip.acmi"))
     web = render_card(p, grade_pass(p))
-    assert ".tc-bg { fill: var(--card, #ffffff); }" in web and "fill: var(--card, #0d1117)" in web
+    assert ".tc-bg { fill: var(--card, #f8f7ef); }" in web and "fill: var(--card, #243532)" in web
     theme = theme_from_css(":root { --card: #102030; --text: #fafafa; --font: Impact; --bg: url(x) }")
     image = render_card(p, grade_pass(p), dark=True, theme=theme)
     assert "var(" not in image and ".tc-bg { fill: #102030; }" in image and "font-family: Impact, DejaVu" in image

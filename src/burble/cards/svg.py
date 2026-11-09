@@ -18,7 +18,7 @@ from ..detect import PassResult, PassSample
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
 from ..grading import GradeResult, grade_name, grade_short
 from ..grading.grade import GLIDESLOPE_DEG, LINEUP_DEG, POSITIONS
-from .theme import Theme
+from .theme import Theme, follow_theme
 
 NM = 1852.0
 FT = 0.3048
@@ -45,13 +45,13 @@ AOA_LABELS = {"fast": "Fast", "sfast": "Slightly fast", "onspeed": "On speed", "
 
 _LIGHT = """
 .tc { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-.tc-bg { fill: #ffffff; }
-.tc-text { fill: #1f2328; }
-.tc-muted { fill: #656d76; }
+.tc-bg { fill: #f8f7ef; }
+.tc-text { fill: #172a2c; }
+.tc-muted { fill: #4d6361; }
 .tc-axis { stroke: #8c959f; stroke-width: 1; }
-.tc-grid { stroke: #d0d7de; stroke-width: 1; stroke-dasharray: 2 4; }
+.tc-grid { stroke: #aabbb0; stroke-width: 1; stroke-dasharray: 2 4; }
 .tc-pos { stroke: #8c959f; stroke-width: 1; stroke-dasharray: 5 4; }
-.tc-ideal { stroke: #1f2328; stroke-width: 1.2; stroke-dasharray: 8 4; fill: none; }
+.tc-ideal { stroke: #172a2c; stroke-width: 1.2; stroke-dasharray: 8 4; fill: none; }
 .tc-band1 { fill: #2da44e; fill-opacity: 0.16; }
 .tc-band2 { fill: #d4a72c; fill-opacity: 0.16; }
 .tc-band3 { fill: #cf222e; fill-opacity: 0.12; }
@@ -68,18 +68,18 @@ _LIGHT = """
 .tc-grade-bad { fill: #cf222e; }
 .tc-grade-mid { fill: #9a6700; }
 .tc-grade-good { fill: #1a7f37; }
-.tc-rule { stroke: #d0d7de; stroke-width: 1; }
-.tc-call { fill: #ffffff; stroke: #1f2328; stroke-width: 2; }
-.tc-call-label { fill: #1f2328; font-weight: 600; }
+.tc-rule { stroke: #aabbb0; stroke-width: 1; }
+.tc-call { fill: #f8f7ef; stroke: #172a2c; stroke-width: 2; }
+.tc-call-label { fill: #172a2c; font-weight: 600; }
 """
 _DARK = """
-  .tc-bg { fill: #0d1117; }
-  .tc-text { fill: #e6edf3; }
-  .tc-muted { fill: #8d96a0; }
+  .tc-bg { fill: #243532; }
+  .tc-text { fill: #e6eee7; }
+  .tc-muted { fill: #b1c3b9; }
   .tc-axis { stroke: #6e7681; }
-  .tc-grid { stroke: #30363d; }
+  .tc-grid { stroke: #526960; }
   .tc-pos { stroke: #6e7681; }
-  .tc-ideal { stroke: #e6edf3; }
+  .tc-ideal { stroke: #e6eee7; }
   .tc-band1 { fill: #3fb950; fill-opacity: 0.14; }
   .tc-band2 { fill: #d29922; fill-opacity: 0.14; }
   .tc-band3 { fill: #f85149; fill-opacity: 0.10; }
@@ -95,9 +95,9 @@ _DARK = """
   .tc-grade-bad { fill: #f85149; }
   .tc-grade-mid { fill: #d29922; }
   .tc-grade-good { fill: #3fb950; }
-  .tc-rule { stroke: #30363d; }
-  .tc-call { fill: #0d1117; stroke: #e6edf3; }
-  .tc-call-label { fill: #e6edf3; }
+  .tc-rule { stroke: #526960; }
+  .tc-call { fill: #243532; stroke: #e6eee7; }
+  .tc-call-label { fill: #e6eee7; }
 """
 # The hub's theme variables (cards.theme, from its admins' custom CSS) the card takes: rule -> (property,
 # variable). Its background and the call markers follow the website's panels (--card).
@@ -134,7 +134,7 @@ def theme_style(theme: Theme) -> str:
 
 # The card follows the viewer's light or dark mode (and, inlined in the website, its theme); DARK_STYLE is always
 # dark (e.g. images for Discord, where there is no viewer to ask; `theme_style` gives the hub's theme there).
-STYLE = _with_variables(_LIGHT) + "@media (prefers-color-scheme: dark) {\n" + _with_variables(_DARK) + "}\n"
+STYLE = _with_variables(_LIGHT) + follow_theme(_with_variables(_DARK))
 DARK_STYLE = _LIGHT + _DARK
 
 
@@ -614,9 +614,8 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
 _LIVE = """
 .tc-ghost { stroke-opacity: 0.22; }
 .tc-mark.tc-hidden { display: none; }
-.tc-now { fill: #1f2328; stroke: #ffffff; stroke-width: 2; }
-@media (prefers-color-scheme: dark) { .tc-now { fill: #e6edf3; stroke: #0d1117; } }
-"""
+.tc-now { fill: #172a2c; stroke: #f8f7ef; stroke-width: 2; }
+""" + follow_theme(".tc-now { fill: #e6eee7; stroke: #243532; }")
 LINEUP_TOP = 30
 
 

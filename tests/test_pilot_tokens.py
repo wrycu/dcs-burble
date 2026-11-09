@@ -151,7 +151,7 @@ def test_settings_page_tokens_and_names(hub):
 
 def test_joining_the_board_before_flying_here(hub):
     client = TestClient(create_app(hub))
-    assert "Join this board" in client.get("/").text and "<form" in client.get("/join").text
+    assert 'href="/join"' in client.get("/").text and "<form" in client.get("/join").text
     r = client.post("/join", data={"name": " Goose ", "password": "goose password", "confirm": "goose password"},
                     follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/pilots/Goose/settings?done=")
