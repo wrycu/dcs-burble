@@ -129,6 +129,7 @@ table.board td.pilot { text-align: left; padding: 14px 18px; overflow-wrap: anyw
 table.board td.pilot a { font-size: 18px; color: #183b31; font-weight: 800; text-underline-offset: 4px; }
 table.board td.pilot .side { display: block; color: #53685e; font: 12px var(--mono); margin-top: 3px; }
 table.board td.num { font: 700 16px var(--mono); color: #1a2d2a; }
+table.board .tile.night::after { top: 50%; left: 50%; right: auto; transform: translate(-50%, -50%); }
 table.board .tile { display: grid; place-items: center; min-height: 50px; margin: 4px 3px; font-size: 12px; }
 .board-paper .tile.empty { background: #e2e4d6; }
 .board-hint { display: none; color: var(--muted); font-size: 13px; margin: -8px 0 16px; }
@@ -524,7 +525,7 @@ def board_page(passes: list[Pass], pilots: list[str], days: int, chosen: list[st
                                           f"{grade_name(g)}: {p.grade.text if p.grade else ''}{night}", p.mission) if x)
             cells.append(f'<td><a class="tile {GRADE_CLASS.get(g, "")}{" night" if p.night else ""}" href="/passes/{p.id}" '
                          f'title="{escape(title)}" aria-label="{escape(grade_name(g))}, {escape(_when(p.occurred_at))}">'
-                         f'{escape(grade_short(g))}</a></td>')
+                         "</a></td>")  # the colour says the grade (the key is below); the letter is in the tooltip
         cells += ['<td><span class="tile empty"></span></td>'] * (columns - len(shown))
         side = f'<span class="side">#{escape(modex)}</span>' if modex else ""
         return (f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}" title="Themes across recent passes">'
