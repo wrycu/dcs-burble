@@ -134,7 +134,7 @@ def test_unprotected_pilots_upload_as_before(hub):
 def test_settings_page(hub):
     client = TestClient(create_app(hub))
     page = client.get("/pilots/Wrycu").text
-    assert "no upload password" in page and 'href="/pilots/Wrycu/settings"' in page
+    assert 'href="/pilots/Wrycu/settings"' not in page  # Settings is in the header, yours only
     assert "Set a password" in client.get("/pilots/Wrycu/settings").text
     r = client.post("/pilots/Wrycu/settings/password", data={"new": "first password", "confirm": "first passwor"},
                     follow_redirects=False)
@@ -143,7 +143,7 @@ def test_settings_page(hub):
                     follow_redirects=False)
     assert r.headers["location"].endswith("done=Password%20saved.")
     assert "Change password" in client.get("/pilots/Wrycu/settings").text
-    assert "uploads password-protected" in client.get("/pilots/Wrycu").text
+    assert hub.pilot_trends("Wrycu", 12, "all").protected and "password-protected" not in client.get("/pilots/Wrycu").text
     r = client.post("/pilots/Wrycu/settings/modex", data={"password": "first password", "modex": "305"},
                     follow_redirects=False)
     assert r.headers["location"].endswith("done=Side%20number%20saved.")

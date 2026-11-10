@@ -55,7 +55,9 @@ def test_admins_change_them_on_the_admin_page(hub):
                     follow_redirects=False)
     assert r.status_code == 303 and "Hub%20settings%20saved" in r.headers["location"]
     assert hub.pilot_hook_accept == "any" and hub.require_upload_token
-    assert '<option value="any" selected>' in client.get("/admin").text
+    page = client.get("/admin").text
+    assert 'selected>Any server, with a pilot token</option>' in page
+    assert 'traps are taken from any server, from pilots with a pilot token</span>' in page  # what it means, under it
     r = client.post("/admin/settings", data={"public_url": "lso.example.com"}, follow_redirects=False)
     assert "error=" in r.headers["location"] and hub.setting("public_url") == ""
     hub.register_pilot("Pilot", "pilot password")

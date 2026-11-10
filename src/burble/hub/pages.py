@@ -58,6 +58,7 @@ nav.nav a[aria-current=page] { background: #2d4944; color: #fff; border-bottom-c
 .theme-toggle { border-color: #718a7d; }
 .header-right .simple:hover { text-decoration: underline; }
 .header-right .me { color: #fff; font-weight: 700; }
+.header-right a[aria-current=page] { background: #2d4944; color: #fff; border-bottom: 2px solid #d1bd78; }
 
 /* Buttons */
 .button { min-height: 44px; padding: 10px 16px; border: 1px solid var(--border); font-size: 13px; font-weight: 750;
@@ -81,14 +82,13 @@ h2 { font-size: 20px; letter-spacing: -.03em; margin: 24px 0 8px; }
 .page-header p { margin: 0; color: var(--muted); }
 .page-header .actions { display: flex; gap: 9px; flex-wrap: wrap; }
 .page-header .micro.under { margin: 2px 0 6px; }
-.breadcrumb { color: var(--muted); font-size: 13px; }
-.breadcrumb a { text-underline-offset: 3px; }
 .panel { background: var(--card); border: 1px solid var(--border); padding: 24px; }
 .panel + .panel { margin-top: 16px; }
 .panel h3 { font-size: 19px; letter-spacing: -.025em; margin: 7px 0; }
 .panel > p { color: var(--muted); font-size: 14px; }
 .section-header { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin: 36px 0 14px; flex-wrap: wrap; }
 .section-header h2 { margin: 4px 0 0; font-size: 23px; }
+.section-header h2.section { margin: 0; font-size: 28px; letter-spacing: -.02em; }
 .section-header p { color: var(--muted); margin: 0; font-size: 13px; }
 .section-header .scope { font-size: 14px; }
 .scroll, .scroll-x { overflow-x: auto; }
@@ -172,7 +172,18 @@ form.filters .pick .names label { display: flex; align-items: center; gap: 8px; 
 .pick .none { margin: 6px 4px; color: var(--muted); font: 13px var(--font, system-ui), sans-serif; text-transform: none; letter-spacing: 0; }
 .pick .clear { margin-top: 6px; background: none; border: 0; color: var(--text); text-decoration: underline;
   font: 13px var(--font, system-ui), sans-serif; text-transform: none; letter-spacing: 0; cursor: pointer; padding: 4px; }
-form.filters.compact { padding: 12px; }
+form.filters.compact { padding: 12px; width: fit-content; max-width: 100%; flex-wrap: nowrap; }
+form.filters.compact > .field, form.filters.compact > label { flex: 0 0 auto; min-width: 0; }
+form.filters.compact select { width: auto; }
+form.filters .stepper input { width: 4.5em; }
+form.filters .stepper { display: flex; }
+form.filters .stepper input { text-align: center; -moz-appearance: textfield; appearance: textfield; }
+form.filters .stepper input::-webkit-inner-spin-button, form.filters .stepper input::-webkit-outer-spin-button {
+  -webkit-appearance: none; margin: 0; }
+form.filters .stepper button { min-width: 44px; min-height: 44px; border: 1px solid var(--border);
+  background: var(--paper-button); color: var(--paper-button-text); font: 700 18px var(--mono); cursor: pointer; }
+form.filters .stepper button:first-child { border-right: 0; }
+form.filters .stepper button:last-child { border-left: 0; }
 form.filters.compact label { flex: 0 1 240px; }
 .panel > .micro + form.upload { margin-top: 12px; }
 
@@ -184,7 +195,7 @@ form.filters.compact label { flex: 0 1 240px; }
 .brief p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
 
 /* The pilot page */
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .stats > div { padding: 18px 22px; border-right: 1px solid var(--border); }
 .stats > div:first-child { padding-left: 0; }
 .stats > div:last-child { border-right: 0; }
@@ -289,14 +300,23 @@ form.inline input { width: 9em; }
 .admin button { cursor: pointer; } .admin button.danger, button.danger { color: var(--danger); }
 .admin input.label { width: 8em; }
 .admin textarea { width: 100%; min-height: 8em; font-family: var(--mono); }
+table[data-sortable] th button { all: unset; cursor: pointer; font: inherit; }
+table[data-sortable] th button:hover { text-decoration: underline; }
+table[data-sortable] th button:focus-visible { outline: 2px solid var(--text); }
+table[data-sortable] th[aria-sort=ascending] button::after { content: " ▲"; font-size: .8em; }
+table[data-sortable] th[aria-sort=descending] button::after { content: " ▼"; font-size: .8em; }
+.help-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--border);
+  border-radius: 50%; color: var(--muted); font: 700 12px/1 var(--font, system-ui), sans-serif; cursor: help; }
+.help-icon:hover, .help-icon:focus { color: var(--text); border-color: var(--text); }
 .admin .alias { display: inline-flex; gap: 4px; align-items: center; margin: 0 8px 2px 0; }
 .admin .alias button { padding: 0 6px; font-size: 12px; }
 .admin .tag { font: 700 11px var(--mono); padding: 1px 7px; background: var(--accent); color: var(--card); }
-.settings label.setting { display: grid; grid-template-columns: minmax(10em, 16em) minmax(0, 1fr); gap: 2px 12px;
+.settings .setting { display: grid; grid-template-columns: minmax(10em, 16em) minmax(0, 1fr); gap: 2px 12px;
   align-items: center; margin: 8px 0; }
-.settings label.setting input:not([type=checkbox]), .settings label.setting select { max-width: 22em; width: 100%; }
-.settings label.setting input[type=checkbox] { justify-self: start; }
-.settings label.setting .hint { grid-column: 2; color: var(--muted); font-size: 12px; }
+.settings .setting input:not([type=checkbox]), .settings .setting select { max-width: 22em; width: 100%; }
+.settings .setting input[type=checkbox] { justify-self: start; }
+.settings .setting .hint { grid-column: 2; color: var(--muted); font-size: 12px; }
+.settings .setting.unsaved > .name::after { content: " *"; color: var(--warn); font-weight: 700; }
 .settings h2 { margin: 18px 0 4px; font-size: 18px; } .settings h2:first-child { margin-top: 0; }
 .settings .warn { color: var(--warn); font-size: 13px; }
 .settings fieldset { border: 1px solid var(--border); margin: 8px 0; padding: 6px 10px; }
@@ -314,13 +334,11 @@ form.inline input { width: 9em; }
   main { padding: 27px 24px 60px; }
   footer.site { padding: 18px 24px 40px; }
   .latest, .insight-grid, .detail-grid, .upload-grid { grid-template-columns: 1fr; }
-  .stats { grid-template-columns: repeat(2, 1fr); }
-  .stats > div:nth-child(2) { border-right: 0; }
-  .stats > div:nth-child(3) { padding-left: 0; }
-  .stats > div:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+  .stats > div { padding: 14px 12px; }
 }
 @media (max-width: 600px) {
   main { padding: 24px 16px 50px; }
+  form.filters.compact { flex-wrap: wrap; }
   header.site .top { padding: 12px 16px; }
   footer.site { padding: 18px 16px 32px; }
   .brand small { display: none; }
@@ -335,8 +353,8 @@ form.inline input { width: 9em; }
   .panel, .sheet-card { padding: 18px; }
   .sheet-head { padding: 20px; }
   .detail-list { grid-template-columns: 1fr; }
-  .settings label.setting { grid-template-columns: minmax(0, 1fr); }
-  .settings label.setting .hint { grid-column: 1; }
+  .settings .setting { grid-template-columns: minmax(0, 1fr); }
+.settings .setting .hint { grid-column: 1; }
   footer.site > div { display: block; }
   footer.site span { display: block; margin-top: 6px; }
   .board-hint { display: block; }
@@ -389,7 +407,8 @@ THEME_SCRIPT = """
 
 
 def _nav(section: str | None = None) -> str:
-    """The header: the brand, the sections (`section` is the current one), the theme toggle, and who's signed in."""
+    """The header: the brand, the sections (`section` is the current one; "me" and "settings" are the signed-in
+    pilot's own page and settings, on the right), the theme toggle, and who's signed in."""
     me = CURRENT_PILOT.get()
     links = [("board", "/", "Board"), ("upload", "/upload", "Upload")]  # Upload in the same place for everyone
     if me and not CURRENT_WAITING.get():  # Live isn't open until an admin approves them
@@ -402,8 +421,9 @@ def _nav(section: str | None = None) -> str:
     toggle = '<button type="button" class="theme-toggle" id="theme-toggle">\u25d0 Dark</button>'
     if me:
         quoted = quote(me, safe="")
-        right = (f'<a class="simple me" href="/pilots/{quoted}" title="Signed in as {escape(me)}">{escape(me)}</a>'
-                 f'<a class="simple" href="/pilots/{quoted}/settings">Settings</a>'
+        here = {key: " aria-current=page" if key == section else "" for key in ("me", "settings")}
+        right = (f'<a class="simple me" href="/pilots/{quoted}" title="Signed in as {escape(me)}"{here["me"]}>{escape(me)}</a>'
+                 f'<a class="simple" href="/pilots/{quoted}/settings"{here["settings"]}>Settings</a>'
                  '<form method="post" action="/signout"><button type="submit" class="simple">Sign out</button></form>')
     else:
         right = '<a class="simple" href="/signin">Sign in</a><a class="button lime" href="/join">Join</a>'
@@ -412,15 +432,16 @@ def _nav(section: str | None = None) -> str:
             f'<nav class="nav" aria-label="Sections">{nav}</nav><div class="header-right">{toggle}{right}</div></div></header>')
 
 
-def _header(title: str, sub: str = "", crumbs: tuple[tuple[str, str | None], ...] = (), actions: str = "",
-            micro: str = "") -> str:
-    """A page's heading: the way back (`crumbs`: label and link, the last one where you are) or a small label
-    (`micro`, under the title), the title (HTML; none where the header's tab says where you are), a line under it (HTML), and buttons on the right (`actions`, HTML)."""
-    top = ('<div class="breadcrumb">' + " / ".join(
-        f'<a href="{escape(href)}">{escape(label)}</a>' if href else escape(label) for label, href in crumbs) + "</div>"
-        if crumbs else "")
-    under = f'<div class="micro quiet under">{micro}</div>' if micro and not crumbs else ""
-    return (f'<div class="page-header"><div>{top}{f"<h1>{title}</h1>" if title else ""}{under}{f"<p>{sub}</p>" if sub else ""}</div>'
+def _pilot_section(name: str, own: str = "me", other: str | None = "board") -> str | None:
+    """Which header tab a pilot's page sits under: `own` (on the right) when it's the signed-in pilot's, else `other`."""
+    return own if name == CURRENT_PILOT.get() else other
+
+
+def _header(title: str, sub: str = "", actions: str = "", micro: str = "") -> str:
+    """A page's heading: the title (HTML; none where the header's tab says where you are), a small label under it
+    (`micro`), a line under that (HTML), and buttons on the right (`actions`, HTML)."""
+    under = f'<div class="micro quiet under">{micro}</div>' if micro else ""
+    return (f'<div class="page-header"><div>{f"<h1>{title}</h1>" if title else ""}{under}{f"<p>{sub}</p>" if sub else ""}</div>'
             + (f'<div class="actions">{actions}</div>' if actions else "") + "</div>")
 
 
@@ -432,7 +453,20 @@ def _page(title: str, body: str, section: str | None = None) -> str:
             f"<body>{_nav(section)}<main>{body}</main>"
             '<footer class="site"><div><span>Powered by <a href="https://github.com/wrycu/dcs-burble">Burble</a></span>'
             "<span>Times are UTC.</span></div></footer>"
-            f"<script>{THEME_SCRIPT}</script></body></html>")
+            f"<script>{THEME_SCRIPT}{ONCE_SCRIPT}</script></body></html>")
+
+
+# A step's message (`?done=`, `?error=`, after a redirect) is shown once: taken out of the address, so reloading or
+# coming back to the page doesn't show it again.
+ONCE_SCRIPT = """
+(() => {
+  const url = new URL(location.href);
+  if (!url.searchParams.has('done') && !url.searchParams.has('error')) return;
+  url.searchParams.delete('done');
+  url.searchParams.delete('error');
+  history.replaceState(null, '', url.pathname + (url.search || '') + url.hash);
+})();
+"""
 
 
 def _when(dt: datetime | None) -> str:
@@ -748,8 +782,7 @@ def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: 
                + (f'<a class="button dark" href="/passes/{p.id}/replay">▶ &nbsp;Replay in 3D</a>' if card_svg else ""))
     sub = " · ".join(escape(x) for x in (_when(p.occurred_at), p.aircraft_type,
                                          f"#{p.pilot.modex}" if p.pilot.modex else "") if x)
-    body = (_header("Pass debrief.", sub, crumbs=(("Board", "/"), (p.pilot.name, f"/pilots/{quoted}"),
-                                                   (f"Pass {p.id}", None)), actions=actions)
+    body = (_header("Pass debrief.", sub, actions=actions)
             + head + card
             + '<div class="detail-grid"><div class="panel"><div class="micro quiet">Flight details</div><h3>Pass context</h3>'
             f'<dl class="detail-list">{dl}</dl></div>{quality}</div>')
@@ -829,8 +862,7 @@ def replay_page(p: Pass, lineup_svg: str | None = None) -> str:
            f'{" · " + escape(g.text) if g and g.text else ""} · {escape(_when(p.occurred_at))} · '
            f'{escape(p.aircraft_type)} · {escape(p.carrier_unit or p.carrier_type)}'
            f'{" · wire " + escape(_wire(p)) if p.wire else ""}')
-    body = (_header("3D replay.", sub, crumbs=(("Board", "/"), (p.pilot.name, f"/pilots/{quote(p.pilot.name, safe='')}"),
-                                                (f"Pass {p.id}", f"/passes/{p.id}"), ("Replay", None)),
+    body = (_header("3D replay.", sub,
                     actions=f'<a class="button paper" href="/passes/{p.id}">← Pass debrief</a>')
             + f'<div class="replay" id="replay" data-src="/passes/{p.id}/replay.json">'
             f'<canvas aria-label="3D replay of the pass"></canvas>'
@@ -957,7 +989,7 @@ def live_server_page(a) -> str:
                 f"<tbody><tr><td>{_live_carriers(a)}</td></tr></tbody></table></div>")
     else:
         what = f'<p class="sub">{_live_status(a)}. This page refreshes itself; a carrier shows here once one is live.</p>'
-    body = (_header(escape(a.agent), crumbs=(("Board", "/"), ("Live", "/live"), (a.agent, None)))
+    body = (_header(escape(a.agent))
             + f'<div class="panel">{what}</div>'
 
             '<script>setTimeout(() => location.reload(), 15000);</script>')
@@ -968,8 +1000,7 @@ def live_page(agent: str, unit: str, voice: bool = False) -> str:
     """One carrier's live view (static/live.js draws it from /live/{agent}/{unit}/events)."""
     src = _live_url(agent, unit) + "/events"
     body = (_header(escape(unit), f'Live from <a href="{_live_url(agent)}">{escape(agent)}</a> · '
-                    f'<span class="live-status" id="live-status">Connecting…</span>',
-                    crumbs=(("Board", "/"), ("Live", "/live"), (agent, _live_url(agent)), (unit, None)))
+                    f'<span class="live-status" id="live-status">Connecting…</span>')
             + 
             f'<div class="replay" id="live" data-src="{escape(src)}" data-voice="{1 if voice else 0}">'
             f'<canvas aria-label="Live 3D view of the carrier"></canvas><div class="labels"></div>'
@@ -1098,7 +1129,7 @@ def upload_status_page(upload: Upload, key: str | None) -> str:
     sub = (f'{upload.size / 1e6:.1f} MB · '
            f'{escape(f"passes flown by {upload.pilot}" if upload.pilot else f"from {upload.source.name}")} · '
            f'{escape(upload.status)}')
-    body = (_header(escape(upload.filename), sub, crumbs=(("Board", "/"), ("Upload", "/upload"), ("Result", None)),
+    body = (_header(escape(upload.filename), sub,
                     actions='<a class="button paper" href="/upload">Upload another</a>')
             + f'<div class="panel">{detail}</div>')
     return _page(f"Upload: {upload.filename}", body, "upload").replace("<head>", "<head>" + refresh, 1)
@@ -1214,6 +1245,25 @@ ZOOM_SCRIPT = """
 })();
 """
 
+STEPPER_SCRIPT = """
+(() => {
+  // Look at last N: − and + step it; typing a number and leaving the box (or Enter) loads it. Kept in range.
+  document.querySelectorAll('.stepper').forEach((box) => {
+    const input = box.querySelector('input');
+    const go = () => {
+      const lo = +input.min, hi = +input.max, n = Math.round(+input.value);
+      input.value = Math.min(hi, Math.max(lo, isNaN(n) ? lo : n));
+      input.form.submit();
+    };
+    input.addEventListener('change', go);
+    box.querySelectorAll('button[data-step]').forEach((b) => b.addEventListener('click', () => {
+      input.value = +input.value + +b.dataset.step;
+      go();
+    }));
+  });
+})();
+"""
+
 KIND_LABELS = {"fault": "Fault", "bias": "Leaning", "speed": "Speed", "outcome": "Outcome", "wires": "Wires",
                "trend": "Trend"}
 
@@ -1227,16 +1277,8 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
     quoted = quote(name, safe="")
     title = escape(name) + (f' <span class="modex">#{escape(summary.modex)}</span>' if summary.modex else "")
     chosen = summary.airframe or ""
-    sub = " · ".join(x for x in (escape(chosen), f'{summary.landings} landing{"s" if summary.landings != 1 else ""}',
-                                 f"last seen {last}") if x)
-    actions = (f'<a class="button paper" href="/pilots/{quoted}/settings">Settings</a>'
-               + (f'<a class="button dark" href="/passes/{rows[0].id}">Latest pass ↗</a>' if rows else ""))
-    heading = _header(title, sub, crumbs=(("Board", "/"), ("Pilot", None)), actions=actions)
-    seen = (f'<p class="sub" style="margin-top:24px;font-size:13px">'
-            f'{f"Last livery: {escape(summary.last_livery)} · " if summary.last_livery else ""}'
-            f"first seen {first} · {'uploads password-protected' if summary.protected else 'no upload password'}</p>")
-    options = "".join(f'<option value="{n}"{" selected" if n == passes else ""}>last {n}</option>'
-                      for n in sorted({8, 12, 15, 20, passes}))
+    sub = f"first seen {first} · last seen {last}"
+    heading = _header(title, sub)
     tabs = ""
     if summary.airframes:  # trends don't mix airframes: one at a time (a single tab says which it is)
         def tab(a: str, n: int) -> str:
@@ -1245,30 +1287,28 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
             return f'<a href="{escape(href)}"{current}>{escape(a)} <span class="n">{n}</span></a>'
         tabs = '<nav class="airframes">' + "".join(tab(a, n) for a, n in summary.airframes) + "</nav>"
     picker = (f'<form class="filters compact" method="get"><input type="hidden" name="aircraft" value="{escape(chosen)}">'
-              f'<label>Look at <select name="passes" onchange="this.form.submit()">'
-              f"{options}</select></label><label>Servers <select name=\"servers\" onchange=\"this.form.submit()\">"
+              '<div class="field"><span id="look-at">Look at last</span><div class="stepper">'
+              '<button type="button" data-step="-1" aria-label="Fewer passes">−</button>'
+              f'<input name="passes" type="number" min="3" max="50" step="1" value="{passes}" aria-labelledby="look-at" '
+              '><button type="button" data-step="1" aria-label="More passes">+</button>'
+              f"</div></div><label>Servers <select name=\"servers\" onchange=\"this.form.submit()\">"
               + "".join(f'<option value="{v}"{" selected" if v == servers else ""}>{label}</option>'
                         for v, label in (("ours", "This hub&#x27;s servers"), ("all", "All servers")))
-              + "</select></label></form>")
+              + f"</select></label></form><script>{STEPPER_SCRIPT}</script>")
     if not result.passes:
         body = (f'{heading}{tabs}{picker}'
-                f'<p class="empty-state">No graded {escape(chosen + " " if chosen else "")}passes yet.</p>{seen}')
-        return _page(name, body, "board")
+                f'<p class="empty-state">No graded {escape(chosen + " " if chosen else "")}passes yet.</p>')
+        return _page(name, body, _pilot_section(name))
     n = result.passes
     bolters = sum(p.outcome == "bolter" for p in rows)
     traps = [p for p in rows if p.outcome == "trap"]
     def wire(p) -> int | None:
         return p.wire if p.wire is not None else ((p.grade.detail or {}) if p.grade else {}).get("wire_estimate")
     short = sum(wire(p) in (1, 2) for p in traps)
-    where = "This hub’s servers" if servers == "ours" else "All servers"
     stats = ('<div class="stats">'
-             f'<div><div class="micro quiet">Selection</div><strong>{n} pass{"es" if n != 1 else ""}</strong>'
-             f'<small>{escape(where)}{f" · {escape(chosen)}" if chosen else ""}</small></div>'
-             f'<div><div class="micro quiet">Average grade</div><strong>{result.average_points:.2f}</strong>'
-             "<small>Points · these passes</small></div>"
-             f'<div><div class="micro quiet">Bolters</div><strong>{bolters} / {n}</strong><small>These passes</small></div>'
-             f'<div><div class="micro quiet">Short traps</div><strong>{short} / {len(traps)}</strong>'
-             "<small>1 or 2 wire, of the traps</small></div></div>")
+             f'<div><div class="micro quiet">Average grade</div><strong>{result.average_points:.2f}</strong></div>'
+             f'<div><div class="micro quiet">Bolters</div><strong>{bolters} / {n}</strong></div>'
+             f'<div><div class="micro quiet">Short traps</div><strong>{short} / {len(traps)}</strong></div></div>')
 
     def faults(themes, empty: str) -> str:
         return "".join(
@@ -1286,25 +1326,24 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
         f"{escape(grade_short(p.grade.grade))}</a>" for p in reversed(rows))
     grades = " · ".join(f"{escape(grade_short(g))} ×{k}" for g, k in sorted(result.grades.items(), key=lambda kv: -kv[1]))
     body = (heading + tabs + picker + stats
-            + f'<div class="section-header"><div><div class="micro quiet">Pilot record &nbsp;/&nbsp; last {n}</div>'
-            "<h2>What keeps showing up</h2></div><p>Passes shown oldest → newest</p></div>"
+            + '<div class="section-header"><div>'
+            "<h2>Pilot themes</h2></div><p>Passes shown oldest → newest</p></div>"
             '<div class="insight-grid"><div class="panel"><div class="micro quiet">Recurring faults</div>'
             f"{analysis}{strengths}</div>"
             f'<div class="panel"><div class="micro quiet">Grade sequence</div><div class="small-grades recent">{cells}</div>'
             f'<p>{grades}</p><div class="micro quiet" style="margin-top:18px">Results</div>{results}</div></div>'
-            + (f'<div class="section-header"><div><div class="micro quiet">Glideslope &nbsp;/&nbsp; lineup</div>'
-               f'<h2>Traps overlaid <button id="zoom-reset" class="zoom-reset" hidden>Reset zoom</button></h2></div>'
+            + (f'<div class="section-header"><div><h2>Traps overlaid <button id="zoom-reset" class="zoom-reset" hidden>Reset zoom</button></h2></div>'
                f"<p>Last {n} · drag across a chart to zoom</p></div>"
                f'<div class="panel card zoomable" id="overlay" data-src="{escape(overlay_src)}" data-reset="zoom-reset">'
                f'{overlay_svg}</div>'
                f"<script>{ZOOM_SCRIPT}</script>" if overlay_svg else "")
-            + seen + f'<div id="tc-pop" hidden></div><script>{CARD_PREVIEW_SCRIPT}</script>')
-    return _page(f"{name}: recent passes", body, "board")
+            + f'<div id="tc-pop" hidden></div><script>{CARD_PREVIEW_SCRIPT}</script>')
+    return _page(f"{name}: recent passes", body, _pilot_section(name))
 
 
 def waiting_page(name: str) -> str:
     """For a signed-in pilot an admin hasn't approved yet, where only approved pilots may go."""
-    body = (_header("Waiting for approval.", crumbs=(("Board", "/"), ("Waiting", None)))
+    body = (_header("Waiting for approval.")
             + 
             f'<div class="panel"><p>An admin approves new pilots on this board, and hasn\'t approved {escape(name)} yet. '
             f'This opens once they do. <a href="/pilots/{quote(name, safe="")}/settings">Your settings</a></p></div>')
@@ -1332,7 +1371,7 @@ def join_page(error: str | None = None, name: str = "", existing: str | None = N
     aside = ('<aside class="panel"><div class="micro quiet">Already flying here?</div><h3>Sign in</h3>'
              "<p>If you've joined before, or an admin set a password for your name, sign in instead.</p>"
              '<a class="button paper" href="/signin">Sign in</a></aside>')
-    body = (_header("Join the board.", "Choose your pilot name and a password.", crumbs=(("Board", "/"), ("Join", None)))
+    body = (_header("Join the board.", "Choose your pilot name and a password.")
             + f'{note}<div class="upload-grid"><div class="panel"><div class="micro quiet">New pilot</div>{form}</div>{aside}</div>')
     return _page("Join this board", body)
 
@@ -1352,9 +1391,7 @@ def signin_page(error: str | None = None, name: str = "", next_url: str = "", me
     aside = ('<aside class="panel"><div class="micro quiet">New pilot</div><h3>Join the board</h3>'
              "<p>Join to create pilot tokens, so the pilot hook sends your passes here, and to claim the other names "
              'you fly under.</p><a class="button paper" href="/join">Join the board</a></aside>')
-    body = (_header("Sign in.", "Stay signed in on this browser to change your settings and upload your recordings "
-                    "without giving your password each time.", crumbs=(("Board", "/"), ("Sign in", None)))
-            + f'{note}<div class="upload-grid"><div class="panel"><div class="micro quiet">Pilot access</div>{form}'
+    body = (f'{note}<div class="upload-grid"><div class="panel"><div class="micro quiet">Pilot access</div>{form}'
             '<p class="sub" style="margin:16px 0 0">Forgot your password? Ask the server\'s admin to reset it.</p></div>'
             f"{aside}</div>")
     return _page("Sign in", body)
@@ -1369,14 +1406,14 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
     note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
         f'<p class="error">{escape(error)}</p>' if error else "")
     has = pilot.password_hash is not None
-    back = _header(f"{escape(name)}: settings.", crumbs=(("Board", "/"), (name, f"/pilots/{quoted}"), ("Settings", None)))
+    back = _header(f"{escape(name)}: settings.")
     if has and not signed_in:
         me = CURRENT_PILOT.get()
         other = f" You're signed in as {escape(me)}." if me else ""
         body = (f'{back}{note}<div class="panel"><p>Sign in as {escape(name)} to change these settings.{other}</p>'
                 f'<p><a href="/signin?next={quote(f"/pilots/{quoted}/settings", safe="")}">Sign in</a></p></div>'
                 '<p class="sub" style="margin-top:12px">Forgot your password? Ask the server\'s admin to reset it.</p>')
-        return _page(f"{name}: settings", body)
+        return _page(f"{name}: settings", body, _pilot_section(name, "settings", None))
     password_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/password">'
         "<h2 style=\"margin-top:0\">" + ("Change password" if has else "Set a password") + "</h2>"
@@ -1390,14 +1427,14 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
         'autocomplete="new-password"></label><button type="submit">Save password</button></form>')
     if not has:  # nothing else until the name is claimed
         body = f'{back}{note}<div class="panel">{password_form}</div>'
-        return _page(f"{name}: settings", body)
+        return _page(f"{name}: settings", body, _pilot_section(name, "settings", None))
     if pilot.pending_since is not None:  # nothing else until an admin approves them
         waiting = ('<div class="panel"><h2 style="margin-top:0">Waiting for approval</h2><p>An admin approves new '
                    f"pilots on this board, and hasn't approved {escape(name)} yet (asked {escape(_when(pilot.pending_since))}). "
                    "Until then you can't create pilot tokens, claim other names, or change your side number, and "
                    "your password doesn't protect uploads of your passes yet. Your passes still reach the board.</p></div>")
         body = f'{back}{note}{waiting}<div class="panel" style="margin-top:12px">{password_form}</div>'
-        return _page(f"{name}: settings", body)
+        return _page(f"{name}: settings", body, _pilot_section(name, "settings", None))
     modex_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/modex">'
         '<h2>Side number</h2>'
@@ -1438,7 +1475,7 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
     body = (f'{back}{note}<div class="panel">{password_form}</div><div class="panel" style="margin-top:12px">{modex_form}</div>'
             f'<div class="panel" style="margin-top:12px">{tokens_form}</div>'
             f'<div class="panel" style="margin-top:12px">{aliases_form}</div>')
-    return _page(f"{name}: settings", body)
+    return _page(f"{name}: settings", body, _pilot_section(name, "settings", None))
 
 
 def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None, error: str | None = None,
@@ -1489,15 +1526,21 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
             f'<span class="alias">{escape(a)}'
             + post("/admin/aliases/remove", "×", "Remove this alias? Its passes go back to a pilot of that name.",
                    extra=f'<input type="hidden" name="alias" value="{escape(a)}">') + "</span>" for a in p.aliases)
+        landed = p.last_landed
         rows.append(
-            f'<tr><td><a href="/pilots/{quoted}">{escape(p.name)}</a>'
+            f'<tr><td data-value="{escape(p.name.lower())}"><a href="/pilots/{quoted}">{escape(p.name)}</a>'
             + (' <span class="tag">admin</span>' if p.admin else "")
             + (' <span class="tag">waiting</span>' if p.pending else "") + "</td>"
-            f"<td>{p.passes}</td><td>{'set' if p.has_password else 'none'}</td>"
+            f'<td data-value="{p.passes}">{p.passes}</td>'
+            f'<td data-value="{1 if p.has_password else 0}">{"set" if p.has_password else "none"}</td>'
+            f'<td data-value="{landed.timestamp() if landed else 0}">{_when(landed) if landed else "never"}</td>'
             f'<td>{names or "<span class=sub>none</span>"}</td><td><div class="actions">{"".join(acts)}</div></td></tr>')
     pilots_table = (
-        '<div class="scroll"><table class="results"><thead><tr><th>Pilot</th><th>Passes</th><th>Password</th>'
-        f'<th>Other names</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+        '<div class="scroll"><table class="results" data-sortable><thead><tr>'
+        + "".join(f'<th data-sort="{kind}"><button type="button">{label}</button></th>'
+                  for label, kind in (("Pilot", "text"), ("Passes", "num"), ("Password", "num"), ("Last landed", "num")))
+        + f'<th>Other names</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+        f"<script>{SORT_SCRIPT}</script>"
         if rows else '<p class="sub">No pilots' + (" match." if q else " yet.") + "</p>")
     search = ('<form method="get" action="/admin" class="actions" style="margin-bottom:8px">'
               f'<input name="q" value="{escape(q)}" placeholder="Pilot or other name"><button type="submit">Find</button>'
@@ -1505,26 +1548,25 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
     agent_rows = "".join(
         f'<tr><td><a href="/admin/agents/{quote(a.name, safe="")}">{escape(a.name)}</a></td><td>{_when(a.created_at)}</td>'
         f'<td>{_when(a.last_used_at) if a.last_used_at else "never"}</td>'
-        f'<td><a href="/admin/agents/{quote(a.name, safe="")}">Settings</a></td></tr>'
-        for a in agents)
+        f'<td><div class="actions"><a href="/admin/agents/{quote(a.name, safe="")}">Settings</a>'
+        + post(f"/admin/agents/{quote(a.name, safe='')}/remove", "Remove",
+               f"Remove the server agent {_js_text(a.name)}? Its token stops working; its landings stay on the board.",
+               danger=True)
+        + "</div></td></tr>" for a in agents)
     agents_table = (
         '<div class="scroll"><table class="results"><thead><tr><th>Server agent</th><th>Added</th><th>Last used</th>'
         f'<th></th></tr></thead><tbody>{agent_rows}</tbody></table></div>' if agent_rows
         else '<p class="sub">None yet.</p>')
     add_agent = ('<form method="post" action="/admin/agents" class="actions" style="margin-top:8px">'
                  '<input name="name" required maxlength="100" placeholder="e.g. server1">'
-                 '<button type="submit">Add a server agent</button></form>'
-                 '<p class="sub">Its server agent token is shown once, here.</p>')
+                 '<button type="submit">Add a server agent</button></form>')
     tel = telemetry or {}
     usage_link = ' · <a href="/admin/usage">Usage</a>' if tel.get("view") else ""
     body = (_header("", "Regrading and the wire check are run on the hub's machine "
                     f"(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).{usage_link}")
-            + 
-            f'{note}{_telemetry_notice(tel)}<div class="admin">{_joining(pending or [], approval, post)}{_board_access(members_only, approval, post)}'
-            f'{_hub_settings(settings or {}, voices or [])}'
-            f'<div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}'
-            '<p class="sub">Only a pilot with a password can be an admin; resetting an admin\'s password removes the '
-            "role. Deleting a pilot deletes their landings too; an admin can't be deleted (remove the role first).</p></div>"
+            + f'{note}{_telemetry_notice(tel)}<div class="admin">{_waiting(pending or [], approval, post)}'
+            f'{_hub_settings(settings or {}, voices or [], _access(members_only, approval))}'
+            f'<div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}</div>'
             f'<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Server agents</h2>{agents_table}'
             f"{add_agent}</div>{_appearance(css)}{_telemetry_panel(tel) if telemetry else ''}</div>")
     return _page("Admin", body, "admin")
@@ -1577,7 +1619,7 @@ def agent_settings_page(agent, done: str | None = None, error: str | None = None
             default = f"{setting.default:g}" if isinstance(setting.default, float) else setting.default
             placeholder = "" if default is None else f' placeholder="{escape(str(default))}"'
             control = f'<input name="{key}"{kind} value="{escape(value)}"{placeholder}>'
-        return f'<label class="setting"><span>{escape(setting.label)}</span>{control}{hint}</label>'
+        return _setting_row(key, escape(setting.label), control, hint)
 
     sections = []
     for title, group in ac.SECTIONS:
@@ -1631,7 +1673,7 @@ def agent_settings_page(agent, done: str | None = None, error: str | None = None
     note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
         f'<p class="error">{escape(error)}</p>' if error else "")
     body = (_header(f"{escape(agent.name)}: settings.", "Its server agent fetches these from the hub and applies them "
-                    f"when the next mission starts. {about}", crumbs=(("Board", "/"), ("Admin", "/admin"), (agent.name, None)))
+                    f"when the next mission starts. {about}")
             + f"{note}"
             f'<div class="admin settings"><form class="panel" method="post" action="/admin/agents/{name}/settings">'
             + "".join(sections)
@@ -1692,20 +1734,35 @@ def _carrier_rows(config: dict, form: dict[str, list[str]] | None, info: dict | 
             f"</th><th>Voice</th></tr></thead><tbody>{cells}</tbody></table></div>")
 
 
-def _board_access(members_only: bool, approval: bool, post) -> str:
-    """Who can see the board: anyone, or members only (signed-in, approved pilots)."""
-    toggle = post("/admin/members-only", "Open it to everyone" if members_only else "Make it members-only",
-                  extra=f'<input type="hidden" name="on" value="{0 if members_only else 1}">')
-    if members_only:
-        state = ("<strong>Members only:</strong> the board, passes, pilots' pages, replays, and the read API need a "
-                 "signed-in pilot an admin has approved (the API also takes a token). Signing in, joining, uploads, and "
-                 "Discord posts work as before; links in Discord posts lead to signing in.")
-        if not approval:
-            state += " Anyone can join, though: turn on approving new pilots to choose who gets in."
-    else:
-        state = "<strong>Open:</strong> anyone can see the board, passes, and pilots' pages."
-    return (f'<div class="panel" style="margin-bottom:12px"><h2 style="margin-top:0">Who can see the board</h2>'
-            f'<div class="actions"><p class="sub" style="margin:0">{state}</p>{toggle}</div></div>')
+def _setting_row(key: str, label: str, control: str, hint: str = "", title: str = "") -> str:
+    """A settings row: its name, the control (`<select name=…>` or `<input name=…>`), and the line under it. Only the
+    control itself takes a click (user: not the row, nor the name): the name is plain text, tied to the control
+    for screen readers by aria-labelledby."""
+    ident = f"setting-{key}"
+    control = control.replace(f' name="{key}"', f' id="{escape(ident)}" aria-labelledby="{escape(ident)}-name" '
+                                                 f'name="{key}"', 1)
+    tip = f' title="{escape(title)}"' if title else ""
+    return f'<div class="setting"><span class="name" id="{escape(ident)}-name"{tip}>{label}</span>{control}{hint}</div>'
+
+
+def _access(members_only: bool, approval: bool) -> str:
+    """Who can see the board, and whether new pilots wait for an admin: hub settings kept apart from
+    hub/settings.py (`members_only`, `join_approval` on the Save form; app.admin_settings)."""
+    def row(name: str, label: str, choices: tuple[tuple[str, str, str], ...], value: str) -> str:
+        """`choices`: value, label, and the hint for it (shown for the chosen one, following the dropdown)."""
+        options = "".join(f'<option value="{v}" data-hint="{escape(hint)}"{" selected" if v == value else ""}>'
+                          f"{escape(text)}</option>" for v, text, hint in choices)
+        hint = next(h for v, _, h in choices if v == value)
+        return _setting_row(name, label, f'<select name="{name}">{options}</select>',
+                            f'<span class="hint">{escape(hint)}</span>')
+
+    see = row("members_only", "Who can see the board",
+              (("0", "Anyone", "Viewable by anyone"), ("1", "Members only", "Users must sign in to view anything")),
+              "1" if members_only else "0")
+    approve = row("join_approval", "Approving new pilots",
+                  (("0", "Off", "New users can join without approval"), ("1", "On", "New users require admin approval")),
+                  "1" if approval else "0")
+    return '<h3 style="margin-top:0">Access</h3>' + see + approve
 
 
 # The hub settings on /admin (hub/settings.py), in groups.
@@ -1715,8 +1772,9 @@ HUB_SETTING_GROUPS = (("Who can send landings", ("pilot_hook_accept", "require_u
                       ("Voice", ("default_voice",)))
 
 
-def _hub_settings(settings: dict, voices: list) -> str:
-    """The hub settings admins change here (hub/settings.py), as one form."""
+def _hub_settings(settings: dict, voices: list, access: str = "") -> str:
+    """The hub settings admins change here, one form saved at once: `access` (see `_access`), then the rest
+    (hub/settings.py)."""
     from .settings import BY_KEY
 
     def field(key: str) -> str:
@@ -1726,21 +1784,46 @@ def _hub_settings(settings: dict, voices: list) -> str:
             choices = [("", "The first by name")] + [(v, v) for v in voices]
             if value not in [c for c, _ in choices]:
                 choices.append((value, f"{value} (not on this hub)"))
-        if choices:
+        if choices:  # each option carries what it means, for the line under it (UNSAVED_SCRIPT)
             control = f'<select name="{key}">' + "".join(
-                f'<option value="{escape(c)}"{" selected" if c == value else ""}>{escape(label)}</option>'
-                for c, label in choices) + "</select>"
+                f'<option value="{escape(c)}" data-hint="{escape(h.said(c))}"{" selected" if c == value else ""}>'
+                f"{escape(label)}</option>" for c, label in choices) + "</select>"
         else:
             kind = ' type="url" autocomplete="off" spellcheck="false"' if h.url else ""
-            control = f'<input name="{key}"{kind} value="{escape(value)}" maxlength="500">'
-        return (f'<label class="setting"><span>{escape(h.label)}</span>{control}'
-                f'<span class="hint">{escape(h.help)}</span></label>')
+            control = (f'<input name="{key}"{kind} value="{escape(value)}" maxlength="500" '
+                       f'data-hint-empty="{escape(h.said(""))}" data-hint-set="{escape(dict(h.says).get("*", ""))}">')
+        return _setting_row(key, escape(h.label), control, f'<span class="hint">{escape(h.said(value))}</span>',
+                            title=h.help)
 
     groups = "".join(f'<h3>{escape(title)}</h3>' + "".join(field(k) for k in keys) for title, keys in HUB_SETTING_GROUPS)
-    return ('<div class="settings" style="margin-bottom:12px"><form class="panel" method="post" action="/admin/settings">'
-            '<h2 style="margin-top:0">Hub settings</h2><p class="sub">In effect as soon as they\'re saved. The hub\'s '
-            "folders, database, address, and port are in <code>~/.burble/config.toml</code> on its machine.</p>"
-            f'{groups}<p><button type="submit">Save hub settings</button></p></form></div>')
+    return ('<div class="section-header"><h2 class="section">Hub settings</h2></div>'
+            '<div class="settings panel" style="margin-bottom:12px">'
+            f'<form method="post" action="/admin/settings" data-unsaved>{access}{groups}'
+            '<p><button type="submit">Save hub settings</button></p></form></div>'
+            f"<script>{UNSAVED_SCRIPT}</script>")
+
+
+# A star by each setting changed since the page loaded (back to as it was: no star), until it's saved.
+UNSAVED_SCRIPT = """
+document.querySelectorAll('form[data-unsaved]').forEach((form) => {
+  const fields = [...form.querySelectorAll('.setting')].map((label) => {
+    const input = label.querySelector('select, input, textarea');
+    if (!input) return null;
+    const value = () => input.type === 'checkbox' ? String(input.checked) : input.value;
+    return {label, input, value, saved: value()};
+  }).filter(Boolean);
+  const mark = () => fields.forEach((f) => {
+    f.label.classList.toggle('unsaved', f.value() !== f.saved);
+    // The line under it says what the value means: the chosen option's, or a text field's when empty or set.
+    const d = f.input.dataset, v = f.input.value.trim(), option = f.input.selectedOptions && f.input.selectedOptions[0];
+    const hint = option ? option.dataset.hint
+      : d.hintSet !== undefined ? (v ? d.hintSet.split('{value}').join(v) : d.hintEmpty) : undefined;
+    if (hint !== undefined) f.label.querySelector('.hint').textContent = hint;
+  });
+  form.addEventListener('input', mark);
+  form.addEventListener('change', mark);
+});
+"""
 
 
 def _js_text(text: str) -> str:
@@ -1749,13 +1832,10 @@ def _js_text(text: str) -> str:
     return escape(js, quote=False).replace('"', "&quot;")
 
 
-def _joining(pending: list, approval: bool, post) -> str:
-    """Approving new pilots: on or off, and those waiting (hub.service.PendingPilot) with Approve and Refuse."""
-    toggle = post("/admin/join-approval", "Turn off" if approval else "Turn on",
-                  extra=f'<input type="hidden" name="on" value="{0 if approval else 1}">')
-    state = ("<strong>On:</strong> a pilot who joins, or sets a password on a name already on the board, waits for an "
-             "admin here. Until then they can sign in and see that they're waiting, nothing more."
-             if approval else "<strong>Off:</strong> anyone can join and use their account straight away.")
+def _waiting(pending: list, approval: bool, post) -> str:
+    """Pilots waiting for an admin (hub.service.PendingPilot), with Approve and Refuse; nothing if none are."""
+    if not pending:
+        return ""
     rows = "".join(
         f'<tr><td><a href="/pilots/{quote(p.name, safe="")}">{escape(p.name)}</a></td><td>{escape(_when(p.since))}</td>'
         f"<td>{p.passes}</td><td><div class=\"actions\">"
@@ -1764,11 +1844,10 @@ def _joining(pending: list, approval: bool, post) -> str:
                "Refuse this pilot? The name is free again: removed if it has no passes, else back to unclaimed.",
                danger=True)
         + "</div></td></tr>" for p in pending)
-    waiting = ('<div class="scroll"><table class="results"><thead><tr><th>Waiting</th><th>Asked</th><th>Passes</th>'
-               f"<th></th></tr></thead><tbody>{rows}</tbody></table></div>" if rows else "")
-    after = ('<p class="sub">Turning it off doesn\'t approve those waiting.</p>' if rows and approval else "")
-    return (f'<div class="panel" style="margin-bottom:12px"><h2 style="margin-top:0">Approving new pilots</h2>'
-            f'{waiting}<div class="actions"><p class="sub" style="margin:0">{state}</p>{toggle}</div>{after}</div>')
+    after = '<p class="sub">Turning approval off doesn\'t approve those waiting.</p>' if approval else ""
+    return ('<div class="panel" style="margin-bottom:12px"><h2 style="margin-top:0">Waiting for approval</h2>'
+            '<div class="scroll"><table class="results"><thead><tr><th>Pilot</th><th>Asked</th><th>Passes</th>'
+            f"<th></th></tr></thead><tbody>{rows}</tbody></table></div>{after}</div>")
 
 
 _OPEN_SENT = """onclick="document.getElementById('whats-sent').showModal()\""""
@@ -1778,13 +1857,44 @@ def _telemetry_notice(tel: dict) -> str:
     """Until an admin has seen it: that usage reports are on, with what's sent and how to turn them off."""
     if not tel or not tel.get("enabled") or tel.get("acknowledged"):
         return ""
-    return ('<div class="notice admin"><strong>This hub sends anonymous usage counts to the burble project once a '
-            'day.</strong> Counts only: no pilot names, UCIDs, IP addresses, or tracks. '
+    return ('<div class="notice admin"><strong>This hub sends anonymous usage counts to the burble project daily'
+            '</strong> · no names, IP addresses, or tracks '
             f'<button type="button" class="link" {_OPEN_SENT}>What\'s sent</button><div class="actions">'
             '<form method="post" action="/admin/telemetry"><input type="hidden" name="on" value="1">'
             '<button type="submit">Keep sending</button></form>'
             '<form method="post" action="/admin/telemetry"><input type="hidden" name="on" value="0">'
             '<button type="submit">Turn off</button></form></div></div>')
+
+
+# Tables marked data-sortable: a click on a column heading (th[data-sort], "text" or "num") sorts the rows by its
+# cells' data-value, and again the other way. Numbers start biggest first (most passes, newest landing).
+SORT_SCRIPT = """
+document.querySelectorAll('table[data-sortable]').forEach((table) => {
+  const heads = [...table.tHead.rows[0].cells];
+  heads.forEach((th, col) => {
+    if (!th.dataset.sort) return;
+    th.querySelector('button').addEventListener('click', () => {
+      const num = th.dataset.sort === 'num';
+      const was = th.getAttribute('aria-sort');
+      const up = was ? was === 'descending' : !num;
+      heads.forEach((h) => h.removeAttribute('aria-sort'));
+      th.setAttribute('aria-sort', up ? 'ascending' : 'descending');
+      const key = (row) => row.cells[col].dataset.value;
+      const rows = [...table.tBodies[0].rows].sort((a, b) => {
+        const x = key(a), y = key(b);
+        const c = num ? Number(x) - Number(y) : x.localeCompare(y);
+        return up ? c : -c;
+      });
+      table.tBodies[0].append(...rows);
+    });
+  });
+});
+"""
+
+
+def _help_icon(text: str) -> str:
+    """A small "?" that shows `text` on hover (and to screen readers, and on focus by keyboard)."""
+    return f'<span class="help-icon" tabindex="0" role="img" aria-label="{escape(text)}" title="{escape(text)}">?</span>'
 
 
 def _telemetry_panel(tel: dict) -> str:
@@ -1799,16 +1909,15 @@ def _telemetry_panel(tel: dict) -> str:
     rows = []
     for url in tel["urls"]:
         st = tel["status"].get(url)
-        when = (_when(datetime.fromisoformat(st["at"])) + (": sent" if st["ok"] else f": {st['message']}")
-                if st else "not sent yet")
+        at = _when(datetime.fromisoformat(st["at"])) if st else ""
+        when = (f"sent {at}" if st["ok"] else f"failed {at}: {st['message']}") if st else "not sent yet"
         rows.append(f"<li><code>{escape(url)}</code> <span class=\"sub\">({escape(when)})</span></li>")
-    where = f"<ul>{''.join(rows)}</ul>" if rows else '<p class="sub">No addresses: nothing is sent.</p>'
+    where = f"<ul>{''.join(rows)}</ul>" if rows else '<p class="sub">No addresses, so nothing is sent</p>'
     is_default = tel["urls"] == tel["default"]
     urls_form = ('<details><summary>Change where reports go</summary>'
                  '<form method="post" action="/admin/telemetry/urls">'
                  f'<textarea name="urls" spellcheck="false" style="min-height:4em">{escape(chr(10).join(tel["urls"]))}'
-                 '</textarea><p class="sub">One address per line: a usage receiver (<code>burble telemetry serve</code>), '
-                 'e.g. your community\'s own beside the project\'s. The report goes to each.</p>'
+                 '</textarea><p class="sub">One receiver per line (<code>burble telemetry serve</code>)</p>'
                  '<div class="actions"><button type="submit">Save addresses</button>'
                  + ("" if is_default else '<button type="submit" name="default" value="1">Back to the project\'s</button>')
                  + "</div></form></details>")
@@ -1816,22 +1925,22 @@ def _telemetry_panel(tel: dict) -> str:
     view_form = (f'<p>Showing stats from <code>{escape(view)}</code> on the <a href="/admin/usage">Usage page</a>.</p>'
                  '<form method="post" action="/admin/telemetry/view"><button type="submit" name="clear" value="1">'
                  "Disconnect</button></form>" if view else
-                 '<p class="sub">Connect a usage receiver to see the stats it has gathered on a Usage page here. '
-                 "Its API key comes from <code>burble telemetry new-key NAME</code> on the receiver's machine "
-                 "(or use its password).</p>"
+                 '<p class="sub">Connect a receiver to see its stats here.</p>'
                  '<form method="post" action="/admin/telemetry/view" class="actions">'
                  '<input name="url" required placeholder="https://telemetry.example.com" style="width:18em">'
                  '<input name="key" type="password" required placeholder="API key or password" autocomplete="off">'
-                 '<button type="submit">Connect</button></form>')
+                 '<button type="submit">Connect</button>'
+                 + _help_icon("For an API key, run burble telemetry new-key NAME on the receiver's machine. "
+                              "Its password works too.")
+                 + "</form>")
     sent = "".join(f"<li>{escape(x)}</li>" for x in WHAT_IS_SENT)
     never = "".join(f"<li>{escape(x)}</li>" for x in NEVER_SENT)
-    state = ("<strong>On</strong>: once a day, to the addresses below." if on else
-             "<strong>Off</strong>: nothing is sent.")
+    state = "<strong>On</strong>: sent once a day" if on else "<strong>Off</strong>: nothing is sent"
     return ('<div class="panel" id="usage-reports" style="margin-top:12px"><h2 style="margin-top:0">Usage reports</h2>'
-            f'<p>{state} They help the burble project see how many hubs run it and how they\'re used.</p>'
+            f'<p>{state}</p>'
             f'<div class="actions">{toggle}<button type="button" {_OPEN_SENT}>What\'s sent</button></div>'
             '<dialog class="modal" id="whats-sent"><h2 style="margin-top:0">What\'s sent</h2>'
-            f"<p class=\"sub\" style=\"margin:0\">All of it about the last 30 days.</p><ul>{sent}</ul>"
+            f"<p class=\"sub\" style=\"margin:0\">Covers the last 30 days</p><ul>{sent}</ul>"
             f"<h3>What's never sent</h3><ul>{never}</ul>"
             f'<details><summary>The report as it would be sent now</summary><pre>{escape(tel["report"])}</pre></details>'
             '<form method="dialog" class="actions" style="margin-top:8px"><button>Close</button></form></dialog>'
@@ -1851,17 +1960,16 @@ def usage_page(stats: dict | None, view: str | None, error: str | None) -> str:
         content = f'<div class="panel">{usage_body(stats)}</div>'
     source = f'<p class="sub">From <code>{escape(view)}</code> · <a href="/admin">Admin</a></p>' if view else ""
     return _page("Usage", f"<style>{USAGE_STYLE}</style>"
-                 + _header("Usage.", crumbs=(("Board", "/"), ("Admin", "/admin"), ("Usage", None))) + f"{source}{content}", "admin")
+                 + _header("Usage.") + f"{source}{content}", "admin")
 
 
 def _appearance(css: str) -> str:
     """The admins' custom CSS box, with the theme variables it can set."""
     names = ", ".join(f"<code>{v}</code>" for v in [*COLOR_VARS.values(), FONT_VAR, *GRADE_VARS.values()])
     return ('<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Appearance</h2>'
-            '<p class="sub">CSS added to every page of this board. The Discord images (the greenie board, and the '
-            "colour beside each landing's post) can't use CSS rules, so they take only the theme variables set on "
-            f"<code>:root</code>: {names}. Discord's images are dark, so values set for dark mode "
-            "(<code>@media (prefers-color-scheme: dark)</code>) win there. Colours as #hex, rgb(), or names.</p>"
+            '<p class="sub">Custom CSS for every page</p>'
+            f'<p class="sub">Discord images only pick up these variables from <code>:root</code> (dark-mode values '
+            f"first): {names}</p>"
             '<form method="post" action="/admin/appearance">'
             f'<textarea name="css" spellcheck="false" maxlength="{MAX_CSS}" '
             'placeholder=":root { --bg: #101820; --card: #18242f; --grade-ok: #00c853; }">'
@@ -1877,5 +1985,5 @@ def not_admin_page(pilot: str | None) -> str:
     else:
         text = "This page is for the board's admins. Sign in as a pilot who's an admin to use it."
         action = f'<a href="/signin?next={quote("/admin", safe="")}">Sign in</a> · <a href="/">Greenie board</a>'
-    body = _header("Admins only.", crumbs=(("Board", "/"), ("Admin", None))) + f'<div class="panel"><p>{text}</p><p>{action}</p></div>'
+    body = _header("Admins only.") + f'<div class="panel"><p>{text}</p><p>{action}</p></div>'
     return _page("Admins only", body)

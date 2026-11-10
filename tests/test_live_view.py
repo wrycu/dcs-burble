@@ -252,7 +252,7 @@ def test_server_agents_send_and_signed_in_pilots_watch(hub):
     assert 'href="/live/server1/CVN-75%20Harry%20S.%20Truman"' in index and "Goose" in index
     page = client.get("/live/server1/CVN-75%20Harry%20S.%20Truman").text
     assert 'data-src="/live/server1/CVN-75%20Harry%20S.%20Truman/events"' in page and "/static/live.js" in page
-    assert '<a href="/live">Live</a>' in page  # in the bar, signed in
+    assert '<a href="/live" aria-current=page>Live</a>' in page  # in the bar, signed in
     assert client.get("/live/say.wav", params={"text": "Power."}).status_code == 404  # no voice on this hub
     assert client.get("/static/live.js").status_code == 200 and client.get("/static/lso3d.js").status_code == 200
 

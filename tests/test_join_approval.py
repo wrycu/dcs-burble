@@ -82,7 +82,8 @@ def test_claiming_a_name_on_the_board_waits_too(hub):
     hub.set_pilot_password("Wrycu", "wrycu password")
     assert hub.is_pending("Wrycu")
     client = TestClient(create_app(hub))
-    assert "uploads password-protected" not in client.get("/pilots/Wrycu").text
+    found = hub.pilot_trends("Wrycu", 12, "all")
+    assert found is None or not found.protected  # a waiting claim doesn't protect the record
 
 
 def test_refusing_frees_the_name(hub):
@@ -119,8 +120,9 @@ def test_making_a_waiting_pilot_an_admin_approves_them(hub):
 
 def test_admins_approve_and_refuse_on_the_admin_page(hub):
     admin = signed_in(hub, "Boss", "boss password")
-    assert "<strong>Off:</strong>" in admin.get("/admin").text
-    r = admin.post("/admin/join-approval", data={"on": "1"}, follow_redirects=False)
+    page = admin.get("/admin").text
+    assert 'selected>Off</option>' in page and '<span class="hint">New users can join without approval</span>' in page
+    r = admin.post("/admin/settings", data={"join_approval": "1"}, follow_redirects=False)  # with Save
     assert r.status_code == 303 and hub.join_approval()
     joiner = TestClient(create_app(hub))
     assert "An admin approves new pilots" in joiner.get("/join").text

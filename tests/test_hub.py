@@ -217,6 +217,6 @@ def test_pilot_page_has_a_tab_per_airframe(client, token, tmp_path):
     assert set(hornets["pass_ids"]).isdisjoint(tomcats["pass_ids"])
     page = client.get("/pilots/Wrycu", params={"aircraft": "F-14 Tomcat"}).text
     assert '<nav class="airframes">' in page and 'class="current" aria-current="page">F-14 Tomcat' in page
-    assert "<strong>1 pass</strong><small>All servers · F-14 Tomcat</small>" in page and "aircraft=F-14%20Tomcat" in page
+    assert "<strong>0 / 1</strong>" in page and "F-14 Tomcat ·" not in page and "aircraft=F-14%20Tomcat" in page
     only = client.get("/pilots/Maverick").text  # one airframe: one tab, saying which
     assert only.count('<nav class="airframes">') == 1 and only.count('aria-current="page"') == 1 and "F/A-18C Hornet" in only

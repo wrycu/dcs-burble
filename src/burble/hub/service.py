@@ -94,6 +94,7 @@ class AdminPilot:
     passes: int  # landings shown (reports merged into another aren't counted)
     aliases: list[str]
     pending: bool = False  # waiting for an admin's approval
+    last_landed: datetime | None = None  # their newest landing
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,10 +207,25 @@ class Hub:
             raise ValueError("enter a name of up to 100 characters")
         token = secrets.token_urlsafe(32)
         with self.sessions.begin() as s:
-            if s.scalar(select(Source).where(Source.name == name)) is not None:
+            found = s.scalar(select(Source).where(Source.name == name))
+            if found is not None and found.kind == kind == "server" and found.revoked_at is not None:
+                # A removed server agent added again: back, with a new token, and its landings still its own.
+                found.token_hash, found.revoked_at = _hash_token(token), None
+                return token
+            if found is not None:
                 raise ValueError(f"there's already a source named {name!r}")
             s.add(Source(name=name, kind=kind, token_hash=_hash_token(token)))
         return token
+
+    def remove_server_agent(self, name: str) -> None:
+        """Take a server agent off the hub: its token stops working and it's no longer listed. Its landings stay
+        (they're still from it); adding an agent of the same name again brings it back, with a new token."""
+        with self.sessions.begin() as s:
+            source = s.scalar(select(Source).where(Source.kind == "server", Source.name == name,
+                                                   Source.revoked_at.is_(None)))
+            if source is None:
+                raise LookupError(f"no server agent named {name!r}")
+            source.revoked_at = datetime.now(UTC)
 
     # -- pilot tokens -----------------------------------------------------------------------
 
@@ -1413,24 +1429,28 @@ class Hub:
     def admin_pilots(self, search: str = "") -> list[AdminPilot]:
         """Every pilot (or those whose name, or one of their other names, contains `search`), for the admin page."""
         with self.sessions() as s:
-            counts = dict(s.execute(select(Pass.pilot_id, func.count()).where(Pass.merged_into_id.is_(None))
-                                    .group_by(Pass.pilot_id)).all())
+            counts, last = {}, {}
+            for pilot_id, n, newest in s.execute(select(Pass.pilot_id, func.count(), func.max(Pass.occurred_at))
+                                                 .where(Pass.merged_into_id.is_(None)).group_by(Pass.pilot_id)):
+                counts[pilot_id], last[pilot_id] = n, _aware(newest) if newest else None
             aliases: dict[int, list[str]] = {}
             for a in s.scalars(select(PilotAlias).order_by(PilotAlias.name)):
                 aliases.setdefault(a.pilot_id, []).append(a.name)
             needle = (search or "").strip().lower()
             return [AdminPilot(p.name, p.password_hash is not None, bool(p.is_admin), counts.get(p.id, 0),
-                               aliases.get(p.id, []), p.pending_since is not None)
+                               aliases.get(p.id, []), p.pending_since is not None, last.get(p.id))
                     for p in s.scalars(select(Pilot).order_by(func.lower(Pilot.name)))
                     if not needle or needle in p.name.lower() or any(needle in a.lower() for a in aliases.get(p.id, []))]
 
     def server_agents(self) -> list[Source]:
         with self.sessions() as s:
-            return list(s.scalars(select(Source).where(Source.kind == "server").order_by(Source.name)))
+            return list(s.scalars(select(Source).where(Source.kind == "server", Source.revoked_at.is_(None))
+                                  .order_by(Source.name)))
 
     def server_agent(self, name: str) -> Source:
         with self.sessions() as s:
-            source = s.scalar(select(Source).where(Source.kind == "server", Source.name == name))
+            source = s.scalar(select(Source).where(Source.kind == "server", Source.name == name,
+                                                   Source.revoked_at.is_(None)))
             if source is None:
                 raise LookupError(f"no server agent named {name!r}")
             return source

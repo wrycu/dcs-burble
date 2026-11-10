@@ -585,21 +585,26 @@ def create_app(hub: Hub) -> FastAPI:
     @app.post("/admin/join-approval")
     def admin_join_approval(request: Request, on: Annotated[str, Form()], q: Annotated[str, Form()] = ""):
         on_ = on == "1"
-        return _admin_step(request, lambda: hub.set_join_approval(on_),
-                           "New pilots now wait for approval." if on_ else "New pilots no longer wait for approval.", q)
+        return _admin_step(request, lambda: hub.set_join_approval(on_), "", q)  # the switch shows its state
 
     @app.post("/admin/members-only")
     def admin_members_only(request: Request, on: Annotated[str, Form()], q: Annotated[str, Form()] = ""):
         on_ = on == "1"
-        return _admin_step(request, lambda: hub.set_members_only(on_),
-                           "The board is members-only now." if on_ else "The board is open to everyone now.", q)
+        return _admin_step(request, lambda: hub.set_members_only(on_), "", q)  # the switch shows its state
 
     @app.post("/admin/settings")
     async def admin_settings(request: Request):
         _admin(request)
         form = await request.form()
         values = {key: str(form[key]) for key in hub.settings() if key in form}
-        return _admin_step(request, lambda: hub.set_settings(values), "Hub settings saved.")
+
+        def save() -> None:
+            hub.set_settings(values)
+            if "members_only" in form:  # kept apart from hub/settings.py, as before
+                hub.set_members_only(form["members_only"] == "1")
+            if "join_approval" in form:
+                hub.set_join_approval(form["join_approval"] == "1")
+        return _admin_step(request, save, "Hub settings saved.")
 
     @app.post("/admin/pilots/{name}/approve")
     def admin_approve_pilot(request: Request, name: str, q: Annotated[str, Form()] = ""):
@@ -659,6 +664,11 @@ def create_app(hub: Hub) -> FastAPI:
             return _admin_page(request, error=str(exc), status=400)
         return _admin_page(request, f"Server agent {name.strip()} added.",
                            new_token=(f"server agent token for {name.strip()}", token))
+
+    @app.post("/admin/agents/{name}/remove")
+    def admin_remove_agent(request: Request, name: str):
+        return _admin_step(request, lambda: hub.remove_server_agent(name),
+                           f"Server agent {name} removed; its token no longer works.")
 
     def _agent_page(request: Request, name: str, done: str | None = None, error: str | None = None,
                     status: int = 200, form: dict | None = None) -> HTMLResponse:

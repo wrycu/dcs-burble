@@ -138,3 +138,37 @@ def test_theme_variables_for_the_discord_images():
     bad = theme_from_css(':root { --bg: url(x.png); --text: "><svg onload=1>; --grade-cut: rgb(255, 0, 0); }')
     assert (bad.bg, bad.text, bad.grades) == (Theme().bg, Theme().text, {"C": "rgb(255, 0, 0)"})
     assert theme_from_css(None) == Theme() and theme_from_css("not css {{{") == Theme()
+
+
+def test_admins_remove_a_server_agent(hub):
+    """Removing a server agent revokes its token and takes it off the list; its landings stay, and adding the same
+    name again brings it back with a new token."""
+    token = hub.add_source("server1")
+    admin = client_for(hub, "Viper", "viper password")
+    assert "/admin/agents/server1/remove" in admin.get("/admin").text
+    assert client_for(hub, "Goose", "goose password").post("/admin/agents/server1/remove").status_code == 403
+    r = admin.post("/admin/agents/server1/remove", follow_redirects=False)
+    assert r.status_code == 303 and "removed" in r.headers["location"]
+    assert hub.authenticate(token) is None and hub.server_agents() == []
+    assert "/admin/agents/server1/remove" not in admin.get("/admin").text
+    again = hub.add_source("server1")
+    assert hub.authenticate(again).name == "server1" and hub.authenticate(token) is None
+
+
+def test_the_pilots_list_sorts_and_says_when_each_last_landed(hub):
+    page = client_for(hub, "Viper", "viper password").get("/admin").text
+    assert '<table class="results" data-sortable>' in page
+    for label in ("Pilot", "Passes", "Password", "Last landed"):
+        assert f'<button type="button">{label}</button>' in page
+    assert '<td data-value="0">never</td>' in page  # nobody has landed yet
+
+
+def test_no_breadcrumbs_and_the_header_marks_your_own_page_and_settings(hub):
+    client = client_for(hub, "Viper", "viper password")
+    own = client.get("/pilots/Viper").text
+    assert "breadcrumb" not in own
+    assert 'href="/pilots/Viper" title="Signed in as Viper" aria-current=page>' in own
+    assert '<a href="/" aria-current=page>Board</a>' not in own
+    settings = client.get("/pilots/Viper/settings").text
+    assert "breadcrumb" not in settings and 'href="/pilots/Viper/settings" aria-current=page>Settings' in settings
+    assert "breadcrumb" not in client.get("/admin").text

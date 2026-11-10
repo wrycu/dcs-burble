@@ -106,13 +106,11 @@ def test_upload_results_need_membership_or_the_uploaders_key(hub):
 def test_admins_turn_it_on_and_off(hub):
     admin = signed_in(hub, "Boss", "boss password")
     page = admin.get("/admin").text
-    assert "<strong>Open:</strong>" in page and "Make it members-only" in page
-    admin.post("/admin/members-only", data={"on": "1"})
+    assert 'selected>Anyone</option>' in page and 'Viewable by anyone</span>' in page and 'name="members_only"' in page
+    admin.post("/admin/settings", data={"members_only": "1", "join_approval": "0"})  # with Save
     assert hub.members_only()
     page = admin.get("/admin").text
-    assert "<strong>Members only:</strong>" in page and "turn on approving new pilots" in page
-    hub.set_join_approval(True)
-    assert "turn on approving new pilots" not in admin.get("/admin").text
+    assert '>Members only</option>' in page and '<span class="hint">Users must sign in to view anything</span>' in page
     admin.post("/admin/members-only", data={"on": "0"})
     assert not hub.members_only()
     assert signed_in(hub, "Boss", "boss password").post("/admin/members-only", data={"on": "1"}).status_code == 200

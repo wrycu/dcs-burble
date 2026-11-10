@@ -43,18 +43,16 @@ URLS_SETTING = "telemetry_urls"  # JSON list; unset: DEFAULT_URLS
 STATUS_SETTING = "telemetry_status"  # JSON {url: {"at", "ok", "message"}}
 VIEW_SETTING = "telemetry_view"  # JSON {"url", "key"}: a receiver whose stats the admins' Usage page shows
 
-WHAT_IS_SENT = [  # all of it about the last 30 days
-    "a random id this hub made for itself, so its reports can be told apart (not based on its address or "
-    "anything else)",
+WHAT_IS_SENT = [  # all of it about the last 30 days; the report itself is on /admin (What's sent)
+    "a random id this hub made for itself",
     "the hub's version",
-    "landings per day: how many, how many had a server report, a pilot's report (pilot hook or uploaded "
-    "recording), or both, and how many got live LSO calls",
-    "how many pilots landed, per day and in all",
-    "server agents: how many make live calls over SRS, how many only collect, and their versions",
-    "pilot hooks: how many, and their versions",
+    "landings per day",
+    "pilot landing stats",
+    "server agent stats",
+    "pilot hook stats",
 ]
 NEVER_SENT = [
-    "pilot names, UCIDs, or IP addresses",
+    "pilot names or IP addresses",
     "the hub's address or name",
     "mission, server, or carrier names",
     "the tracks, grades, or calls themselves",

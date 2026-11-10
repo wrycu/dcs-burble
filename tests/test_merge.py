@@ -132,7 +132,7 @@ def test_livery_and_side_number_are_kept_and_shown(hub):
     assert "#301 · VFA-37" in page  # the trap card's title line
     pilot = client.get("/pilots/Wrycu").text
     assert '<span class="modex">#301</span>' in pilot
-    assert "Last livery: VFA-106 high visibility · " in pilot  # the newest landing's (the trap, at 03:31)
+    assert "Last livery" not in pilot
     trends = client.get("/api/v1/pilots/Wrycu/trends").json()
     assert (trends["modex"], trends["last_livery"]) == ("301", "VFA-106 high visibility")
 
