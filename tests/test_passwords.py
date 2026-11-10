@@ -144,6 +144,9 @@ def test_settings_page(hub):
     assert r.headers["location"].endswith("done=Password%20saved.")
     assert "Change password" in client.get("/pilots/Wrycu/settings").text
     assert hub.pilot_trends("Wrycu", 12, "all").protected and "password-protected" not in client.get("/pilots/Wrycu").text
+    settings = client.get("/pilots/Wrycu/settings").text
+    assert 'name="modex" aria-label="Side number" required pattern="[0-9]{1,4}" inputmode="numeric" value=""' in settings  # none known yet
+    assert "signs you out everywhere else</span>" in settings and "taken from your first pass" not in settings
     r = client.post("/pilots/Wrycu/settings/modex", data={"password": "first password", "modex": "305"},
                     follow_redirects=False)
     assert r.headers["location"].endswith("done=Side%20number%20saved.")

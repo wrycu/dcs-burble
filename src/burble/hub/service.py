@@ -279,6 +279,21 @@ class Hub:
             pilot = self._pilot(s, name)
             return list(s.scalars(select(PilotAlias).where(PilotAlias.pilot_id == pilot.id).order_by(PilotAlias.name)))
 
+    def claimable_names(self, name: str) -> list[str]:
+        """The names on the board `name` could claim (claim_alias): pilots with passes and no password, not
+        anyone's name already, not DCS's default, and not a name that would sign in as another pilot."""
+        with self.sessions() as s:
+            pilot = self._pilot(s, name)
+            taken = set(s.scalars(select(PilotAlias.name)))
+            with_passes = select(Pass.pilot_id).where(Pass.merged_into_id.is_(None))
+            out = []
+            for other in s.scalars(select(Pilot).where(Pilot.password_hash.is_(None), Pilot.id != pilot.id,
+                                                       Pilot.id.in_(with_passes)).order_by(func.lower(Pilot.name))):
+                if (other.name not in taken and not is_default_pilot(other.name)
+                        and self._name_clash(s, other.name, pilot) is None):
+                    out.append(other.name)
+            return out
+
     def claim_alias(self, name: str, password: str | SignedIn | None, alias: str) -> int:
         """A pilot claims another in-game name with their password: passes reported under it are credited to
         them from now on, and existing ones move over. Only a name nobody owns can be claimed: not another

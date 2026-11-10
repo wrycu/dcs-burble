@@ -322,6 +322,9 @@ table[data-sortable] th[aria-sort=ascending] button::after { content: " ▲"; fo
 table[data-sortable] th[aria-sort=descending] button::after { content: " ▼"; font-size: .8em; }
 .help-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--border);
   border-radius: 50%; color: var(--muted); font: 700 12px/1 var(--font, system-ui), sans-serif; cursor: help; }
+h2 .help-icon { margin-left: 10px; vertical-align: 3px; letter-spacing: 0; }
+label .help-icon { margin-left: 8px; vertical-align: 1px; }
+.pop-host .pop { letter-spacing: normal; text-transform: none; }
 .help-icon:hover, .help-icon:focus { color: var(--text); border-color: var(--text); }
 .admin .alias { display: inline-flex; gap: 4px; align-items: center; margin: 0 8px 2px 0; }
 .admin .alias button { padding: 0 6px; font-size: 12px; }
@@ -467,7 +470,7 @@ def _page(title: str, body: str, section: str | None = None) -> str:
             + (f"<style>{safe_css(css)}</style>" if (css := CURRENT_CSS.get()) else "") + "</head>"
             f"<body>{_nav(section)}<main>{body}</main>"
             '<footer class="site"><div><span>Powered by <a href="https://github.com/wrycu/dcs-burble">Burble</a></span>'
-            "<span>Times are UTC.</span></div></footer>"
+            "<span>Times are UTC</span></div></footer>"
             f"<script>{THEME_SCRIPT}{ONCE_SCRIPT}</script></body></html>")
 
 
@@ -1403,7 +1406,7 @@ def join_page(error: str | None = None, name: str = "", existing: str | None = N
            "you're waiting, nothing more.</p>" if approval else "") +
         f'<label>Pilot name <input name="name" required maxlength="100" value="{escape(name)}" autocomplete="username"></label>'
         '<label>Password <input name="password" type="password" required minlength="8" autocomplete="new-password">'
-        '<span class="hint">At least 8 characters.</span></label>'
+        '<span class="hint">At least 8 characters</span></label>'
         '<label>Password again <input name="confirm" type="password" required minlength="8" autocomplete="new-password">'
         "</label><button type=\"submit\">Join</button></form>")
     aside = ('<aside class="panel"><div class="micro quiet">Already flying here?</div><h3>Sign in</h3>'
@@ -1436,7 +1439,8 @@ def signin_page(error: str | None = None, name: str = "", next_url: str = "", me
 
 
 def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list | None = None,
-                        aliases: list | None = None, new_token: str | None = None, signed_in: bool = False) -> str:
+                        aliases: list | None = None, new_token: str | None = None, signed_in: bool = False,
+                        claimable: list[str] | None = None) -> str:
     """Set or change the pilot's password; signed in as them (`signed_in`), change their side number, create
     and revoke pilot tokens, and claim other in-game names. `new_token`: a token just created, shown this once."""
     name = pilot.name
@@ -1444,7 +1448,7 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
     note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
         f'<p class="error">{escape(error)}</p>' if error else "")
     has = pilot.password_hash is not None
-    back = _header(f"{escape(name)}: settings.")
+    back = _header("User Settings")
     if has and not signed_in:
         me = CURRENT_PILOT.get()
         other = f" You're signed in as {escape(me)}." if me else ""
@@ -1458,9 +1462,9 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
         + ("" if has else '<p class="sub">Nobody has set one for this pilot yet: setting it claims the name and signs '
            "you in. Recordings uploaded without a token then need it to import this pilot's passes.</p>")
         + ('<label>Current password <input name="current" type="password" required autocomplete="current-password">'
-           '<span class="hint">Changing it signs you out everywhere else.</span></label>' if has else "")
+           '<span class="hint">Changing it signs you out everywhere else</span></label>' if has else "")
         + '<label>New password <input name="new" type="password" required minlength="8" autocomplete="new-password">'
-        '<span class="hint">At least 8 characters.</span></label>'
+        '<span class="hint">At least 8 characters</span></label>'
         '<label>New password again <input name="confirm" type="password" required minlength="8" '
         'autocomplete="new-password"></label><button type="submit">Save password</button></form>')
     if not has:  # nothing else until the name is claimed
@@ -1476,9 +1480,8 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
     modex_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/modex">'
         '<h2>Side number</h2>'
-        f'<p class="sub">Now: {escape(pilot.modex or "not known yet")}. It\'s taken from your first pass that has one; '
-        "you can change it here.</p>"
-        '<label>Side number <input name="modex" required pattern="[0-9]{1,4}" inputmode="numeric"></label>'
+        '<label><input name="modex" aria-label="Side number" required pattern="[0-9]{1,4}" inputmode="numeric" '
+        f'value="{escape(pilot.modex or "")}"></label>'
         '<button type="submit">Save side number</button></form>')
     shown = (f'<div class="token-once"><p><strong>Your new pilot token</strong> (copy it now: it won\'t be shown again)</p>'
              f'<code>{escape(new_token)}</code></div>' if new_token else "")
@@ -1495,21 +1498,24 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
               f'<th>Created</th><th>Last used</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>'
               if rows else "")
     tokens_form = (
-        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/tokens"><h2>Pilot tokens</h2>'
-        '<p class="sub">A pilot token lets the pilot hook send your passes here. Everything sent '
-        "with it is credited to you, whatever name you fly under.</p>" + shown
+        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/tokens"><h2>Pilot tokens'
+        + _help_icon("A pilot token lets the pilot hook send your passes here.") + "</h2>" + shown
         + '<label>What it\'s for <input name="label" maxlength="100" placeholder="e.g. my PC"></label>'
         '<button type="submit">Create a pilot token</button></form>' + listed)
     names = "".join(f'<li>{escape(a.name)}{"" if a.claimed else " (seen with your pilot token)"}</li>'
                     for a in aliases or [])
     aliases_form = (
-        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/aliases"><h2>Other names</h2>'
-        '<p class="sub">Other in-game names you fly under (e.g. with a squadron tag). Passes reported under them '
-        "count as yours.</p>"
-        + (f'<ul class="themes">{names}</ul>' if names else '<p class="sub">None yet.</p>')
-        + '<label>Claim a name <input name="alias" required maxlength="100"></label>'
-        '<span class="hint">Only a name nobody else has claimed. Its passes on this board move to you.</span>'
-        '<button type="submit">Claim name</button></form>')
+        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/aliases"><h2>Other names'
+        + _help_icon("Other in-game names you fly under (e.g. with a squadron tag). Passes reported under them "
+                     "count as yours.") + "</h2>"
+        + (f'<ul class="themes">{names}</ul>' if names else '<p class="sub">None yet</p>')
+        + ('<label><span>Claim a name' + _help_icon("Only a name nobody else has claimed. Its passes on this board "
+                                                    "move to you.")
+           + '</span><select name="alias" required><option value="">Choose a name</option>'
+           + "".join(f'<option value="{escape(n)}">{escape(n)}</option>' for n in claimable)
+           + '</select></label><button type="submit">Claim name</button>'
+           if claimable else '<p class="sub">No names on the board to claim</p>')
+        + "</form>")
     body = (f'{back}{note}<div class="panel">{password_form}</div><div class="panel" style="margin-top:12px">{modex_form}</div>'
             f'<div class="panel" style="margin-top:12px">{tokens_form}</div>'
             f'<div class="panel" style="margin-top:12px">{aliases_form}</div>')
@@ -1594,7 +1600,7 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
     agents_table = (
         '<div class="scroll"><table class="results"><thead><tr><th>Server agent</th><th>Added</th><th>Last used</th>'
         f'<th></th></tr></thead><tbody>{agent_rows}</tbody></table></div>' if agent_rows
-        else '<p class="sub">None yet.</p>')
+        else '<p class="sub">None yet</p>')
     add_agent = ('<form method="post" action="/admin/agents" class="actions" style="margin-top:8px">'
                  '<input name="name" required maxlength="100" placeholder="e.g. server1">'
                  '<button type="submit">Add a server agent</button></form>')

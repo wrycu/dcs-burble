@@ -448,7 +448,8 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(404, "no such pilot")
         mine = getattr(request.state, "pilot", None) == name
         return pages.pilot_settings_page(pilot, done, error, hub.pilot_tokens(name) if mine else [],
-                                         hub.pilot_aliases(name) if mine else [], new_token, signed_in=mine)
+                                         hub.pilot_aliases(name) if mine else [], new_token, signed_in=mine,
+                                         claimable=hub.claimable_names(name) if mine else [])
 
     @app.get("/pilots/{name}/settings", response_class=HTMLResponse)
     def pilot_settings(request: Request, name: str, done: str | None = None, error: str | None = None) -> str:
