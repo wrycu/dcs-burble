@@ -120,7 +120,7 @@ def test_admins_set_custom_css_for_every_page(hub):
     assert "done=" in r.headers["location"]
     page = goose.get("/").text  # every page, whoever's looking
     assert "text-transform: uppercase" in page and "--grade-ok: #00c853" in page
-    assert "<script>" not in page and "\\3c /style>" in page  # can't end the <style> early
+    assert "<script>alert(1)" not in page and "\\3c /style>" in page  # can't end the <style> early
     assert "var(--grade-ok, " in page  # the board's grade colours follow the variables
     assert "--grade-ok: #00c853" in viper.get("/admin").text  # shown back to edit
     r = viper.post("/admin/appearance", data={"css": "x" * 20_001}, follow_redirects=False)
@@ -138,3 +138,68 @@ def test_theme_variables_for_the_discord_images():
     bad = theme_from_css(':root { --bg: url(x.png); --text: "><svg onload=1>; --grade-cut: rgb(255, 0, 0); }')
     assert (bad.bg, bad.text, bad.grades) == (Theme().bg, Theme().text, {"C": "rgb(255, 0, 0)"})
     assert theme_from_css(None) == Theme() and theme_from_css("not css {{{") == Theme()
+
+
+def test_admins_remove_a_server_agent(hub):
+    """Removing a server agent revokes its token and takes it off the list; its landings stay, and adding the same
+    name again brings it back with a new token."""
+    token = hub.add_source("server1")
+    admin = client_for(hub, "Viper", "viper password")
+    assert "/admin/agents/server1/remove" in admin.get("/admin").text
+    assert client_for(hub, "Goose", "goose password").post("/admin/agents/server1/remove").status_code == 403
+    r = admin.post("/admin/agents/server1/remove", follow_redirects=False)
+    assert r.status_code == 303 and "removed" in r.headers["location"]
+    assert hub.authenticate(token) is None and hub.server_agents() == []
+    assert "/admin/agents/server1/remove" not in admin.get("/admin").text
+    again = hub.add_source("server1")
+    assert hub.authenticate(again).name == "server1" and hub.authenticate(token) is None
+
+
+def test_the_pilots_list_sorts_and_says_when_each_last_landed(hub):
+    page = client_for(hub, "Viper", "viper password").get("/admin").text
+    assert '<table class="results" data-sortable>' in page
+    for label in ("Pilot", "Passes", "Password", "Last landed"):
+        assert f'<button type="button">{label}</button>' in page
+    assert '<td data-value="0">never</td>' in page  # nobody has landed yet
+
+
+def test_no_breadcrumbs_and_the_header_marks_your_own_page_and_settings(hub):
+    client = client_for(hub, "Viper", "viper password")
+    own = client.get("/pilots/Viper").text
+    assert "breadcrumb" not in own
+    assert 'href="/pilots/Viper" title="Signed in as Viper" aria-current=page>' in own
+    assert '<a href="/" aria-current=page>Board</a>' not in own
+    settings = client.get("/pilots/Viper/settings").text
+    assert "breadcrumb" not in settings and 'href="/pilots/Viper/settings" aria-current=page>Settings' in settings
+    assert "breadcrumb" not in client.get("/admin").text
+
+
+PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+       b"\x00\x00\x00\rIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+
+
+def test_admins_set_the_icon_for_the_header_and_the_favicon(hub):
+    anyone = TestClient(create_app(hub))
+    page = anyone.get("/").text
+    assert '<span class="brandmark">GB</span>' in page and 'rel="icon"' not in page
+    assert anyone.get("/icon").status_code == 404
+    assert anyone.post("/admin/icon", files={"icon": ("i.png", PNG, "image/png")},
+                       follow_redirects=False).status_code in (303, 401, 403)
+    assert hub.icon_version() is None  # not an admin: nothing saved
+    admin = client_for(hub, "Viper", "viper password")
+    r = admin.post("/admin/icon", files={"icon": ("i.svg", b"<svg onload='x()'/>", "image/svg+xml")},
+                   follow_redirects=False)
+    assert "error=" in r.headers["location"] and hub.icon_version() is None  # no SVG
+    r = admin.post("/admin/icon", files={"icon": ("i.png", PNG, "image/png")}, follow_redirects=False)
+    assert "done=Icon%20saved" in r.headers["location"]
+    version = hub.icon_version()
+    page = anyone.get("/").text
+    assert f'<link rel="icon" href="/icon?v={version}">' in page and f'<img src="/icon?v={version}"' in page
+    assert ">GB</span>" not in page
+    r = anyone.get("/icon")
+    assert r.status_code == 200 and r.content == PNG and r.headers["content-type"] == "image/png"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert "Use GB" in admin.get("/admin").text
+    admin.post("/admin/icon/remove", follow_redirects=False)
+    assert hub.icon_version() is None and '<span class="brandmark">GB</span>' in anyone.get("/").text
+    assert anyone.get("/icon").status_code == 404

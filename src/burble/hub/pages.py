@@ -22,144 +22,386 @@ from .db import Pass, Upload
 # Greenie board colours per grade (light, dark), shared with the overlay card.
 
 STYLE = """
-:root { --bg: #f6f8fa; --card: #ffffff; --text: #1f2328; --muted: #656d76; --border: #d0d7de; --empty: #eaeef2; }
-@media (prefers-color-scheme: dark) {
-  :root { --bg: #010409; --card: #0d1117; --text: #e6edf3; --muted: #8d96a0; --border: #30363d; --empty: #161b22; }
-}
+/* The Ready Room look (PLAN #63). Built-in values sit in :where(:root) so the admins' custom CSS (:root { --bg: ... })
+   always wins; dark mode follows the header's Light/Dark toggle (data-theme on <html>), else the system. */
+:where(:root) { color-scheme: light; --bg: #eae8dc; --card: #f8f7ef; --surface2: #e0e6db; --text: #172a2c;
+  --muted: #4d6361; --border: #aabbb0; --empty: #e0e6db; --row-alt: #f1f0e6; --header: #152d30;
+  --header-text: #eaf0e9; --accent: #245b49; --button: #173a38; --button-text: #ffffff; --paper-button: #fffdf6;
+  --paper-button-text: #1b3430; --navy: #203b3e; --danger: #a4473d; --warn: #8a6414; --good: #2f6b45;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --board-frame: #333f3d; --board-frame-edge: #687972; --board-shadow: #0f1f1e; --board-paper: #eeeade; --board-ink: #1a2d2a; --board-rule: #8c9b90; --board-strip: #d6dacc; --board-strip-ink: #34483f; --board-grid: #a7afa2; --board-th: #e4e5d8; --board-th-ink: #3d5046; --board-name: #183b31; --board-side: #53685e; --board-empty: #e2e4d6; --board-note: #4b6054; --board-note-strong: #193c2d; }
+@media (prefers-color-scheme: dark) { :where(:root:not([data-theme="light"])) { color-scheme: dark; --bg: #172324; --card: #243532; --surface2: #2c4039; --text: #e6eee7; --muted: #b1c3b9; --border: #526960; --empty: #304440; --row-alt: #2a3d39; --header: #0e1b1d; --accent: #abd4b4; --button: #d5e5d4; --button-text: #17352c; --paper-button: #304440; --paper-button-text: #edf4ed; --navy: #1c3739; --danger: #e08a7f; --warn: #e0c070; --good: #8fcf9f; --board-frame: #0b1515; --board-frame-edge: #3b4f4b; --board-shadow: #030909; --board-paper: #1c2928; --board-ink: #e2eae3; --board-rule: #435853; --board-strip: #243533; --board-strip-ink: #b4c6bb; --board-grid: #364945; --board-th: #213130; --board-th-ink: #a8bbb0; --board-name: #d3e8d8; --board-side: #94a99e; --board-empty: #2a3b38; --board-note: #a3b6aa; --board-note-strong: #d8e8dc; } }
+:where(:root[data-theme="dark"]) { color-scheme: dark; --bg: #172324; --card: #243532; --surface2: #2c4039; --text: #e6eee7; --muted: #b1c3b9; --border: #526960; --empty: #304440; --row-alt: #2a3d39; --header: #0e1b1d; --accent: #abd4b4; --button: #d5e5d4; --button-text: #17352c; --paper-button: #304440; --paper-button-text: #edf4ed; --navy: #1c3739; --danger: #e08a7f; --warn: #e0c070; --good: #8fcf9f; --board-frame: #0b1515; --board-frame-edge: #3b4f4b; --board-shadow: #030909; --board-paper: #1c2928; --board-ink: #e2eae3; --board-rule: #435853; --board-strip: #243533; --board-strip-ink: #b4c6bb; --board-grid: #364945; --board-th: #213130; --board-th-ink: #a8bbb0; --board-name: #d3e8d8; --board-side: #94a99e; --board-empty: #2a3b38; --board-note: #a3b6aa; --board-note-strong: #d8e8dc; }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font, system-ui), -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 15px/1.5 var(--font, system-ui), -apple-system, "Segoe UI", sans-serif; }
 a { color: inherit; }
-h1 { font-size: 22px; margin: 0 0 4px; }
-.sub { color: var(--muted); margin: 0 0 16px; }
-.panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
-.scroll { overflow-x: auto; }
-table.board { border-collapse: separate; border-spacing: 3px; }
-table.board th { text-align: left; color: var(--muted); font-size: 12px; font-weight: 600; padding: 4px 8px; white-space: nowrap; }
-table.board td.pilot { padding: 4px 8px; white-space: nowrap; font-weight: 600; }
-table.board td.num { padding: 4px 8px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
-.cell { display: block; width: 34px; height: 30px; border-radius: 6px; color: #fff; text-decoration: none;
-        font-size: 11px; font-weight: 700; line-height: 30px; text-align: center; }
-.cell.empty { background: var(--empty); }
-.cell.night { position: relative; }
-.token-once { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
-.token-once code { word-break: break-all; font-size: 13px; }
-.notice { border: 1px solid #bf8700; border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; }
-.notice .actions { margin-top: 6px; }
-.admin pre { font-size: 12px; overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
-.admin ul { margin: 4px 0 8px; padding-left: 20px; }
-dialog.modal { max-width: min(640px, calc(100vw - 32px)); background: var(--card); color: var(--text);
-  border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; }
-dialog.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
-dialog.modal h3 { margin: 8px 0 4px; }
-button.link { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-decoration: underline; cursor: pointer; }
-form.inline { display: flex; gap: 6px; align-items: center; margin: 0; }
-form.inline input { width: 9em; }
-.cell.night::after, .legend span.night-dot { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px;
-        border-radius: 50%; background: #111; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6); }
-.legend span.night-dot { position: relative; display: inline-block; top: 0; right: 0; vertical-align: 0; margin-right: 6px; }
-.legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 0; color: var(--muted); font-size: 12px; }
-.legend span.swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-right: 4px; }
-form.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
-form.filters label.check { display: flex; align-items: center; gap: 4px; }
-form.filters select, form.filters button { font: inherit; padding: 4px 8px; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--card); color: var(--text); }
+button, select, input, textarea { font: inherit; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible,
+[tabindex]:focus-visible { outline: 3px solid #db964e; outline-offset: 3px; }
+[hidden] { display: none !important; }
+
+/* Header */
+header.site { background: var(--header); color: var(--header-text); border-bottom: 3px solid #b5ad8a; }
+header.site .top { max-width: 1500px; margin: 0 auto; padding: 14px 40px; display: flex; align-items: center; gap: 32px; }
+.brand { display: flex; align-items: center; gap: 12px; white-space: nowrap; text-decoration: none; }
+.brandmark { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid #adc3b5; font: 700 17px Georgia, serif; }
+.brandmark.custom { border: 0; overflow: hidden; }
+.brandmark.custom img { width: 100%; height: 100%; object-fit: contain; }
+.icon-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 8px 0 18px; }
+.icon-row .preview { width: 48px; height: 48px; display: grid; place-items: center; background: var(--header);
+  color: var(--header-text); font: 700 20px Georgia, serif; flex: none; }
+.icon-row .preview img { width: 100%; height: 100%; object-fit: contain; }
+.icon-row form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
+.brand strong { display: block; font-size: 14px; letter-spacing: .08em; }
+.brand small { display: block; font: 10px var(--mono); letter-spacing: .12em; color: #b6c7b9; margin-top: 3px; }
+nav.nav { display: flex; gap: 2px; overflow-x: auto; }
+nav.nav a { color: #c4d1c8; text-decoration: none; padding: 10px 13px; font-size: 14px; white-space: nowrap;
+  border-bottom: 2px solid transparent; min-height: 44px; display: flex; align-items: center; }
+nav.nav a:hover { color: #fff; }
+nav.nav a[aria-current=page] { background: #2d4944; color: #fff; border-bottom-color: #d1bd78; }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.header-right form { margin: 0; }
+.header-right .simple, .theme-toggle { min-height: 40px; padding: 8px 12px; font-size: 13px; color: #eff4ed;
+  background: transparent; border: 1px solid transparent; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
+.theme-toggle { border-color: #718a7d; }
+.header-right .simple:hover { text-decoration: underline; }
+.header-right .me { color: #fff; font-weight: 700; }
+.header-right a[aria-current=page] { background: #2d4944; color: #fff; border-bottom: 2px solid #d1bd78; }
+
+/* Buttons */
+.button { min-height: 44px; padding: 10px 16px; border: 1px solid var(--border); font-size: 13px; font-weight: 750;
+  letter-spacing: .02em; text-decoration: none; display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px; cursor: pointer; }
+.button.lime { background: #d5e5d4; border-color: #d5e5d4; color: #17352c; }
+.button.dark, form.upload button[type=submit], form.filters button[type=submit] { background: var(--button);
+  border: 1px solid var(--button); color: var(--button-text); }
+.button.paper { background: var(--paper-button); color: var(--paper-button-text); }
+.text-link { color: var(--accent); font-weight: 700; font-size: 14px; text-underline-offset: 4px; }
+
+/* Page */
+main { flex: 1; width: 100%; max-width: 1500px; margin: 0 auto; padding: 34px 40px 72px; }
+h1 { font-size: clamp(30px, 3.1vw, 44px); line-height: 1.08; letter-spacing: -.04em; margin: 8px 0; }
+h1 .modex { color: #819b8d; font-weight: 700; margin-left: 6px; }
+h2 { font-size: 20px; letter-spacing: -.03em; margin: 24px 0 8px; }
+.micro { font: 700 11px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.quiet, .sub { color: var(--muted); }
+.sub { margin: 0 0 16px; }
+.page-header { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 24px; flex-wrap: wrap; }
+.page-header p { margin: 0; color: var(--muted); }
+.page-header .actions { display: flex; gap: 9px; flex-wrap: wrap; }
+.page-header .micro.under { margin: 2px 0 6px; }
+.panel { background: var(--card); border: 1px solid var(--border); padding: 24px; }
+.panel + .panel { margin-top: 16px; }
+.panel h3 { font-size: 19px; letter-spacing: -.025em; margin: 7px 0; }
+.panel > p { color: var(--muted); font-size: 14px; }
+.section-header { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin: 36px 0 14px; flex-wrap: wrap; }
+.section-header h2 { margin: 4px 0 0; font-size: 23px; }
+.section-header h2.section { margin: 0; font-size: 28px; letter-spacing: -.02em; }
+.section-header p { color: var(--muted); margin: 0; font-size: 13px; }
+.section-header .scope { font-size: 14px; }
+.scroll, .scroll-x { overflow-x: auto; }
+.empty-state { color: var(--muted); padding: 24px; text-align: center; }
+.error { color: var(--danger); }
+footer.site { width: 100%; max-width: 1500px; margin: 0 auto; padding: 18px 40px 40px; display: flex; justify-content: space-between;
+  gap: 16px; color: var(--muted); font-size: 13px; }
+footer.site > div { border-top: 1px solid var(--border); padding-top: 18px; flex: 1; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+footer.site a { color: var(--text); font-weight: 700; }
+
+/* Grade squares: one palette in both modes (the record), on light paper or the dark slate */
+.cell, .tile, .stamp { color: #fff; text-decoration: none; font: 800 13px var(--mono); }
+.cell { display: grid; place-items: center; width: 40px; height: 38px; }
+.cell.empty, .tile.empty { background: var(--empty); }
+.cell.night, .tile.night { position: relative; }
+.cell.night::after, .tile.night::after, .key .night-dot { content: ""; position: absolute; top: 5px; right: 5px; width: 7px; height: 7px;
+  border-radius: 50%; background: #111; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7); }
+.cell:hover, .tile:hover { outline: 3px solid #1d2923; outline-offset: -3px; }
+.stamp { width: 58px; height: 58px; display: grid; place-items: center; font-size: 26px; flex: none; }
+
+/* The board: a framed paper record (--board-*: paper in light mode, a dark slate in dark) */
+.board-frame { background: var(--board-frame); border: 1px solid var(--board-frame-edge); padding: 10px; box-shadow: 0 4px 0 var(--board-shadow); margin-bottom: 20px; }
+.board-paper { background: var(--board-paper); color: var(--board-ink); }
+.board-paper .tile:hover { outline-color: var(--board-ink); }
+.board-heading { display: flex; justify-content: space-between; gap: 24px; align-items: center; padding: 20px 24px;
+  border: 1px solid var(--board-rule); border-bottom: 0; }
+.board-heading h2 { margin: 0; font-size: 25px; line-height: 1.15; letter-spacing: .025em; text-transform: uppercase; }
+.board-strip { display: flex; justify-content: space-between; gap: 15px; background: var(--board-strip); border: 1px solid var(--board-rule);
+  padding: 9px 24px; color: var(--board-strip-ink); font: 700 11px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.board-scroll { overflow-x: auto; border: 1px solid var(--board-rule); border-top: 0; }
+table.board { border-collapse: separate; border-spacing: 0; width: 100%; table-layout: fixed; }  /* each cell its own borders: they stay with the pinned ones */
+table.board th, table.board td { border-right: 1px solid var(--board-grid); border-bottom: 1px solid var(--board-grid); }
+table.board th { background: var(--board-th); color: var(--board-th-ink); font: 700 11px/1.3 var(--mono); letter-spacing: .07em;
+  padding: 12px 6px; text-transform: uppercase; }
+table.board th.pilot { width: 170px; text-align: left; padding-left: 18px; }
+/* Pilot, Passes, Avg, and Traps stay put; only the passes scroll (BOARD_FIXED: 170 + 3 x 68 px) */
+table.board :is(th, td):nth-child(-n+4) { position: sticky; z-index: 1; }
+table.board :is(th, td):nth-child(1) { left: 0; }
+table.board :is(th, td):nth-child(2) { left: 170px; }
+table.board :is(th, td):nth-child(3) { left: 238px; }
+table.board :is(th, td):nth-child(4) { left: 306px; box-shadow: inset -1px 0 var(--board-grid); }
+table.board td:nth-child(-n+4) { background: var(--board-paper); }
+table.board th.num { width: 68px; }
+table.board td { padding: 0; text-align: center; }
+table.board td.pilot { text-align: left; padding: 14px 18px; overflow-wrap: anywhere; }
+table.board td.pilot a { font-size: 18px; color: var(--board-name); font-weight: 800; text-underline-offset: 4px; }
+table.board td.pilot .side { display: block; color: var(--board-side); font: 12px var(--mono); margin-top: 3px; }
+table.board td.num { font: 700 16px var(--mono); color: var(--board-ink); }
+table.board .tile.night::after { top: 50%; left: 50%; right: auto; transform: translate(-50%, -50%); }
+table.board .tile { display: grid; place-items: center; min-height: 50px; margin: 4px 3px; font-size: 12px; }
+.board-paper .tile.empty { background: var(--board-empty); }
+.board-hint { display: none; color: var(--muted); font-size: 13px; margin: -8px 0 16px; }
+.board-note { padding: 13px 24px; display: flex; justify-content: space-between; gap: 20px; font-size: 13px; color: var(--board-note); flex-wrap: wrap; }
+.board-note strong { color: var(--board-note-strong); }
+.key { display: flex; flex-wrap: wrap; gap: 10px 20px; padding: 4px 0 0; color: var(--muted); font-size: 13px; }
+.key strong { color: var(--text); }
+.key .swatch { display: inline-block; width: 11px; height: 11px; margin-right: 5px; vertical-align: -1px; }
+.key .night-dot { position: relative; display: inline-block; top: 0; right: 0; margin-right: 6px; vertical-align: 0; }
+
+/* Filters */
+form.filters { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; background: var(--surface2); padding: 16px;
+  border: 1px solid var(--border); margin: 0 0 16px; }
+form.filters label { display: grid; gap: 6px; min-width: 135px; flex: 1; font: 700 11px var(--mono); letter-spacing: .08em;
+  text-transform: uppercase; color: var(--muted); }
+form.filters select, form.filters input:not([type=checkbox]) { width: 100%; min-height: 44px; padding: 9px 10px;
+  border: 1px solid var(--border); background: var(--paper-button); color: var(--paper-button-text);
+  font: 15px var(--font, system-ui), sans-serif; letter-spacing: 0; text-transform: none; }
+form.filters label.check { display: flex; align-items: center; gap: 7px; flex: 0 1 auto; padding: 10px 0;
+  font: 13px var(--font, system-ui), sans-serif; letter-spacing: 0; text-transform: none; }
+form.filters label.check input { width: 17px; height: 17px; accent-color: #407b59; }
+form.filters button[type=submit] { min-height: 44px; padding: 10px 18px; font-weight: 750; cursor: pointer; }
+form.filters .field { display: grid; gap: 6px; min-width: 135px; flex: 1; font: 700 11px var(--mono);
+  letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+/* The pilot picker: a searchable list of names, any number chosen */
+.pick { position: relative; }
+.pick summary { list-style: none; min-height: 44px; padding: 11px 30px 9px 10px; border: 1px solid var(--border);
+  background: var(--paper-button); color: var(--paper-button-text); font: 15px var(--font, system-ui), sans-serif;
+  letter-spacing: 0; text-transform: none; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pick summary::-webkit-details-marker { display: none; }
+.pick summary::after { content: "▾"; position: absolute; right: 11px; top: 12px; }
+.pick[open] summary::after { content: "▴"; }
+.pick .drop { position: absolute; z-index: 5; left: 0; right: 0; min-width: 220px; margin-top: 4px; padding: 8px;
+  background: var(--card); border: 1px solid var(--border); box-shadow: 0 8px 24px rgb(0 0 0 / .25); }
+.pick .drop input[type=search] { margin-bottom: 6px; }
+.pick .names { max-height: 240px; overflow-y: auto; }
+form.filters .pick .names label { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 4px;
+  font: 14px var(--font, system-ui), sans-serif; letter-spacing: 0; text-transform: none; color: var(--text); cursor: pointer; }
+.pick .names label:hover { background: var(--surface2); }
+.pick .names input { width: 16px; height: 16px; accent-color: #407b59; }
+.pick .none { margin: 6px 4px; color: var(--muted); font: 13px var(--font, system-ui), sans-serif; text-transform: none; letter-spacing: 0; }
+.pick .clear { margin-top: 6px; background: none; border: 0; color: var(--text); text-decoration: underline;
+  font: 13px var(--font, system-ui), sans-serif; text-transform: none; letter-spacing: 0; cursor: pointer; padding: 4px; }
+form.filters.compact { padding: 12px; width: fit-content; max-width: 100%; flex-wrap: nowrap; }
+form.filters.compact > .field, form.filters.compact > label { flex: 0 0 auto; min-width: 0; }
+form.filters.compact select { width: auto; }
+form.filters .stepper input { width: 4.5em; }
+form.filters .stepper { display: flex; }
+form.filters .field:has(> .stepper) { flex: 0 0 auto; min-width: 0; }  /* as wide as its − number +, no wider */
+form.filters .stepper input { text-align: center; -moz-appearance: textfield; appearance: textfield; }
+form.filters .stepper input::-webkit-inner-spin-button, form.filters .stepper input::-webkit-outer-spin-button {
+  -webkit-appearance: none; margin: 0; }
+form.filters .stepper button { min-width: 44px; min-height: 44px; border: 1px solid var(--border);
+  background: var(--paper-button); color: var(--paper-button-text); font: 700 18px var(--mono); cursor: pointer; }
+form.filters .stepper button:first-child { border-right: 0; }
+form.filters .stepper button:last-child { border-left: 0; }
+form.filters.compact label { flex: 0 1 240px; }
+.panel > .micro + form.upload { margin-top: 12px; }
+
+/* Board extras: the latest pass, and where to look next */
+.latest { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+.latest .panel + .panel { margin-top: 0; }
+.brief { display: flex; align-items: center; gap: 16px; margin-top: 14px; }
+.brief h3 { margin: 0; }
+.brief p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+
+/* The pilot page */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.stats > div { padding: 18px 22px; border-right: 1px solid var(--border); }
+.stats > div:first-child { padding-left: 0; }
+.stats > div:last-child { border-right: 0; }
+.stats strong { display: block; font: 700 24px var(--mono); letter-spacing: -.04em; margin: 8px 0 3px; }
+.stats small { color: var(--muted); font-size: 13px; }
+.insight-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; }
+.insight-grid .panel + .panel { margin-top: 0; }
+.fault { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding: 14px 0; }
+.fault:first-of-type { margin-top: 12px; }
+.fault strong { font-size: 15px; }
+.fault small { display: block; color: var(--muted); font-size: 13px; margin-top: 3px; }
+.fault b { font: 700 16px var(--mono); color: var(--accent); white-space: nowrap; }
+.fault.none { color: var(--muted); font-size: 14px; }
+.small-grades { display: flex; gap: 5px; flex-wrap: wrap; margin: 17px 0; }
+.small-grades .cell { width: 40px; height: 42px; font-size: 11px; }
+nav.airframes { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin: 0 0 16px; }
+nav.airframes a { padding: 8px 14px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; font-weight: 700; }
+nav.airframes a:hover { color: var(--text); }
+nav.airframes a.current { color: var(--text); border-bottom-color: #d1bd78; }
+nav.airframes .n { font-weight: 400; font-size: 12px; color: var(--muted); }
+ul.themes { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+ul.themes li { display: flex; gap: 10px; align-items: baseline; }
+.kind { font: 700 11px var(--mono); text-transform: uppercase; color: var(--muted); min-width: 64px; }
+.bar { flex: none; width: 60px; height: 6px; background: var(--empty); overflow: hidden; align-self: center; }
+.bar span { display: block; height: 100%; background: var(--muted); }
+.recent { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
+
+/* The pass page */
+.sheet-head { background: var(--navy); color: #edf3eb; display: grid; grid-template-columns: 1fr auto; gap: 24px;
+  align-items: center; padding: 24px 28px; border-top: 4px solid #bdb694; }
+.sheet-head h2 { margin: 7px 0; font-size: 27px; letter-spacing: -.04em; }
+.sheet-head p, .sheet-head .micro { margin: 0; color: #c5d5c8; }
+.sheet-card { background: var(--card); border: 1px solid var(--border); border-top: 0; padding: 24px; }
+.sheet-caption { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 14px; flex-wrap: wrap; }
+.sheet-caption h2 { font-size: 21px; margin: 4px 0; }
+.detail-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; margin-top: 16px; }
+.detail-grid .panel + .panel { margin-top: 0; }
+.detail-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin: 16px 0 0; }
+.detail-list dt { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 750; }
+.detail-list dd { margin: 5px 0 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.detail-list div.wide { grid-column: 1 / -1; }
+.quality { background: var(--surface2); }
+.detail-grid.single { grid-template-columns: 1fr; }
+.caption-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.badges { display: flex; gap: 6px; }
+.badge { color: #fff; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; cursor: help; white-space: nowrap; }
+.pop-host { position: relative; }
+.pop-host .pop { display: none; position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: max-content;
+  max-width: min(720px, calc(100vw - 32px)); overflow-x: auto; background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); padding: 14px 16px; box-shadow: 0 8px 24px rgba(0, 0, 0, .25); cursor: auto;
+  font-weight: 400; white-space: normal; text-align: left; }
+.pop-host:hover .pop, .pop-host:focus .pop, .pop-host:focus-within .pop { display: block; }
+.pop-host .pop.text { width: max-content; max-width: min(320px, calc(100vw - 32px)); font-size: 13px; line-height: 1.45; }
+.pop-host .pop.left { left: 0; right: auto; }
+.stamp.pop-host { cursor: help; }
+.stamp .pop { font: 13px/1.45 var(--font, system-ui), sans-serif; }
+.pop-host .pop::before { content: ""; position: absolute; left: 0; right: 0; top: -10px; height: 10px; }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 16px; }
 dl.facts dt { color: var(--muted); }
 dl.facts dd { margin: 0; }
 .card svg { display: block; width: 100%; height: auto; }
-.empty-state { color: var(--muted); padding: 24px; text-align: center; }
-form.upload { display: grid; gap: 12px; max-width: 560px; }
-form.upload label { display: grid; gap: 4px; font-weight: 600; }
-form.upload .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
-form.upload input, form.upload button { font: inherit; padding: 6px 8px; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--card); color: var(--text); }
-form.upload button { justify-self: start; cursor: pointer; font-weight: 600; }
-progress { width: 100%; }
-table.results { border-collapse: collapse; width: 100%; }
-table.results th, table.results td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-table.results th { color: var(--muted); font-size: 12px; }
-.error { color: #cf222e; }
-ul.themes { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-ul.themes li { display: flex; gap: 10px; align-items: baseline; }
-.kind { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--muted); min-width: 64px; }
-.bar { flex: none; width: 60px; height: 6px; border-radius: 3px; background: var(--empty); overflow: hidden; align-self: center; }
-.bar span { display: block; height: 100%; background: var(--muted); }
-.recent { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
-h2 { font-size: 16px; margin: 20px 0 8px; }
-h2.airframe { margin: 4px 0 6px; }
-.panel h2.airframe ~ h2.airframe { margin-top: 18px; }
-h1 .modex { color: var(--muted); font-weight: 600; margin-left: 6px; }
+.accuracy { width: 100%; border-collapse: collapse; margin: 12px 0 0; font-size: 13px; }
+.accuracy th { text-align: left; font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 4px 10px 6px 0; }
+.accuracy td { vertical-align: top; padding: 2px 10px 6px 0; }
+.accuracy .split { border-left: 2px solid var(--border); padding-left: 10px; }
+.accuracy .note { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
+.accuracy .yes { color: var(--good); font-weight: 700; } .accuracy .no { color: var(--danger); font-weight: 700; }
+.level { display: inline-block; white-space: nowrap; padding: 1px 9px; color: #fff; font: 700 12px var(--mono); }
+.level-Full { background: #397a51; } .level-High { background: #326587; } .level-Medium { background: #b08a2e; }
+.level-Low { background: #a4473d; } .level-None { background: #596c6e; } .level-na { background: var(--empty); color: var(--muted); }
 #tc-pop { position: fixed; z-index: 10; width: min(640px, 92vw); pointer-events: none; background: var(--card);
-  border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); }
+  border: 1px solid var(--border); padding: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); }
 #tc-pop svg { display: block; width: 100%; height: auto; }
 #tc-pop .loading { color: var(--muted); padding: 24px; text-align: center; }
 .zoomable { position: relative; cursor: crosshair; user-select: none; }
-.scroll-x { overflow-x: auto; }
-.accuracy { width: 100%; border-collapse: collapse; margin: 4px 0 18px; font-size: 13px; }
-.accuracy th { text-align: left; font-weight: 700; color: var(--muted); padding: 4px 10px 6px 0; }
-.accuracy td { vertical-align: top; padding: 2px 10px 6px 0; }
-.accuracy .split { border-left: 2px solid var(--border, #8c959f); padding-left: 10px; }
-.accuracy .note { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
-.accuracy .yes { color: #1a7f37; font-weight: 700; } .accuracy .no { color: #cf222e; font-weight: 700; }
-.level { display: inline-block; border-radius: 10px; padding: 1px 9px; color: #fff; font-size: 12px; font-weight: 700; }
-.level-Full { background: #1a7f37; } .level-High { background: #0969da; } .level-Medium { background: #bf8700; }
-.level-Low { background: #cf4d1a; } .level-None { background: #8c959f; } .level-na { background: #d0d7de; color: #57606a; }
 .zoomable.loading svg { opacity: 0.5; }
-.zoom-sel { position: absolute; top: 0; bottom: 0; background: rgba(9, 105, 218, 0.12);
-  border-left: 1px solid #0969da; border-right: 1px solid #0969da; pointer-events: none; }
-nav.top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
-  font-size: 13px; color: var(--muted); margin: -8px 0 16px; }
-nav.top a { color: var(--muted); text-decoration: none; } nav.top a:hover { color: var(--text); text-decoration: underline; }
-nav.top .me { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-nav.top strong a { color: var(--text); }
-nav.top form { display: inline; margin: 0; }
-nav.top button { font: inherit; background: none; border: none; padding: 0; color: var(--muted); cursor: pointer; }
-nav.top button:hover { color: var(--text); text-decoration: underline; }
-nav.airframes { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin: 8px 0 12px; }
-nav.airframes a { padding: 6px 12px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent;
-  margin-bottom: -1px; font-weight: 600; }
-nav.airframes a:hover { color: var(--text); }
-nav.airframes a.current { color: var(--text); border-bottom-color: var(--text); }
-nav.airframes .n { font-weight: 400; font-size: 12px; color: var(--muted); }
+.zoom-sel { position: absolute; top: 0; bottom: 0; background: rgba(36, 91, 73, 0.14);
+  border-left: 1px solid var(--accent); border-right: 1px solid var(--accent); pointer-events: none; }
+.zoom-reset { font-size: 12px; font-weight: 600; margin-left: 8px; padding: 4px 10px; border: 1px solid var(--border);
+  background: var(--paper-button); color: var(--paper-button-text); cursor: pointer; vertical-align: 2px; }
+
+/* Forms: uploads, sign in, joining, settings */
+.upload-grid { display: grid; grid-template-columns: 1.2fr .8fr; gap: 16px; align-items: start; }
+.upload-grid .panel + .panel { margin-top: 0; }
+form.upload { display: grid; gap: 14px; max-width: 640px; }
+form.upload label { display: grid; gap: 6px; font-weight: 700; font-size: 14px; }
+form.upload .hint { font-weight: 400; color: var(--muted); font-size: 13px; }
+form.upload input:not([type=checkbox]):not([type=file]), form.upload select, form.upload textarea {
+  min-height: 44px; padding: 9px 10px; border: 1px solid var(--border); background: var(--paper-button); color: var(--paper-button-text); }
+form.upload input[type=file] { padding: 18px; border: 1px dashed var(--border); background: var(--surface2); color: var(--text); }
+form.upload button[type=submit] { justify-self: start; min-height: 44px; padding: 10px 18px; cursor: pointer; font-weight: 750; }
+.upload-panel { max-width: 760px; }
+.upload-panel .actions { display: flex; gap: 9px; flex-wrap: wrap; }
+progress { width: 100%; accent-color: var(--accent); }
+table.results { border-collapse: collapse; width: 100%; }
+table.results th, table.results td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+table.results th { color: var(--muted); font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.token-once { border: 1px solid var(--border); background: var(--surface2); padding: 8px 12px; margin: 8px 0; }
+.token-once code { word-break: break-all; font-size: 13px; }
+.notice { border: 1px solid #b08a2e; background: var(--surface2); padding: 10px 14px; margin: 0 0 16px; }
+.notice .actions { margin-top: 6px; }
+dialog.modal { max-width: min(640px, calc(100vw - 32px)); background: var(--card); color: var(--text);
+  border: 1px solid var(--border); padding: 14px 18px; }
+dialog.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog.modal h3 { margin: 8px 0 4px; }
+button.link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; }
+form.inline { display: flex; gap: 6px; align-items: center; margin: 0; }
+form.inline input { width: 9em; }
+.admin pre { font-size: 12px; overflow-x: auto; border: 1px solid var(--border); padding: 8px; background: var(--surface2); }
+.admin ul { margin: 4px 0 8px; padding-left: 20px; }
 .admin .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .admin .actions form { display: flex; gap: 6px; margin: 0; }
-.admin button, .admin input, .admin textarea, .admin select { font: inherit; font-size: 13px; padding: 3px 8px;
-  border-radius: 6px;
-  border: 1px solid var(--border); background: var(--card); color: var(--text); }
-.admin button { cursor: pointer; } .admin button.danger { color: #cf222e; }
+.admin button, .admin input, .admin textarea, .admin select { font-size: 13px; padding: 5px 9px;
+  border: 1px solid var(--border); background: var(--paper-button); color: var(--paper-button-text); }
+.admin button { cursor: pointer; } .admin button.danger, button.danger { color: var(--danger); }
 .admin input.label { width: 8em; }
-.admin textarea { width: 100%; min-height: 8em; font-family: ui-monospace, monospace; box-sizing: border-box; }
+.admin textarea { width: 100%; min-height: 8em; font-family: var(--mono); }
+table[data-sortable] th button { all: unset; cursor: pointer; font: inherit; }
+table[data-sortable] th button:hover { text-decoration: underline; }
+table[data-sortable] th button:focus-visible { outline: 2px solid var(--text); }
+table[data-sortable] th[aria-sort=ascending] button::after { content: " ▲"; font-size: .8em; }
+table[data-sortable] th[aria-sort=descending] button::after { content: " ▼"; font-size: .8em; }
+.help-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--border);
+  border-radius: 50%; color: var(--muted); font: 700 12px/1 var(--font, system-ui), sans-serif; cursor: help; }
+h3 .help-icon { margin-left: 8px; vertical-align: 2px; letter-spacing: 0; }
+h2 .help-icon { margin-left: 10px; vertical-align: 3px; letter-spacing: 0; }
+label .help-icon { margin-left: 8px; vertical-align: 1px; }
+.pop-host .pop { letter-spacing: normal; text-transform: none; }
+.help-icon:hover, .help-icon:focus { color: var(--text); border-color: var(--text); }
 .admin .alias { display: inline-flex; gap: 4px; align-items: center; margin: 0 8px 2px 0; }
 .admin .alias button { padding: 0 6px; font-size: 12px; }
-.settings label.setting { display: grid; grid-template-columns: minmax(10em, 16em) minmax(0, 1fr); gap: 2px 12px;
+.admin .tag { font: 700 11px var(--mono); padding: 1px 7px; background: var(--accent); color: var(--card); }
+.settings .setting { display: grid; grid-template-columns: minmax(10em, 16em) minmax(0, 1fr); gap: 2px 12px;
   align-items: center; margin: 8px 0; }
-.settings label.setting input:not([type=checkbox]), .settings label.setting select { max-width: 22em; width: 100%;
-  box-sizing: border-box; }
-.settings label.setting input[type=checkbox] { justify-self: start; }
-.settings label.setting .hint { grid-column: 2; color: var(--muted); font-size: 12px; }
-.settings h2 { margin: 18px 0 4px; font-size: 16px; } .settings h2:first-child { margin-top: 0; }
-.settings .warn { color: #9a6700; font-size: 13px; }
-.settings fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; padding: 6px 10px; }
+.settings .setting input:not([type=checkbox]), .settings .setting select { max-width: 22em; width: 100%; }
+.settings .setting input[type=checkbox] { justify-self: start; }
+.settings .setting .hint { grid-column: 2; color: var(--muted); font-size: 12px; }
+.settings .setting.unsaved > .name::after { content: " *"; color: var(--warn); font-weight: 700; }
+.settings h2 { margin: 18px 0 4px; font-size: 18px; } .settings h2:first-child { margin-top: 0; }
+.settings .warn { color: var(--warn); font-size: 13px; }
+.settings fieldset { border: 1px solid var(--border); margin: 8px 0; padding: 6px 10px; }
 .settings fieldset label { display: inline-flex; gap: 4px; align-items: center; margin: 2px 14px 2px 0; }
 .settings fieldset .note { color: var(--muted); font-size: 12px; }
 .settings table input { width: 7em; }
 .settings table td.note { color: var(--muted); font-size: 12px; }
 .settings .carriers input.unit { width: 14em; max-width: 38vw; }
 .settings td.default { white-space: nowrap; }
-@media (max-width: 600px) { .settings label.setting { grid-template-columns: minmax(0, 1fr); }
-  .settings label.setting .hint { grid-column: 1; } }
-.admin .tag { font-size: 11px; font-weight: 700; border-radius: 8px; padding: 1px 7px; background: #0969da; color: #fff; }
-.zoom-reset { font: inherit; font-size: 12px; font-weight: 400; margin-left: 8px; padding: 2px 8px; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; vertical-align: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+
+@media (max-width: 1000px) {
+  header.site .top { padding: 12px 24px; flex-wrap: wrap; gap: 8px; }
+  nav.nav { order: 3; width: 100%; }
+  main { padding: 27px 24px 60px; }
+  footer.site { padding: 18px 24px 40px; }
+  .latest, .insight-grid, .detail-grid, .upload-grid { grid-template-columns: 1fr; }
+  .stats > div { padding: 14px 12px; }
+}
+@media (max-width: 600px) {
+  main { padding: 24px 16px 50px; }
+  form.filters.compact { flex-wrap: wrap; }
+  header.site .top { padding: 12px 16px; }
+  footer.site { padding: 18px 16px 32px; }
+  .brand small { display: none; }
+  .page-header { align-items: start; flex-direction: column; }
+  .board-frame { padding: 6px; }
+  .board-heading { align-items: start; flex-direction: column; padding: 16px; gap: 9px; }
+  .board-strip, .board-note { padding: 9px 16px; flex-direction: column; gap: 4px; }
+  table.board th.pilot { width: 130px; padding-left: 10px; }
+  table.board td.pilot { padding: 10px; position: sticky; left: 0; z-index: 1; background: #eeeade; }
+  table.board th.pilot { position: sticky; left: 0; z-index: 1; }
+  table.board td.pilot a { font-size: 15px; }
+  .panel, .sheet-card { padding: 18px; }
+  .sheet-head { padding: 20px; }
+  .detail-list { grid-template-columns: 1fr; }
+  .settings .setting { grid-template-columns: minmax(0, 1fr); }
+.settings .setting .hint { grid-column: 1; }
+  footer.site > div { display: block; }
+  footer.site span { display: block; margin-top: 6px; }
+  .board-hint { display: block; }
+}
 """
 
-# Each grade's colour, overridable by its variable (cards.theme.GRADE_VARS) in the admins' custom CSS.
+# Each grade's colour, overridable by its variable (cards.theme.GRADE_VARS) in the admins' custom CSS: the light
+# shade in both modes (the board is paper on the wall), white text but on (OK)'s yellow.
 GRADE_CSS = "\n".join(
-    f'.g-{i} {{ background: var({GRADE_VARS[g]}, {light}); }}' for i, (g, (light, _)) in enumerate(GRADE_COLORS.items())
-) + "\n@media (prefers-color-scheme: dark) {\n" + "\n".join(
-    f'  .g-{i} {{ background: var({GRADE_VARS[g]}, {dark}); }}' for i, (g, (_, dark)) in enumerate(GRADE_COLORS.items())
-) + "\n}"
+    f'.g-{i} {{ background: var({GRADE_VARS[g]}, {light});{" color: #172c27;" if g == "(OK)" else ""} }}'
+    for i, (g, (light, _)) in enumerate(GRADE_COLORS.items()))
 GRADE_CLASS = {g: f"g-{i}" for i, g in enumerate(GRADE_COLORS)}
 
 # Who the request is signed in as (set per request by the app), for the bar at the top of every page.
@@ -171,41 +413,125 @@ CURRENT_PENDING: ContextVar[int] = ContextVar("current_pending", default=0)
 CURRENT_WAITING: ContextVar[bool] = ContextVar("current_waiting", default=False)
 # The admins' custom CSS (set per request by the app), added after the built-in styles on every page.
 CURRENT_CSS: ContextVar[str] = ContextVar("current_css", default="")
+# The admins' icon's version (set per request by the app), or None for the built-in "GB" mark.
+CURRENT_ICON: ContextVar[str | None] = ContextVar("current_icon", default=None)
 
 
-def _nav() -> str:
+# The header's Light/Dark toggle: the viewer's choice is kept in this browser (`burble-theme`); until they make one,
+# the page follows their system. THEME_HEAD runs before the page draws, so it never flashes the other mode.
+THEME_HEAD = ("<script>try{const t=localStorage.getItem('burble-theme');"
+              "if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>")
+THEME_SCRIPT = """
+(() => {
+  const button = document.getElementById('theme-toggle');
+  if (!button) return;
+  const root = document.documentElement;
+  const system = window.matchMedia('(prefers-color-scheme: dark)');
+  const dark = () => (root.dataset.theme || (system.matches ? 'dark' : 'light')) === 'dark';
+  const label = () => {
+    button.textContent = dark() ? '\u263c Light' : '\u25d0 Dark';
+    button.setAttribute('aria-label', dark() ? 'Switch to the light theme' : 'Switch to the dark theme');
+  };
+  button.addEventListener('click', () => {
+    const theme = dark() ? 'light' : 'dark';
+    root.dataset.theme = theme;
+    try { localStorage.setItem('burble-theme', theme); } catch (e) {}
+    label();
+  });
+  system.addEventListener('change', label);
+  label();
+})();
+"""
+
+
+def _nav(section: str | None = None) -> str:
+    """The header: the brand, the sections (`section` is the current one; "me" and "settings" are the signed-in
+    pilot's own page and settings, on the right), the theme toggle, and who's signed in."""
     me = CURRENT_PILOT.get()
+    links = [("board", "/", "Board"), ("upload", "/upload", "Upload")]  # Upload in the same place for everyone
+    if me and not CURRENT_WAITING.get():  # Live isn't open until an admin approves them
+        links.append(("live", "/live", "Live"))
+    if me and CURRENT_ADMIN.get():
+        n = CURRENT_PENDING.get()
+        links.append(("admin", "/admin", f"Admin{f' ({n})' if n else ''}"))
+    nav = "".join(f'<a href="{href}"{" aria-current=page" if key == section else ""}>{escape(label)}</a>'
+                  for key, href, label in links)
+    toggle = '<button type="button" class="theme-toggle" id="theme-toggle">\u25d0 Dark</button>'
     if me:
         quoted = quote(me, safe="")
-        live = "" if CURRENT_WAITING.get() else '<a href="/live">Live</a>'  # not until an admin approves them
-        right = (f'<span class="me">{live}Signed in as <strong><a href="/pilots/{quoted}">{escape(me)}</a></strong>'
-                 f'<a href="/pilots/{quoted}/settings">Settings</a>'
-                 + (f'<a href="/admin">Admin{f" ({n})" if (n := CURRENT_PENDING.get()) else ""}</a>'
-                    if CURRENT_ADMIN.get() else "") +
-                 '<form method="post" action="/signout"><button type="submit">Sign out</button></form></span>')
+        here = {key: " aria-current=page" if key == section else "" for key in ("me", "settings")}
+        right = (f'<a class="simple me" href="/pilots/{quoted}" title="Signed in as {escape(me)}"{here["me"]}>{escape(me)}</a>'
+                 f'<a class="simple" href="/pilots/{quoted}/settings"{here["settings"]}>Settings</a>'
+                 '<form method="post" action="/signout"><button type="submit" class="simple">Sign out</button></form>')
     else:
-        right = '<span class="me"><a href="/signin">Sign in</a><a href="/join">Join</a></span>'
-    return f'<nav class="top"><a href="/">Greenie Board</a>{right}</nav>'
+        right = '<a class="simple" href="/signin">Sign in</a><a class="button lime" href="/join">Join</a>'
+    icon = CURRENT_ICON.get()
+    mark = (f'<span class="brandmark custom"><img src="/icon?v={escape(icon)}" alt=""></span>' if icon
+            else '<span class="brandmark">GB</span>')
+    return ('<header class="site"><div class="top"><a class="brand" href="/">' + mark +
+            '<span><strong>GREENIE BOARD</strong><small>CARRIER LANDING RECORDS</small></span></a>'
+            f'<nav class="nav" aria-label="Sections">{nav}</nav><div class="header-right">{toggle}{right}</div></div></header>')
 
 
-def _page(title: str, body: str) -> str:
+def _pilot_section(name: str, own: str = "me", other: str | None = "board") -> str | None:
+    """Which header tab a pilot's page sits under: `own` (on the right) when it's the signed-in pilot's, else `other`."""
+    return own if name == CURRENT_PILOT.get() else other
+
+
+def _header(title: str, sub: str = "", actions: str = "", micro: str = "") -> str:
+    """A page's heading: the title (HTML; none where the header's tab says where you are), a small label under it
+    (`micro`), a line under that (HTML), and buttons on the right (`actions`, HTML)."""
+    under = f'<div class="micro quiet under">{micro}</div>' if micro else ""
+    return (f'<div class="page-header"><div>{f"<h1>{title}</h1>" if title else ""}{under}{f"<p>{sub}</p>" if sub else ""}</div>'
+            + (f'<div class="actions">{actions}</div>' if actions else "") + "</div>")
+
+
+def _page(title: str, body: str, section: str | None = None) -> str:
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f"<title>{escape(title)}</title><style>{STYLE}\n{GRADE_CSS}</style>"
+            f"<title>{escape(title)}</title>"
+            + (f'<link rel="icon" href="/icon?v={escape(icon)}">' if (icon := CURRENT_ICON.get()) else "")
+            + f"{THEME_HEAD}<style>{STYLE}\n{GRADE_CSS}</style>"
             + (f"<style>{safe_css(css)}</style>" if (css := CURRENT_CSS.get()) else "") + "</head>"
-            f"<body><main>{_nav()}{body}</main></body></html>")
+            f"<body>{_nav(section)}<main>{body}</main>"
+            '<footer class="site"><div><span>Powered by <a href="https://github.com/wrycu/dcs-burble">Burble</a></span>'
+            "<span>Times are UTC</span></div></footer>"
+            f"<script>{THEME_SCRIPT}{ONCE_SCRIPT}</script></body></html>")
+
+
+# A step's message (`?done=`, `?error=`, after a redirect) is shown once: taken out of the address, so reloading or
+# coming back to the page doesn't show it again.
+ONCE_SCRIPT = """
+(() => {
+  const url = new URL(location.href);
+  if (!url.searchParams.has('done') && !url.searchParams.has('error')) return;
+  url.searchParams.delete('done');
+  url.searchParams.delete('error');
+  history.replaceState(null, '', url.pathname + (url.search || '') + url.hash);
+})();
+"""
 
 
 def _when(dt: datetime | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC") if dt else "unknown time"
 
 
+BOARD_FIXED = 170 + 3 * 68  # px: the Pilot, Passes, Avg, and Traps columns
+BOARD_CELL = 41  # px: the smallest a pass's column gets (on a narrow screen, where the board scrolls anyway)
 
 
-def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: int, pilot: str | None,
-               source: str | None, columns: int, empty: bool = False, servers: str = "all",
-               aircraft: str | None = None, airframes: list[str] | None = None) -> str:
-    """A table per airframe (geometry.airframe: the F-14A and B are one), each pilot's landings in it.
+def _board_width(cols: int, fit: int) -> str:
+    """The board table's width: `fit` pass columns fill the board (as wide as it is), and each column past them
+    adds one more of the same size, scrolled to; never narrower than BOARD_CELL each."""
+    return (f"width:calc({BOARD_FIXED}px + (100% - {BOARD_FIXED}px) * {cols} / {fit});"
+            f"min-width:{BOARD_FIXED + cols * BOARD_CELL}px")
+
+
+def board_page(passes: list[Pass], pilots: list[str], days: int, chosen: list[str], columns: int,
+               empty: bool = False, servers: str = "all", aircraft: str | None = None,
+               airframes: list[str] | None = None) -> str:
+    """A framed board per airframe (geometry.airframe: the F-14A and B are one), each pilot's landings in it.
+    `chosen`: the pilots the board is filtered to (none: everyone).
     `empty`: also list pilots with no passes in the filter (e.g. joined, not flown here yet). `servers`: "ours"
     leaves out landings flown on other servers; `aircraft`: one airframe only (the passes are already
     filtered; these set the form). `airframes`: the choices for the Aircraft filter."""
@@ -219,15 +545,10 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
 
     filters = (
         '<form class="filters" method="get">'
-        '<label>Period <select name="days">'
-        + "".join(option(str(d), label, str(days)) for d, label in ((7, "7 days"), (30, "30 days"), (90, "90 days"),
-                                                                    (365, "1 year"), (0, "All time")))
-        + '</select></label><label>Pilot <select name="pilot">' + option("", "All", pilot)
-        + "".join(option(n, n, pilot) for n in pilots)
-        + '</select></label><label>Aircraft <select name="aircraft">' + option("", "All", aircraft)
+        + _stepper("days", days, "Days (0 for all)", 0, fewer="Fewer days", more="More days")
+        + _pilot_picker(pilots, chosen)
+        + '<label>Aircraft <select name="aircraft">' + option("", "All aircraft", aircraft)
         + "".join(option(n, n, aircraft) for n in (airframes or []))
-        + '</select></label><label>Source <select name="source">' + option("", "All", source)
-        + "".join(option(n, n, source) for n in sources)
         + '</select></label><label>Servers <select name="servers">'
         + option("ours", "This hub's servers", servers) + option("all", "All servers", servers)
         + '</select></label><label class="check"><input type="checkbox" name="empty" value="1"'
@@ -235,54 +556,159 @@ def board_page(passes: list[Pass], pilots: list[str], sources: list[str], days: 
         + '<button type="submit">Apply</button></form>'
     )
 
-    def no_passes_row(name: str) -> str:
+    def no_passes_row(name: str, cols: int) -> str:
         return (f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}">{escape(name)}</a></td>'
                 '<td class="num">0</td><td class="num">–</td><td class="num">–</td>'
-                + '<td><span class="cell empty"></span></td>' * columns + "</tr>")
+                + '<td><span class="tile empty"></span></td>' * cols + "</tr>")
 
-    def pilot_row(name: str, items: list[Pass]) -> str:
+    def pilot_row(name: str, items: list[Pass], cols: int) -> str:
         graded = [p for p in items if p.grade]
         traps = sum(p.outcome == "trap" for p in items)
         avg = sum(p.grade.points for p in graded) / len(graded) if graded else 0.0
-        shown = items[-columns:]
+        modex = items[-1].pilot.modex
         cells = []
-        for p in shown:
+        for p in items:  # every pass in the period (the board scrolls sideways)
             g = p.grade.grade if p.grade else "?"
             night = " · night" if p.night else ""
-            title = f"{grade_name(g)}: {p.grade.text if p.grade else ''}{night} · {_when(p.occurred_at)} · {p.mission or ''}"
-            cells.append(f'<td><a class="cell {GRADE_CLASS.get(g, "")}{" night" if p.night else ""}" href="/passes/{p.id}" '
-                         f'title="{escape(title)}">{escape(grade_short(g))}</a></td>')
-        cells += ['<td><span class="cell empty"></span></td>'] * (columns - len(shown))
+            # The date and time first (a line each: date and time, grade, mission).
+            title = "\n".join(x for x in (_when(p.occurred_at),
+                                          f"{grade_name(g)}: {p.grade.text if p.grade else ''}{night}", p.mission) if x)
+            cells.append(f'<td><a class="tile {GRADE_CLASS.get(g, "")}{" night" if p.night else ""}" href="/passes/{p.id}" '
+                         f'title="{escape(title)}" aria-label="{escape(grade_name(g))}, {escape(_when(p.occurred_at))}">'
+                         "</a></td>")  # the colour says the grade (the key is below); the letter is in the tooltip
+        cells += ['<td><span class="tile empty"></span></td>'] * (cols - len(items))
+        side = f'<span class="side">#{escape(modex)}</span>' if modex else ""
         return (f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}" title="Themes across recent passes">'
-                f'{escape(name)}</a></td><td class="num">{len(items)}</td>'
+                f'{escape(name)}</a>{side}</td><td class="num">{len(items)}</td>'
                 f'<td class="num">{avg:.2f}</td><td class="num">{100 * traps / len(items):.0f}%</td>'
                 + "".join(cells) + "</tr>")
 
-    def table(rows: list[str]) -> str:
-        return (f'<div class="scroll"><table class="board"><thead><tr><th>Pilot</th><th>Passes</th><th>Avg</th>'
-                f'<th>Traps</th><th colspan="{columns}">Passes (oldest → newest)</th></tr></thead>'
-                f'<tbody>{"".join(rows)}</tbody></table></div>')
+    def frame(title: str, rows: list[str], items: list[Pass], cols: int) -> str:
+        heads = "".join(f'<th scope="col" class="g">{n:02d}</th>' for n in range(1, cols + 1))
+        traps = sum(p.outcome == "trap" for p in items)
+        note = (f'<strong>{len(items)} pass{"es" if len(items) != 1 else ""}</strong> &nbsp;/&nbsp; '
+                f'{100 * traps / len(items):.0f}% traps' if items else "<strong>No passes</strong>")
+        return ('<div class="board-frame"><div class="board-paper"><div class="board-heading"><div>'
+                f'<h2 class="airframe">{escape(title)}</h2></div></div>'
+                f'<div class="board-strip"><span>{len(rows):02d} pilot{"s" if len(rows) != 1 else ""} shown</span></div>'
+                f'<div class="board-scroll" tabindex="0" role="region" aria-label="{escape(title)} board, scrolls sideways">'
+                f'<table class="board" style="{_board_width(cols, columns)}"><thead><tr>'
+                '<th scope="col" class="pilot">Pilot</th><th scope="col" class="num">Passes</th>'
+                f'<th scope="col" class="num">Avg</th><th scope="col" class="num">Traps</th>{heads}</tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table></div>'
+                f'<div class="board-note"><span>{note}</span><span>Click a pass to view its debrief</span></div>'
+                '</div></div><p class="board-hint">Swipe across the board to see the passes →</p>')
 
     # The busiest airframe first.
     order = sorted(sections, key=lambda a: (-sum(len(v) for v in sections[a].values()), a.lower()))
-    parts = [f'<h2 class="airframe">{escape(a)}</h2>'
-             + table([pilot_row(n, sections[a][n]) for n in sorted(sections[a], key=str.lower)]) for a in order]
+    def wide(a: str) -> int:  # at least `columns`, more for a pilot with more passes in the period
+        return max(columns, *(len(v) for v in sections[a].values()))
+
+    parts = [frame(a, [pilot_row(n, sections[a][n], wide(a)) for n in sorted(sections[a], key=str.lower)],
+                   [p for v in sections[a].values() for p in v], wide(a)) for a in order]
     if empty:
         flown = {n for by_pilot in sections.values() for n in by_pilot}
-        idle = sorted((n for n in pilots if n not in flown and (pilot is None or n == pilot)), key=str.lower)
+        idle = sorted((n for n in pilots if n not in flown and (not chosen or n in chosen)), key=str.lower)
         if idle:
-            parts.append('<h2 class="airframe">No passes yet</h2>' + table([no_passes_row(n) for n in idle]))
-    content = "".join(parts) if parts else '<p class="empty-state">No passes yet for this filter.</p>'
+            parts.append(frame("No passes yet", [no_passes_row(n, columns) for n in idle], [], columns))
+    content = "".join(parts) if parts else ('<div class="board-frame"><div class="board-paper">'
+                                            '<p class="empty-state">No passes yet for this filter.</p></div></div>')
 
-    legend = '<div class="legend">' + "".join(
-        f'<span><span class="swatch {GRADE_CLASS[g]}"></span>{escape(grade_short(g))} {grade_name(g)}'
-        f'{f" ({escape(g)})" if grade_short(g) != g else ""}</span>' for g in GRADE_COLORS
+    key = '<div class="key">' + "".join(
+        f'<span><span class="swatch {GRADE_CLASS[g]}"></span><strong>{escape(grade_short(g))}</strong> {grade_name(g)}</span>'
+        for g in GRADE_COLORS
     ) + '<span><span class="night-dot"></span>Night pass</span></div>'
-    period = f"last {days} days" if days else "all time"
-    body = (f"<h1>Greenie Board</h1><p class=\"sub\">{len(passes)} passes · {period} · "
-            '<a href="/upload">Upload a Tacview recording</a> · <a href="/join">Join this board</a></p>'
-            f'{filters}<div class="panel">{content}{legend}</div>')
-    return _page("Greenie Board", body)
+    body = (content + key
+            + '<div class="section-header"><div class="micro quiet scope">Board scope</div></div>'
+            + filters + _latest(passes, chosen[0] if len(chosen) == 1 else None))
+    return _page("Greenie Board", body, "board")
+
+
+def _pilot_picker(pilots: list[str], chosen: list[str]) -> str:
+    """The board's Pilots filter: a box naming who's chosen, opening onto a search and a checkbox per pilot (sent as
+    repeated `pilot=`). Without JavaScript it's the checkboxes alone."""
+    chosen = [n for n in pilots if n in chosen] + [n for n in chosen if n not in pilots]
+    label = ("All pilots" if not chosen else chosen[0] if len(chosen) == 1
+             else ", ".join(chosen) if len(chosen) <= 3 else f"{len(chosen)} pilots")
+    names = "".join(
+        f'<label data-name="{escape(n.lower())}"><input type="checkbox" name="pilot" value="{escape(n)}"'
+        f'{" checked" if n in chosen else ""}> {escape(n)}</label>' for n in chosen + [n for n in pilots if n not in chosen])
+    return ('<div class="field">Pilots<details class="pick" id="pilot-pick">'
+            f'<summary aria-label="Pilots: {escape(label)}">{escape(label)}</summary><div class="drop">'
+            '<input type="search" placeholder="Search pilots" aria-label="Search pilots" autocomplete="off" hidden>'
+            f'<div class="names">{names}</div><p class="none" hidden>No pilot by that name.</p>'
+            '<button type="button" class="clear" hidden>Clear (all pilots)</button></div></details></div>'
+            f"<script>{PICKER_SCRIPT}{STEPPER_SCRIPT}</script>")
+
+
+PICKER_SCRIPT = """
+(() => {
+  const pick = document.getElementById('pilot-pick');
+  if (!pick) return;
+  const search = pick.querySelector('input[type=search]'), none = pick.querySelector('.none');
+  const clear = pick.querySelector('.clear'), summary = pick.querySelector('summary');
+  const boxes = [...pick.querySelectorAll('.names input')];
+  search.hidden = false;
+  const update = () => {
+    const names = boxes.filter(b => b.checked).map(b => b.value);
+    const text = !names.length ? 'All pilots' : names.length <= 3 ? names.join(', ') : names.length + ' pilots';
+    summary.textContent = text;
+    summary.setAttribute('aria-label', 'Pilots: ' + text);
+    clear.hidden = !names.length;
+  };
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    let shown = 0;
+    boxes.forEach(b => { const hit = b.parentElement.dataset.name.includes(q); b.parentElement.hidden = !hit; shown += hit; });
+    none.hidden = shown > 0;
+  });
+  search.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();  // Enter ticks the only match rather than submitting the form
+    const shown = boxes.filter(b => !b.parentElement.hidden);
+    if (shown.length === 1) { shown[0].checked = !shown[0].checked; update(); }
+  });
+  boxes.forEach(b => b.addEventListener('change', update));
+  clear.addEventListener('click', () => { boxes.forEach(b => b.checked = false); update(); });
+  pick.addEventListener('toggle', () => { if (pick.open) search.focus(); });
+  document.addEventListener('click', e => { if (pick.open && !pick.contains(e.target)) pick.open = false; });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && pick.open) { pick.open = false; summary.focus(); } });
+  update();
+})();
+"""
+
+
+def _latest(passes: list[Pass], pilot: str | None) -> str:
+    """Under the board: the newest pass in it, and the pilot page to look at next (that pass's pilot, or the one
+    the board is filtered to)."""
+    if not passes:
+        return ""
+    p = max(passes, key=lambda p: p.occurred_at or p.created_at)
+    g = p.grade.grade if p.grade else "?"
+    name = pilot or p.pilot.name
+    quoted = quote(name, safe="")
+    return ('<div class="latest"><div class="panel">'
+            f'<div class="micro quiet">Latest pass &nbsp;/&nbsp; {escape(_when(p.occurred_at))}</div>'
+            f'<div class="brief"><a class="stamp {GRADE_CLASS.get(g, "")}" href="/passes/{p.id}" '
+            f'aria-label="{escape(grade_name(g))}">{escape(grade_short(g))}</a><div>'
+            f"<h3>{escape(p.pilot.name)} · {escape(grade_name(g))}</h3>"
+            f"<p>{escape(_outcome(p))} · {escape(airframe(p.aircraft_type))}</p></div></div>"
+            f'<p style="margin-top:15px"><a class="text-link" href="/passes/{p.id}">Open the pass and trap card →</a></p>'
+            '</div><div class="panel"><div class="micro quiet">Pilot review</div><h3>Where to look next</h3>'
+            "<p>The pilot page brings recent grades, the faults that keep showing up, and their traps overlaid "
+            f'together.</p><a class="text-link" href="/pilots/{quoted}">Open {escape(name)}’s record →</a></div></div>')
+
+
+def _outcome(p: Pass) -> str:
+    """The outcome in words, with the wire for a trap: "Trap · wire 3 (DCS)"."""
+    words = {"trap": "Trap", "bolter": "Bolter", "waveoff": "Wave-off", "crash": "Crash",
+             "incomplete": "Incomplete"}.get(p.outcome, p.outcome.capitalize())
+    if p.outcome != "trap":
+        return words
+    if p.wire is not None:
+        return f"{words} · {p.wire} wire"
+    estimate = ((p.grade.detail or {}) if p.grade else {}).get("wire_estimate")
+    return f"{words} · {estimate} wire (estimated)" if estimate is not None else f"{words} · wire not known"
 
 
 def card_title(p: Pass) -> str:
@@ -309,21 +735,40 @@ def _report(r: Pass, used: bool) -> str:
             + (" <strong>track used</strong>" if used else ""))
 
 
+ACCURACY_COLORS = {"Full": "#1a7f37", "High": "#0969da", "Medium": "#bf8700", "Low": "#cf4d1a", "None": "#8c959f"}
+ELSEWHERE_TIP = "Flown on a server that isn't tracked by this hub."
+
+
+def _accuracy_badges(a: Accuracy | None) -> str:
+    """The pass page's badges over the trap card: the overall accuracy, whose tooltip is the whole Source and
+    confidence table, and "another server" (flown elsewhere), with a tooltip saying what that means."""
+    if a is None:
+        return ""
+    level = a.overall.level
+    out = (f'<span class="badge pop-host" tabindex="0" style="background:{ACCURACY_COLORS.get(level, "#8c959f")}">'
+           f'{escape(level)} accuracy<span class="pop" role="tooltip"><strong>Source and confidence</strong>'
+           f"{_accuracy(a)}</span></span>")
+    if a.flown.level == "elsewhere":
+        out = ('<span class="badge pop-host" tabindex="0" style="background:#6e40c9">another server'
+               f'<span class="pop text" role="tooltip">{escape(ELSEWHERE_TIP)}</span></span>') + out
+    return f'<span class="badges">{out}</span>'
+
+
 def _accuracy(a: Accuracy) -> str:
     """The landing's row of the accuracy table (docs/accuracy-scores.png): which parts reported it, and the scores."""
-    def level(s) -> str:
+    def level(s, noted: bool = True) -> str:
         cls = "na" if s.level == "n/a" else s.level
-        note = f'<span class="note">{escape(s.note)}</span>' if s.note else ""
+        note = f'<span class="note">{escape(s.note)}</span>' if s.note and noted else ""
         return f'<span class="level level-{cls}">{escape(s.level)}</span>{note}'
 
     heads = [p.name for p in a.parts] + ["Overall", "Approach", "Wire", "Comms"]
     cells = [f'<span class="{"yes" if p.present else "no"}">{"✓" if p.present else "✗"}</span>'
              + (f'<span class="note">{escape(p.note)}</span>' if p.note else "") for p in a.parts]
-    cells += [level(s) for s in a.scores().values()]
+    cells += [level(s, name != "comms") for name, s in a.scores().items()]  # Comms: just the level
     split = len(a.parts)
     th = "".join(f'<th{" class=split" if i == split else ""}>{escape(h)}</th>' for i, h in enumerate(heads))
     td = "".join(f'<td{" class=split" if i == split else ""}>{c}</td>' for i, c in enumerate(cells))
-    return (f'<h2>Accuracy</h2><div class="scroll-x"><table class="accuracy"><tr>{th}</tr><tr>{td}</tr></table></div>')
+    return f'<div class="scroll-x"><table class="accuracy"><tr>{th}</tr><tr>{td}</tr></table></div>'
 
 
 def weather_text(weather: dict | None) -> str | None:
@@ -356,49 +801,69 @@ def weather_text(weather: dict | None) -> str | None:
     return ", ".join(parts)
 
 
+def _grade_stamp(g) -> str:
+    """The pass sheet's grade square: colour only, with what it means and its points in a themed popup."""
+    grade = g.grade if g else "?"
+    tip = (f"<strong>{escape(grade_short(grade))}: {escape(grade_name(grade))}</strong><br>{g.points:g} points"
+           if g else "<strong>Not graded</strong>")
+    label = f"{grade_name(grade)}, {g.points:g} points" if g else "Not graded"
+    return (f'<div class="stamp pop-host {GRADE_CLASS.get(grade, "")}" tabindex="0" role="img" aria-label="{escape(label)}">'
+            f'<span class="pop text" aria-hidden="true">{tip}</span></div>')
+
+
 def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: list[Pass] | None = None,
               track_source: str | None = None, accuracy: Accuracy | None = None, wind: str | None = None,
               weather: dict | None = None, radio: list[dict] | None = None) -> str:
     g = p.grade
-    facts = [
-        ("Pilot", p.pilot.name),
-        ("Side number", p.pilot.modex or "–"),
-        ("When", _when(p.occurred_at)),
-        ("Mission", p.mission or "–"),
-        ("Carrier", f"{p.carrier_unit or ''} ({p.carrier_type})"),
-        ("Aircraft", p.aircraft_type),
-        ("Livery", p.livery or "–"),
-        ("Outcome", p.outcome),
-        ("Grade", f"{grade_name(g.grade)}: {g.text} ({g.points:g} pts, grading v{g.version})" if g else "not graded"),
-        ("DCS LSO", p.dcs_grade or "–"),
-        ("Wire", _wire(p)),
+    facts = [("Wind", escape(wind.removeprefix("Wind ")))] if wind else []  # first, at the top
+    facts += [
+        ("Carrier", escape(f"{p.carrier_unit or ''} ({p.carrier_type})")),
+        ("Mission", escape(p.mission or "–")),
+        ("Side number", escape(p.pilot.modex or "–")),
+        ("Livery", escape(p.livery or "–")),
+        ("Wire", escape(_wire(p))),
     ]
-    if wind:
-        facts.append(("Wind", wind.removeprefix("Wind ")))
+    wide = []
     if (settings := weather_text(weather)) is not None:
-        facts.append(("Weather", settings))
+        wide.append(("Weather", escape(settings)))
     if accuracy is not None:
-        facts.append(("Flown on", accuracy.flown_label + (f" ({accuracy.flown.note})" if accuracy.flown.note else "")))
-    if relayed := (p.slice.sidecar or {}).get("calls_from"):
-        facts.append(("LSO calls", f"made on {relayed}'s server, relayed by the pilot hook"))
-    dl = "".join(f"<dt>{escape(k)}</dt><dd>{escape(v)}</dd>" for k, v in facts)
+        facts.append(("Flown on", escape(accuracy.flown_label + (f" ({accuracy.flown.note})" if accuracy.flown.note else ""))))
     if radio:
-        dl += f"<dt>Radio</dt><dd>{_radio(p, radio)}</dd>"
+        wide.append(("Radio", _radio(p, radio)))
     reports = reports or [p]
     used = track_source or p.source.name
     listed = "<br>".join(_report(r, len(reports) > 1 and r.source.name == used) for r in reports)
-    dl += f"<dt>{'Reports' if len(reports) > 1 else 'Source'}</dt><dd>{listed}</dd>"
+    facts.append(("Reports" if len(reports) > 1 else "Source", listed))
+    dl = ("".join(f"<div><dt>{k}</dt><dd>{v}</dd></div>" for k, v in facts)
+          + "".join(f'<div class="wide"><dt>{k}</dt><dd>{v}</dd></div>' for k, v in wide))
+    name = escape(p.pilot.name)
+    quoted = quote(p.pilot.name, safe="")
+    grade = g.grade if g else "?"
+    head = ('<div class="sheet-head"><div>'
+            f'<h2>{name} &nbsp;/&nbsp; Pass {p.id}{f" &nbsp;/&nbsp; grading v{g.version}" if g else ""}</h2>'
+            f"<p>{escape(_outcome(p))}{' · night' if p.night else ''}</p>"
+            f'</div>{_grade_stamp(g)}</div>')
     if card_svg:
-        card = (f'<p class="sub"><button id="card-zoom-reset" class="zoom-reset" hidden>Reset zoom</button></p>'
-                f'<div class="panel card zoomable" id="trap-card" data-src="/passes/{p.id}/card.svg?zoom=1" '
-                f'data-reset="card-zoom-reset">{card_svg}</div><script>{ZOOM_SCRIPT}</script>')
+        card = ('<div class="sheet-card"><div class="sheet-caption"><h2>Trap Sheet</h2>'
+                '<div class="caption-right"><button id="card-zoom-reset" class="zoom-reset" hidden>Reset zoom</button>'
+                f"{_accuracy_badges(accuracy)}</div></div>"
+                f'<div class="card zoomable" id="trap-card" data-src="/passes/{p.id}/card.svg?zoom=1" '
+                f'data-reset="card-zoom-reset">{card_svg}</div></div><script>{ZOOM_SCRIPT}</script>')
     else:
-        card = f'<p class="empty-state">{escape(error or "")}</p>'
-    replay = f' · <a href="/passes/{p.id}/replay">Replay in 3D</a>' if card_svg else ""
-    body = (f'<p class="sub"><a href="/">← Greenie board</a>{replay} · <a href="/passes/{p.id}/acmi">Download ACMI</a></p>'
-            f"<h1>{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}</h1>"
-            f'<dl class="facts">{dl}</dl>{_accuracy(accuracy) if accuracy else ""}{card}')
-    return _page(f"{p.pilot.name} {g.grade if g else ''}", body)
+        card = f'<div class="sheet-card"><p class="empty-state">{escape(error or "")}</p></div>'
+    # With a card, the accuracy table is the tooltip of its badge; without one, a panel beside the details.
+    quality = ('<div class="panel quality"><h3>Source and confidence</h3>'
+               f'{_accuracy(accuracy)}</div>' if accuracy and not card_svg else "")
+    actions = (f'<a class="button paper" href="/pilots/{quoted}">← {name}</a>'
+               f'<a class="button paper" href="/passes/{p.id}/acmi">Download ACMI</a>'
+               + (f'<a class="button dark" href="/passes/{p.id}/replay">▶ &nbsp;Replay in 3D</a>' if card_svg else ""))
+    sub = " · ".join(escape(x) for x in (_when(p.occurred_at), p.aircraft_type,
+                                         f"#{p.pilot.modex}" if p.pilot.modex else "") if x)
+    body = (_header("Debrief", sub, actions=actions)
+            + head + card
+            + f'<div class="detail-grid{"" if quality else " single"}"><div class="panel"><h3>Flight details</h3>'
+            f'<dl class="detail-list">{dl}</dl></div>{quality}</div>')
+    return _page(f"{p.pilot.name} {g.grade if g else ''}", body)  # no tab: a pass isn't the board
 
 
 def _radio(p: Pass, radio: list[dict]) -> str:
@@ -470,12 +935,13 @@ def replay_page(p: Pass, lineup_svg: str | None = None) -> str:
     """The 3D replay of a landing (static/replay.js draws it from /passes/{id}/replay.json), with the trap card's
     lineup plot (`lineup_svg`, cards.render_lineup) below it, which follows the jet."""
     g = p.grade
-    body = (f'<p class="sub"><a href="/passes/{p.id}">← The pass</a> · <a href="/">Greenie board</a></p>'
-            f"<h1>{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}"
-            f'{" · " + escape(g.text) if g and g.text else ""}</h1>'
-            f'<p class="sub">{escape(_when(p.occurred_at))} · {escape(p.aircraft_type)} · '
-            f'{escape(p.carrier_unit or p.carrier_type)}{" · wire " + escape(_wire(p)) if p.wire else ""}</p>'
-            f'<div class="replay" id="replay" data-src="/passes/{p.id}/replay.json">'
+    sub = (f"{escape(p.pilot.name)} · {escape(grade_name(g.grade) if g else '?')}"
+           f'{" · " + escape(g.text) if g and g.text else ""} · {escape(_when(p.occurred_at))} · '
+           f'{escape(p.aircraft_type)} · {escape(p.carrier_unit or p.carrier_type)}'
+           f'{" · wire " + escape(_wire(p)) if p.wire else ""}')
+    body = (_header("3D replay.", sub,
+                    actions=f'<a class="button paper" href="/passes/{p.id}">← Debrief</a>')
+            + f'<div class="replay" id="replay" data-src="/passes/{p.id}/replay.json">'
             f'<canvas aria-label="3D replay of the pass"></canvas>'
             + _scene_overlays("Loading the replay…") + '</div>'
             f'<div class="replay-bar"><button type="button" id="replay-play">Pause</button>'
@@ -585,11 +1051,12 @@ def live_index_page(agents) -> str:
                  f"<th>Carriers</th></tr></thead><tbody>{rows}</tbody></table></div>")
     else:
         table = '<p class="sub">This hub has no server agents, so there\'s nothing to watch live.</p>'
-    body = (f'<p class="sub"><a href="/">← Greenie board</a></p><h1>Live</h1>'
-            f'<p class="sub">Watch the carriers on this hub\'s servers as it happens, from the LSO\'s view. A server '
-            f"shows its carriers while its server agent is connected to a mission with one.</p>{table}"
+    body = (_header("", "Watch the carriers on this hub's servers as it happens, from the LSO's view. A server "
+                    "shows its carriers while its server agent is connected to a mission with one.")
+            + f'<div class="panel">{table}</div>'
+
             '<script>setTimeout(() => location.reload(), 15000);</script>')
-    return _page("Live", f"<style>{LIVE_STYLE}</style>{body}")
+    return _page("Live", f"<style>{LIVE_STYLE}</style>{body}", "live")
 
 
 def live_server_page(a) -> str:
@@ -599,18 +1066,19 @@ def live_server_page(a) -> str:
                 f"<tbody><tr><td>{_live_carriers(a)}</td></tr></tbody></table></div>")
     else:
         what = f'<p class="sub">{_live_status(a)}. This page refreshes itself; a carrier shows here once one is live.</p>'
-    body = (f'<p class="sub"><a href="/live">← Live</a> · <a href="/">Greenie board</a></p>'
-            f"<h1>{escape(a.agent)}</h1>{what}"
+    body = (_header(escape(a.agent))
+            + f'<div class="panel">{what}</div>'
+
             '<script>setTimeout(() => location.reload(), 15000);</script>')
-    return _page(f"Live: {a.agent}", f"<style>{LIVE_STYLE}</style>{body}")
+    return _page(f"Live: {a.agent}", f"<style>{LIVE_STYLE}</style>{body}", "live")
 
 
 def live_page(agent: str, unit: str, voice: bool = False) -> str:
     """One carrier's live view (static/live.js draws it from /live/{agent}/{unit}/events)."""
     src = _live_url(agent, unit) + "/events"
-    body = (f'<p class="sub"><a href="/live">← Live</a> · <a href="/">Greenie board</a></p>'
-            f'<h1>{escape(unit)}</h1><p class="sub">Live from <a href="{_live_url(agent)}">{escape(agent)}</a> · '
-            f'<span class="live-status" id="live-status">Connecting…</span></p>'
+    body = (_header(escape(unit), f'Live from <a href="{_live_url(agent)}">{escape(agent)}</a> · '
+                    f'<span class="live-status" id="live-status">Connecting…</span>')
+            + 
             f'<div class="replay" id="live" data-src="{escape(src)}" data-voice="{1 if voice else 0}">'
             f'<canvas aria-label="Live 3D view of the carrier"></canvas><div class="labels"></div>'
             + _scene_overlays("Waiting for the carrier…") + '</div>'
@@ -623,13 +1091,11 @@ def live_page(agent: str, unit: str, voice: bool = False) -> str:
             "one nearest the ship. About a second behind the server; the jets and ship are simple stand-in models.</p>"
             f'<script type="importmap">{_imports()}</script>'
             '<script type="module" src="/static/live.js"></script>')
-    return _page(f"Live: {unit}", f"<style>{REPLAY_STYLE}{LIVE_STYLE}</style>{body}")
+    return _page(f"Live: {unit}", f"<style>{REPLAY_STYLE}{LIVE_STYLE}</style>{body}", "live")
 
 
 UPLOAD_SCRIPT = """
 const form = document.getElementById('upload');
-const tokenInput = form.elements.token;
-try { tokenInput.value = localStorage.getItem('burble-token') || ''; } catch (e) {}
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   const status = document.getElementById('status');
@@ -637,11 +1103,8 @@ form.addEventListener('submit', (event) => {
   const data = new FormData();
   data.append('recording', form.elements.recording.files[0]);
   if (form.elements.debrief.files.length) data.append('debrief', form.elements.debrief.files[0]);
-  if (form.elements.password && form.elements.password.value) data.append('password', form.elements.password.value);
-  try { localStorage.setItem('burble-token', tokenInput.value); } catch (e) {}
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/v1/recordings');
-  if (tokenInput.value.trim()) xhr.setRequestHeader('Authorization', 'Bearer ' + tokenInput.value.trim());
   bar.hidden = false;
   xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.value = e.loaded / e.total; };
   xhr.onload = () => {
@@ -659,42 +1122,33 @@ form.addEventListener('submit', (event) => {
 
 
 def upload_page(token_required: bool) -> str:
-    me = CURRENT_PILOT.get()
+    """Upload a recording, signed in: your own passes in it. Signed out: a way to sign in. A hub that takes
+    recordings only with a source's token (`token_required`) says so: those come through the API."""
     if token_required:
-        token = ('<label>Upload token <input name="token" type="password" required autocomplete="off">'
-                 '<span class="hint">The token of a source on this service (kept in this browser).</span></label>')
-        intro = "Every carrier pass in it is graded and added to the board."
-    else:
-        if me:
-            password = (f'<p class="sub">Signed in as {escape(me)}: your passes are imported without your '
-                        "password.</p>")
-        else:
-            password = ('<label>Your pilot password (if you\'ve set one) <input name="password" type="password" '
-                        'autocomplete="current-password"><span class="hint">Needed only if you set a password for '
-                        'your pilot name; you can also give it after uploading, or <a href="/signin?next=/upload">'
-                        "sign in</a> first.</span></label>")
-        token = (password +
-                 '<label>Upload token (optional) <input name="token" type="password" autocomplete="off">'
-                 '<span class="hint">For a source on this service: imports every pilot\'s passes (kept in this '
-                 "browser). Without one, only your own passes are imported: those of the pilot flying on the "
-                 "PC that made the recording (a server's recording needs that server's token).</span></label>")
-        intro = "Your carrier passes in it are graded and added to the board."
+        body = (_header("Upload a recording", "This hub takes recordings from its servers only.")
+                + '<div class="panel upload-panel"><p>Its servers send their recordings with their own upload '
+                "token, through the API (<code>POST /api/v1/recordings</code>).</p></div>")
+        return _page("Upload a recording", body, "upload")
+    if not CURRENT_PILOT.get():
+        body = (_header("Upload a recording", "Sign in to upload your recordings.")
+                + '<div class="panel upload-panel"><h3>Sign in first</h3><p>Uploads are imported as your pilot, so '
+                'the board needs to know who you are.</p><p class="actions"><a class="button dark" '
+                'href="/signin?next=/upload">Sign in</a> <a class="button paper" href="/join">Join the board</a></p></div>')
+        return _page("Upload a recording", body, "upload")
     body = (
-        '<p class="sub"><a href="/">← Greenie board</a></p><h1>Upload a Tacview recording</h1>'
-        f'<p class="sub">{intro} They\'re merged with the passes already here (a server\'s and a pilot\'s '
-        "report of the same landing become one). From a multiplayer client's recording, which often has only "
-        "your own jet, your approaches are matched with the server's report of each landing.</p>"
-        f'<div class="panel"><form class="upload" id="upload">{token}'
+        _header("Upload a recording", "Carrier passes are automatically extracted and added")
+        + '<div class="panel upload-panel"><form class="upload" id="upload">'
         '<label>Tacview recording <input name="recording" type="file" accept=".acmi" required>'
-        '<span class="hint">A .zip.acmi or .txt.acmi file.</span></label>'
+        '<span class="hint">Required: a .zip.acmi or .txt.acmi file. Only your own passes in it are imported.'
+        '</span></label>'
         '<label>debrief.log (optional) <input name="debrief" type="file" accept=".log">'
         "<span class=\"hint\">DCS's Logs/debrief.log from the same session, for DCS's own grades and wires "
         "(DCS overwrites it at the next mission).</span></label>"
-        '<button type="submit">Upload</button><progress id="bar" hidden value="0"></progress>'
+        '<button type="submit">Upload recording ↗</button><progress id="bar" hidden value="0"></progress>'
         '<p id="status" class="error"></p></form></div>'
         f"<script>{UPLOAD_SCRIPT}</script>"
     )
-    return _page("Upload a recording", body)
+    return _page("Upload a recording", body, "upload")
 
 
 def upload_status_page(upload: Upload, key: str | None) -> str:
@@ -749,13 +1203,13 @@ def upload_status_page(upload: Upload, key: str | None) -> str:
                   f'<th>Result</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
     else:
         detail = f'<p class="empty-state">{escape(upload.message or "No carrier passes or approaches found in this recording.")}</p>'
-    body = (f'<p class="sub"><a href="/">← Greenie board</a> · <a href="/upload">Upload another</a></p>'
-            f"<h1>{escape(upload.filename)}</h1>"
-            f'<p class="sub">{upload.size / 1e6:.1f} MB · '
-            f'{escape(f"passes flown by {upload.pilot}" if upload.pilot else f"from {upload.source.name}")} · '
-            f'{escape(upload.status)}</p>'
-            f'<div class="panel">{detail}</div>')
-    return _page(f"Upload: {upload.filename}", body).replace("<head>", "<head>" + refresh, 1)
+    sub = (f'{upload.size / 1e6:.1f} MB · '
+           f'{escape(f"passes flown by {upload.pilot}" if upload.pilot else f"from {upload.source.name}")} · '
+           f'{escape(upload.status)}')
+    body = (_header(escape(upload.filename), sub,
+                    actions='<a class="button paper" href="/upload">Upload another</a>')
+            + f'<div class="panel">{detail}</div>')
+    return _page(f"Upload: {upload.filename}", body, "upload").replace("<head>", "<head>" + refresh, 1)
 
 
 # Hovering a pass's grade square previews its trap card next to the pointer (not the overlay's lines).
@@ -868,6 +1322,38 @@ ZOOM_SCRIPT = """
 })();
 """
 
+STEPPER_SCRIPT = """
+(() => {
+  // A number with − and + (pages._stepper): kept in range (min, and max if it has one). With data-submit, each
+  // change loads it (− and +, or typing and leaving the box); otherwise the form's own button does.
+  document.querySelectorAll('.stepper').forEach((box) => {
+    const input = box.querySelector('input');
+    const go = () => {
+      const lo = +input.min, hi = input.max === '' ? Infinity : +input.max, n = Math.round(+input.value);
+      input.value = Math.min(hi, Math.max(lo, isNaN(n) ? lo : n));
+      if (box.dataset.submit !== undefined) input.form.submit();
+    };
+    input.addEventListener('change', go);
+    box.querySelectorAll('button[data-step]').forEach((b) => b.addEventListener('click', () => {
+      input.value = +input.value + +b.dataset.step;
+      go();
+    }));
+  });
+})();
+"""
+
+def _stepper(name: str, value: int, label: str, low: int, high: int | None = None, submit: bool = False,
+             fewer: str = "Fewer", more: str = "More") -> str:
+    """A labelled number with − and + buttons (STEPPER_SCRIPT, which the page includes); `submit`: each change
+    loads the page."""
+    key = f"stepper-{name}"
+    top = f' max="{high}"' if high is not None else ""
+    return (f'<div class="field"><span id="{key}">{label}</span><div class="stepper"{" data-submit" if submit else ""}>'
+            f'<button type="button" data-step="-1" aria-label="{escape(fewer)}">−</button>'
+            f'<input name="{name}" type="number" min="{low}"{top} step="1" value="{value}" aria-labelledby="{key}">'
+            f'<button type="button" data-step="1" aria-label="{escape(more)}">+</button></div></div>')
+
+
 KIND_LABELS = {"fault": "Fault", "bias": "Leaning", "speed": "Speed", "outcome": "Outcome", "wires": "Wires",
                "trend": "Trend"}
 
@@ -878,16 +1364,11 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
     result, rows = summary.trends, summary.rows
     first = summary.first_seen.strftime("%Y-%m-%d") if summary.first_seen else "?"
     last = summary.last_seen.strftime("%Y-%m-%d") if summary.last_seen else "?"
-    heading = (f'<h1>{escape(name)}{f" <span class=\"modex\">#{escape(summary.modex)}</span>" if summary.modex else ""}'
-               "</h1>")
-    settings = f'<a href="/pilots/{quote(name, safe="")}/settings">Settings</a>'
-    seen = (f'<p class="sub">{f"Last livery: {escape(summary.last_livery)} · " if summary.last_livery else ""}'
-            f'{summary.landings} landing{"s" if summary.landings != 1 else ""} · '
-            f"first seen {first} · last seen {last} · "
-            f"{'uploads password-protected' if summary.protected else 'no upload password'} · {settings}</p>")
-    options = "".join(f'<option value="{n}"{" selected" if n == passes else ""}>last {n}</option>'
-                      for n in sorted({8, 12, 15, 20, passes}))
+    quoted = quote(name, safe="")
+    title = escape(name) + (f' <span class="modex">#{escape(summary.modex)}</span>' if summary.modex else "")
     chosen = summary.airframe or ""
+    sub = f"first seen {first} · last seen {last}"
+    heading = _header(title, sub)
     tabs = ""
     if summary.airframes:  # trends don't mix airframes: one at a time (a single tab says which it is)
         def tab(a: str, n: int) -> str:
@@ -895,49 +1376,62 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
             current = ' class="current" aria-current="page"' if a == chosen else ""
             return f'<a href="{escape(href)}"{current}>{escape(a)} <span class="n">{n}</span></a>'
         tabs = '<nav class="airframes">' + "".join(tab(a, n) for a, n in summary.airframes) + "</nav>"
-    picker = (f'<form class="filters" method="get"><input type="hidden" name="aircraft" value="{escape(chosen)}">'
-              f'<label>Look at <select name="passes" onchange="this.form.submit()">'
-              f"{options}</select> passes</label><label>Servers <select name=\"servers\" onchange=\"this.form.submit()\">"
+    picker = (f'<form class="filters compact" method="get"><input type="hidden" name="aircraft" value="{escape(chosen)}">'
+              + _stepper("passes", passes, "Look at last", 3, 50, submit=True, fewer="Fewer passes", more="More passes")
+              + f"<label>Servers <select name=\"servers\" onchange=\"this.form.submit()\">"
               + "".join(f'<option value="{v}"{" selected" if v == servers else ""}>{label}</option>'
                         for v, label in (("ours", "This hub&#x27;s servers"), ("all", "All servers")))
-              + "</select></label></form>")
+              + f"</select></label></form><script>{STEPPER_SCRIPT}</script>")
     if not result.passes:
-        body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}{tabs}{picker}'
+        body = (f'{heading}{tabs}{picker}'
                 f'<p class="empty-state">No graded {escape(chosen + " " if chosen else "")}passes yet.</p>')
-        return _page(name, body)
-    grades = " · ".join(f"{escape(grade_short(g))} ×{n}" for g, n in sorted(result.grades.items(), key=lambda kv: -kv[1]))
-    def items(themes, empty: str) -> str:
-        return "".join(
-            f'<li><span class="kind">{KIND_LABELS.get(t.kind, t.kind)}</span>'
-            f'<span class="bar" title="{t.count} of {t.of}"><span style="width:{100 * t.share:.0f}%"></span></span>'
-            f"<span>{escape(t.text)}</span></li>" for t in themes) or f"<li>{empty}</li>"
+        return _page(name, body, _pilot_section(name))
+    n = result.passes
+    bolters = sum(p.outcome == "bolter" for p in rows)
+    traps = [p for p in rows if p.outcome == "trap"]
+    def wire(p) -> int | None:
+        return p.wire if p.wire is not None else ((p.grade.detail or {}) if p.grade else {}).get("wire_estimate")
+    short = sum(wire(p) in (1, 2) for p in traps)
+    stats = ('<div class="stats">'
+             f'<div><div class="micro quiet">Average grade</div><strong>{result.average_points:.2f}</strong></div>'
+             f'<div><div class="micro quiet">Bolters</div><strong>{bolters} / {n}</strong></div>'
+             f'<div><div class="micro quiet">Short traps</div><strong>{short} / {len(traps)}</strong></div></div>')
 
-    analysis = items(result.analysis, "Nothing stands out: no fault or leaning repeats across these passes.")
-    results = items(result.results, "No pattern in outcomes or wires across these passes.")
-    strengths = ("<h2>Consistently good</h2><ul class=\"themes\">"
+    def faults(themes, empty: str) -> str:
+        return "".join(
+            f'<div class="fault"><div><strong>{escape(t.text)}</strong>'
+            f'<small>{KIND_LABELS.get(t.kind, t.kind)}</small></div><b>{t.count} / {t.of}</b></div>'
+            for t in themes) or f'<div class="fault none">{empty}</div>'
+
+    analysis = faults(result.analysis, "Nothing stands out: no fault or leaning repeats across these passes.")
+    results = faults(result.results, "No pattern in outcomes or wires across these passes.")
+    strengths = ('<h3 style="margin-top:22px">Consistently good</h3><ul class="themes">'
                  + "".join(f"<li>{escape(s)}</li>" for s in result.strengths) + "</ul>") if result.strengths else ""
     cells = "".join(
         f'<a class="cell {GRADE_CLASS.get(p.grade.grade, "")}" href="/passes/{p.id}" data-pass="{p.id}" '
         f'title="{escape(grade_name(p.grade.grade))}: {escape(p.grade.text)} · {_when(p.occurred_at)}">'
         f"{escape(grade_short(p.grade.grade))}</a>" for p in reversed(rows))
-    body = (f'<p class="sub"><a href="/">← Greenie board</a></p>{heading}{seen}{tabs}'
-            f'<p class="sub">Last {result.passes} {escape(chosen + " " if chosen else "")}pass{"es" if result.passes != 1 else ""} · '
-            f'{result.average_points:.2f} points on average · {grades}</p>'
-            f"{picker}<div class=\"panel\"><h2 style=\"margin-top:0\">Analysis</h2>"
-            f'<ul class="themes">{analysis}</ul>{strengths}'
-            f'<h2>Results</h2><ul class="themes">{results}</ul>'
-            f'<h2>These passes (oldest → newest)</h2><div class="recent">{cells}</div></div>'
-            + (f'<h2>Traps overlaid <button id="zoom-reset" class="zoom-reset" hidden>Reset zoom</button></h2>'
+    grades = " · ".join(f"{escape(grade_short(g))} ×{k}" for g, k in sorted(result.grades.items(), key=lambda kv: -kv[1]))
+    body = (heading + tabs + picker + stats
+            + '<div class="section-header"><div>'
+            "<h2>Pilot themes</h2></div><p>Passes shown oldest → newest</p></div>"
+            '<div class="insight-grid"><div class="panel"><div class="micro quiet">Recurring faults</div>'
+            f"{analysis}{strengths}</div>"
+            f'<div class="panel"><div class="micro quiet">Grade sequence</div><div class="small-grades recent">{cells}</div>'
+            f'<p>{grades}</p><div class="micro quiet" style="margin-top:18px">Results</div>{results}</div></div>'
+            + (f'<div class="section-header"><div><h2>Traps overlaid <button id="zoom-reset" class="zoom-reset" hidden>Reset zoom</button></h2></div>'
+               f"<p>Last {n} · drag across a chart to zoom</p></div>"
                f'<div class="panel card zoomable" id="overlay" data-src="{escape(overlay_src)}" data-reset="zoom-reset">'
                f'{overlay_svg}</div>'
                f"<script>{ZOOM_SCRIPT}</script>" if overlay_svg else "")
             + f'<div id="tc-pop" hidden></div><script>{CARD_PREVIEW_SCRIPT}</script>')
-    return _page(f"{name}: recent passes", body)
+    return _page(f"{name}: recent passes", body, _pilot_section(name))
 
 
 def waiting_page(name: str) -> str:
     """For a signed-in pilot an admin hasn't approved yet, where only approved pilots may go."""
-    body = (f'<p class="sub"><a href="/">← Greenie board</a></p><h1>Waiting for approval</h1>'
+    body = (_header("Waiting for approval.")
+            + 
             f'<div class="panel"><p>An admin approves new pilots on this board, and hasn\'t approved {escape(name)} yet. '
             f'This opens once they do. <a href="/pilots/{quote(name, safe="")}/settings">Your settings</a></p></div>')
     return _page("Waiting for approval", body)
@@ -958,11 +1452,14 @@ def join_page(error: str | None = None, name: str = "", existing: str | None = N
            "you're waiting, nothing more.</p>" if approval else "") +
         f'<label>Pilot name <input name="name" required maxlength="100" value="{escape(name)}" autocomplete="username"></label>'
         '<label>Password <input name="password" type="password" required minlength="8" autocomplete="new-password">'
-        '<span class="hint">At least 8 characters.</span></label>'
+        '<span class="hint">At least 8 characters</span></label>'
         '<label>Password again <input name="confirm" type="password" required minlength="8" autocomplete="new-password">'
         "</label><button type=\"submit\">Join</button></form>")
-    body = ('<p class="sub"><a href="/">← Greenie board</a></p><h1>Join this board</h1>'
-            f'{note}<div class="panel">{form}</div>')
+    aside = ('<aside class="panel"><div class="micro quiet">Already flying here?</div><h3>Sign in</h3>'
+             "<p>If you've joined before, or an admin set a password for your name, sign in instead.</p>"
+             '<a class="button paper" href="/signin">Sign in</a></aside>')
+    body = (_header("Join the board.", "Choose your pilot name and a password.")
+            + f'{note}<div class="upload-grid"><div class="panel"><div class="micro quiet">New pilot</div>{form}</div>{aside}</div>')
     return _page("Join this board", body)
 
 
@@ -978,15 +1475,18 @@ def signin_page(error: str | None = None, name: str = "", next_url: str = "", me
         '<span class="hint">The name you fly under (or one of your other names).</span></label>'
         '<label>Password <input name="password" type="password" required autocomplete="current-password"></label>'
         '<button type="submit">Sign in</button></form>')
-    body = ('<h1>Sign in</h1><p class="sub">Stay signed in on this browser to change your settings and upload '
-            f'your recordings without giving your password each time. New here? <a href="/join">Join this board</a>.</p>'
-            f'{note}<div class="panel">{form}</div>'
-            '<p class="sub" style="margin-top:12px">Forgot your password? Ask the server\'s admin to reset it.</p>')
+    aside = ('<aside class="panel"><div class="micro quiet">New pilot</div><h3>Join the board</h3>'
+             "<p>Join to create pilot tokens, so the pilot hook sends your passes here, and to claim the other names "
+             'you fly under.</p><a class="button paper" href="/join">Join the board</a></aside>')
+    body = (f'{note}<div class="upload-grid"><div class="panel"><div class="micro quiet">Pilot access</div>{form}'
+            '<p class="sub" style="margin:16px 0 0">Forgot your password? Ask the server\'s admin to reset it.</p></div>'
+            f"{aside}</div>")
     return _page("Sign in", body)
 
 
 def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list | None = None,
-                        aliases: list | None = None, new_token: str | None = None, signed_in: bool = False) -> str:
+                        aliases: list | None = None, new_token: str | None = None, signed_in: bool = False,
+                        claimable: list[str] | None = None) -> str:
     """Set or change the pilot's password; signed in as them (`signed_in`), change their side number, create
     and revoke pilot tokens, and claim other in-game names. `new_token`: a token just created, shown this once."""
     name = pilot.name
@@ -994,41 +1494,40 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
     note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
         f'<p class="error">{escape(error)}</p>' if error else "")
     has = pilot.password_hash is not None
-    back = f'<p class="sub"><a href="/pilots/{quoted}">← {escape(name)}</a></p><h1>{escape(name)}: settings</h1>'
+    back = _header("User Settings")
     if has and not signed_in:
         me = CURRENT_PILOT.get()
         other = f" You're signed in as {escape(me)}." if me else ""
         body = (f'{back}{note}<div class="panel"><p>Sign in as {escape(name)} to change these settings.{other}</p>'
                 f'<p><a href="/signin?next={quote(f"/pilots/{quoted}/settings", safe="")}">Sign in</a></p></div>'
                 '<p class="sub" style="margin-top:12px">Forgot your password? Ask the server\'s admin to reset it.</p>')
-        return _page(f"{name}: settings", body)
+        return _page(f"{name}: settings", body, _pilot_section(name, "settings", None))
     password_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/password">'
         "<h2 style=\"margin-top:0\">" + ("Change password" if has else "Set a password") + "</h2>"
         + ("" if has else '<p class="sub">Nobody has set one for this pilot yet: setting it claims the name and signs '
            "you in. Recordings uploaded without a token then need it to import this pilot's passes.</p>")
         + ('<label>Current password <input name="current" type="password" required autocomplete="current-password">'
-           '<span class="hint">Changing it signs you out everywhere else.</span></label>' if has else "")
+           '<span class="hint">Changing it signs you out everywhere else</span></label>' if has else "")
         + '<label>New password <input name="new" type="password" required minlength="8" autocomplete="new-password">'
-        '<span class="hint">At least 8 characters.</span></label>'
+        '<span class="hint">At least 8 characters</span></label>'
         '<label>New password again <input name="confirm" type="password" required minlength="8" '
         'autocomplete="new-password"></label><button type="submit">Save password</button></form>')
     if not has:  # nothing else until the name is claimed
         body = f'{back}{note}<div class="panel">{password_form}</div>'
-        return _page(f"{name}: settings", body)
+        return _page(f"{name}: settings", body, _pilot_section(name, "settings", None))
     if pilot.pending_since is not None:  # nothing else until an admin approves them
         waiting = ('<div class="panel"><h2 style="margin-top:0">Waiting for approval</h2><p>An admin approves new '
                    f"pilots on this board, and hasn't approved {escape(name)} yet (asked {escape(_when(pilot.pending_since))}). "
                    "Until then you can't create pilot tokens, claim other names, or change your side number, and "
                    "your password doesn't protect uploads of your passes yet. Your passes still reach the board.</p></div>")
         body = f'{back}{note}{waiting}<div class="panel" style="margin-top:12px">{password_form}</div>'
-        return _page(f"{name}: settings", body)
+        return _page(f"{name}: settings", body, _pilot_section(name, "settings", None))
     modex_form = (
         f'<form class="upload" method="post" action="/pilots/{quoted}/settings/modex">'
         '<h2>Side number</h2>'
-        f'<p class="sub">Now: {escape(pilot.modex or "not known yet")}. It\'s taken from your first pass that has one; '
-        "you can change it here.</p>"
-        '<label>Side number <input name="modex" required pattern="[0-9]{1,4}" inputmode="numeric"></label>'
+        '<label><input name="modex" aria-label="Side number" required pattern="[0-9]{1,4}" inputmode="numeric" '
+        f'value="{escape(pilot.modex or "")}"></label>'
         '<button type="submit">Save side number</button></form>')
     shown = (f'<div class="token-once"><p><strong>Your new pilot token</strong> (copy it now: it won\'t be shown again)</p>'
              f'<code>{escape(new_token)}</code></div>' if new_token else "")
@@ -1045,25 +1544,28 @@ def pilot_settings_page(pilot, done: str | None, error: str | None, tokens: list
               f'<th>Created</th><th>Last used</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>'
               if rows else "")
     tokens_form = (
-        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/tokens"><h2>Pilot tokens</h2>'
-        '<p class="sub">A pilot token lets the pilot hook send your passes here. Everything sent '
-        "with it is credited to you, whatever name you fly under.</p>" + shown
+        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/tokens"><h2>Pilot tokens'
+        + _help_icon("A pilot token lets the pilot hook send your passes here.") + "</h2>" + shown
         + '<label>What it\'s for <input name="label" maxlength="100" placeholder="e.g. my PC"></label>'
         '<button type="submit">Create a pilot token</button></form>' + listed)
     names = "".join(f'<li>{escape(a.name)}{"" if a.claimed else " (seen with your pilot token)"}</li>'
                     for a in aliases or [])
     aliases_form = (
-        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/aliases"><h2>Other names</h2>'
-        '<p class="sub">Other in-game names you fly under (e.g. with a squadron tag). Passes reported under them '
-        "count as yours.</p>"
-        + (f'<ul class="themes">{names}</ul>' if names else '<p class="sub">None yet.</p>')
-        + '<label>Claim a name <input name="alias" required maxlength="100"></label>'
-        '<span class="hint">Only a name nobody else has claimed. Its passes on this board move to you.</span>'
-        '<button type="submit">Claim name</button></form>')
+        f'<form class="upload" method="post" action="/pilots/{quoted}/settings/aliases"><h2>Other names'
+        + _help_icon("Other in-game names you fly under (e.g. with a squadron tag). Passes reported under them "
+                     "count as yours.") + "</h2>"
+        + (f'<ul class="themes">{names}</ul>' if names else '<p class="sub">None yet</p>')
+        + ('<label><span>Claim a name' + _help_icon("Only a name nobody else has claimed. Its passes on this board "
+                                                    "move to you.")
+           + '</span><select name="alias" required><option value="">Choose a name</option>'
+           + "".join(f'<option value="{escape(n)}">{escape(n)}</option>' for n in claimable)
+           + '</select></label><button type="submit">Claim name</button>'
+           if claimable else '<p class="sub">No names on the board to claim</p>')
+        + "</form>")
     body = (f'{back}{note}<div class="panel">{password_form}</div><div class="panel" style="margin-top:12px">{modex_form}</div>'
             f'<div class="panel" style="margin-top:12px">{tokens_form}</div>'
             f'<div class="panel" style="margin-top:12px">{aliases_form}</div>')
-    return _page(f"{name}: settings", body)
+    return _page(f"{name}: settings", body, _pilot_section(name, "settings", None))
 
 
 def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None, error: str | None = None,
@@ -1114,15 +1616,21 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
             f'<span class="alias">{escape(a)}'
             + post("/admin/aliases/remove", "×", "Remove this alias? Its passes go back to a pilot of that name.",
                    extra=f'<input type="hidden" name="alias" value="{escape(a)}">') + "</span>" for a in p.aliases)
+        landed = p.last_landed
         rows.append(
-            f'<tr><td><a href="/pilots/{quoted}">{escape(p.name)}</a>'
+            f'<tr><td data-value="{escape(p.name.lower())}"><a href="/pilots/{quoted}">{escape(p.name)}</a>'
             + (' <span class="tag">admin</span>' if p.admin else "")
             + (' <span class="tag">waiting</span>' if p.pending else "") + "</td>"
-            f"<td>{p.passes}</td><td>{'set' if p.has_password else 'none'}</td>"
+            f'<td data-value="{p.passes}">{p.passes}</td>'
+            f'<td data-value="{1 if p.has_password else 0}">{"set" if p.has_password else "none"}</td>'
+            f'<td data-value="{landed.timestamp() if landed else 0}">{_when(landed) if landed else "never"}</td>'
             f'<td>{names or "<span class=sub>none</span>"}</td><td><div class="actions">{"".join(acts)}</div></td></tr>')
     pilots_table = (
-        '<div class="scroll"><table class="results"><thead><tr><th>Pilot</th><th>Passes</th><th>Password</th>'
-        f'<th>Other names</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+        '<div class="scroll"><table class="results" data-sortable><thead><tr>'
+        + "".join(f'<th data-sort="{kind}"><button type="button">{label}</button></th>'
+                  for label, kind in (("Pilot", "text"), ("Passes", "num"), ("Password", "num"), ("Last landed", "num")))
+        + f'<th>Other names</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+        f"<script>{SORT_SCRIPT}</script>"
         if rows else '<p class="sub">No pilots' + (" match." if q else " yet.") + "</p>")
     search = ('<form method="get" action="/admin" class="actions" style="margin-bottom:8px">'
               f'<input name="q" value="{escape(q)}" placeholder="Pilot or other name"><button type="submit">Find</button>'
@@ -1130,28 +1638,28 @@ def admin_page(pilots: list, agents: list, q: str = "", done: str | None = None,
     agent_rows = "".join(
         f'<tr><td><a href="/admin/agents/{quote(a.name, safe="")}">{escape(a.name)}</a></td><td>{_when(a.created_at)}</td>'
         f'<td>{_when(a.last_used_at) if a.last_used_at else "never"}</td>'
-        f'<td><a href="/admin/agents/{quote(a.name, safe="")}">Settings</a></td></tr>'
-        for a in agents)
+        f'<td><div class="actions"><a href="/admin/agents/{quote(a.name, safe="")}">Settings</a>'
+        + post(f"/admin/agents/{quote(a.name, safe='')}/remove", "Remove",
+               f"Remove the server agent {_js_text(a.name)}? Its token stops working; its landings stay on the board.",
+               danger=True)
+        + "</div></td></tr>" for a in agents)
     agents_table = (
         '<div class="scroll"><table class="results"><thead><tr><th>Server agent</th><th>Added</th><th>Last used</th>'
         f'<th></th></tr></thead><tbody>{agent_rows}</tbody></table></div>' if agent_rows
-        else '<p class="sub">None yet.</p>')
+        else '<p class="sub">None yet</p>')
     add_agent = ('<form method="post" action="/admin/agents" class="actions" style="margin-top:8px">'
                  '<input name="name" required maxlength="100" placeholder="e.g. server1">'
-                 '<button type="submit">Add a server agent</button></form>'
-                 '<p class="sub">Its server agent token is shown once, here.</p>')
+                 '<button type="submit">Add a server agent</button></form>')
     tel = telemetry or {}
     usage_link = ' · <a href="/admin/usage">Usage</a>' if tel.get("view") else ""
-    body = ('<h1>Admin</h1><p class="sub">Regrading and the wire check are run on the hub\'s machine '
-            f"(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).{usage_link}</p>"
-            f'{note}{_telemetry_notice(tel)}<div class="admin">{_joining(pending or [], approval, post)}{_board_access(members_only, approval, post)}'
-            f'{_hub_settings(settings or {}, voices or [])}'
-            f'<div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}'
-            '<p class="sub">Only a pilot with a password can be an admin; resetting an admin\'s password removes the '
-            "role. Deleting a pilot deletes their landings too; an admin can't be deleted (remove the role first).</p></div>"
+    body = (_header("", "Regrading and the wire check are run on the hub's machine "
+                    f"(<code>burble hub regrade</code>, <code>burble hub wire-check</code>).{usage_link}")
+            + f'{note}{_telemetry_notice(tel)}<div class="admin">{_waiting(pending or [], approval, post)}'
+            f'{_hub_settings(settings or {}, voices or [], _access(members_only, approval))}'
+            f'<div class="panel"><h2 style="margin-top:0">Pilots</h2>{search}{pilots_table}</div>'
             f'<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Server agents</h2>{agents_table}'
             f"{add_agent}</div>{_appearance(css)}{_telemetry_panel(tel) if telemetry else ''}</div>")
-    return _page("Admin", body)
+    return _page("Admin", body, "admin")
 
 
 def agent_settings_page(agent, done: str | None = None, error: str | None = None,
@@ -1201,7 +1709,7 @@ def agent_settings_page(agent, done: str | None = None, error: str | None = None
             default = f"{setting.default:g}" if isinstance(setting.default, float) else setting.default
             placeholder = "" if default is None else f' placeholder="{escape(str(default))}"'
             control = f'<input name="{key}"{kind} value="{escape(value)}"{placeholder}>'
-        return f'<label class="setting"><span>{escape(setting.label)}</span>{control}{hint}</label>'
+        return _setting_row(key, escape(setting.label), control, hint)
 
     sections = []
     for title, group in ac.SECTIONS:
@@ -1254,9 +1762,9 @@ def agent_settings_page(agent, done: str | None = None, error: str | None = None
         json.dumps(config, indent=2) if config else "")
     note = (f'<p class="sub" style="color:var(--text)">{escape(done)}</p>' if done else "") + (
         f'<p class="error">{escape(error)}</p>' if error else "")
-    body = (f'<p><a href="/admin">← Admin</a></p><h1>{escape(agent.name)}: settings</h1>'
-            '<p class="sub">Its server agent fetches these from the hub and applies them when the next mission starts. '
-            f"{about}</p>{note}"
+    body = (_header(f"{escape(agent.name)}: settings.", "Its server agent fetches these from the hub and applies them "
+                    f"when the next mission starts. {about}")
+            + f"{note}"
             f'<div class="admin settings"><form class="panel" method="post" action="/admin/agents/{name}/settings">'
             + "".join(sections)
             + "<h2>Calls</h2><p class=\"sub\">Which calls the LSO makes.</p>" + groups
@@ -1268,7 +1776,7 @@ def agent_settings_page(agent, done: str | None = None, error: str | None = None
             f'<form method="post" action="/admin/agents/{name}/config">'
             f'<textarea name="config" spellcheck="false" rows="16">{escape(raw_value)}</textarea>'
             '<button type="submit">Save configuration</button></form></details></div></div>')
-    return _page(f"{agent.name}: settings", body)
+    return _page(f"{agent.name}: settings", body, "admin")
 
 
 def _carrier_rows(config: dict, form: dict[str, list[str]] | None, info: dict | None = None) -> str:
@@ -1316,20 +1824,35 @@ def _carrier_rows(config: dict, form: dict[str, list[str]] | None, info: dict | 
             f"</th><th>Voice</th></tr></thead><tbody>{cells}</tbody></table></div>")
 
 
-def _board_access(members_only: bool, approval: bool, post) -> str:
-    """Who can see the board: anyone, or members only (signed-in, approved pilots)."""
-    toggle = post("/admin/members-only", "Open it to everyone" if members_only else "Make it members-only",
-                  extra=f'<input type="hidden" name="on" value="{0 if members_only else 1}">')
-    if members_only:
-        state = ("<strong>Members only:</strong> the board, passes, pilots' pages, replays, and the read API need a "
-                 "signed-in pilot an admin has approved (the API also takes a token). Signing in, joining, uploads, and "
-                 "Discord posts work as before; links in Discord posts lead to signing in.")
-        if not approval:
-            state += " Anyone can join, though: turn on approving new pilots to choose who gets in."
-    else:
-        state = "<strong>Open:</strong> anyone can see the board, passes, and pilots' pages."
-    return (f'<div class="panel" style="margin-bottom:12px"><h2 style="margin-top:0">Who can see the board</h2>'
-            f'<div class="actions"><p class="sub" style="margin:0">{state}</p>{toggle}</div></div>')
+def _setting_row(key: str, label: str, control: str, hint: str = "", title: str = "") -> str:
+    """A settings row: its name, the control (`<select name=…>` or `<input name=…>`), and the line under it. Only the
+    control itself takes a click (user: not the row, nor the name): the name is plain text, tied to the control
+    for screen readers by aria-labelledby."""
+    ident = f"setting-{key}"
+    control = control.replace(f' name="{key}"', f' id="{escape(ident)}" aria-labelledby="{escape(ident)}-name" '
+                                                 f'name="{key}"', 1)
+    tip = f' title="{escape(title)}"' if title else ""
+    return f'<div class="setting"><span class="name" id="{escape(ident)}-name"{tip}>{label}</span>{control}{hint}</div>'
+
+
+def _access(members_only: bool, approval: bool) -> str:
+    """Who can see the board, and whether new pilots wait for an admin: hub settings kept apart from
+    hub/settings.py (`members_only`, `join_approval` on the Save form; app.admin_settings)."""
+    def row(name: str, label: str, choices: tuple[tuple[str, str, str], ...], value: str) -> str:
+        """`choices`: value, label, and the hint for it (shown for the chosen one, following the dropdown)."""
+        options = "".join(f'<option value="{v}" data-hint="{escape(hint)}"{" selected" if v == value else ""}>'
+                          f"{escape(text)}</option>" for v, text, hint in choices)
+        hint = next(h for v, _, h in choices if v == value)
+        return _setting_row(name, label, f'<select name="{name}">{options}</select>',
+                            f'<span class="hint">{escape(hint)}</span>')
+
+    see = row("members_only", "Who can see the board",
+              (("0", "Anyone", "Viewable by anyone"), ("1", "Members only", "Users must sign in to view anything")),
+              "1" if members_only else "0")
+    approve = row("join_approval", "Approving new pilots",
+                  (("0", "Off", "New users can join without approval"), ("1", "On", "New users require admin approval")),
+                  "1" if approval else "0")
+    return '<h3 style="margin-top:0">Access</h3>' + see + approve
 
 
 # The hub settings on /admin (hub/settings.py), in groups.
@@ -1339,8 +1862,9 @@ HUB_SETTING_GROUPS = (("Who can send landings", ("pilot_hook_accept", "require_u
                       ("Voice", ("default_voice",)))
 
 
-def _hub_settings(settings: dict, voices: list) -> str:
-    """The hub settings admins change here (hub/settings.py), as one form."""
+def _hub_settings(settings: dict, voices: list, access: str = "") -> str:
+    """The hub settings admins change here, one form saved at once: `access` (see `_access`), then the rest
+    (hub/settings.py)."""
     from .settings import BY_KEY
 
     def field(key: str) -> str:
@@ -1350,21 +1874,46 @@ def _hub_settings(settings: dict, voices: list) -> str:
             choices = [("", "The first by name")] + [(v, v) for v in voices]
             if value not in [c for c, _ in choices]:
                 choices.append((value, f"{value} (not on this hub)"))
-        if choices:
+        if choices:  # each option carries what it means, for the line under it (UNSAVED_SCRIPT)
             control = f'<select name="{key}">' + "".join(
-                f'<option value="{escape(c)}"{" selected" if c == value else ""}>{escape(label)}</option>'
-                for c, label in choices) + "</select>"
+                f'<option value="{escape(c)}" data-hint="{escape(h.said(c))}"{" selected" if c == value else ""}>'
+                f"{escape(label)}</option>" for c, label in choices) + "</select>"
         else:
             kind = ' type="url" autocomplete="off" spellcheck="false"' if h.url else ""
-            control = f'<input name="{key}"{kind} value="{escape(value)}" maxlength="500">'
-        return (f'<label class="setting"><span>{escape(h.label)}</span>{control}'
-                f'<span class="hint">{escape(h.help)}</span></label>')
+            control = (f'<input name="{key}"{kind} value="{escape(value)}" maxlength="500" '
+                       f'data-hint-empty="{escape(h.said(""))}" data-hint-set="{escape(dict(h.says).get("*", ""))}">')
+        return _setting_row(key, escape(h.label), control, f'<span class="hint">{escape(h.said(value))}</span>',
+                            title=h.help)
 
     groups = "".join(f'<h3>{escape(title)}</h3>' + "".join(field(k) for k in keys) for title, keys in HUB_SETTING_GROUPS)
-    return ('<div class="settings" style="margin-bottom:12px"><form class="panel" method="post" action="/admin/settings">'
-            '<h2 style="margin-top:0">Hub settings</h2><p class="sub">In effect as soon as they\'re saved. The hub\'s '
-            "folders, database, address, and port are in <code>~/.burble/config.toml</code> on its machine.</p>"
-            f'{groups}<p><button type="submit">Save hub settings</button></p></form></div>')
+    return ('<div class="section-header"><h2 class="section">Hub settings</h2></div>'
+            '<div class="settings panel" style="margin-bottom:12px">'
+            f'<form method="post" action="/admin/settings" data-unsaved>{access}{groups}'
+            '<p><button type="submit">Save hub settings</button></p></form></div>'
+            f"<script>{UNSAVED_SCRIPT}</script>")
+
+
+# A star by each setting changed since the page loaded (back to as it was: no star), until it's saved.
+UNSAVED_SCRIPT = """
+document.querySelectorAll('form[data-unsaved]').forEach((form) => {
+  const fields = [...form.querySelectorAll('.setting')].map((label) => {
+    const input = label.querySelector('select, input, textarea');
+    if (!input) return null;
+    const value = () => input.type === 'checkbox' ? String(input.checked) : input.value;
+    return {label, input, value, saved: value()};
+  }).filter(Boolean);
+  const mark = () => fields.forEach((f) => {
+    f.label.classList.toggle('unsaved', f.value() !== f.saved);
+    // The line under it says what the value means: the chosen option's, or a text field's when empty or set.
+    const d = f.input.dataset, v = f.input.value.trim(), option = f.input.selectedOptions && f.input.selectedOptions[0];
+    const hint = option ? option.dataset.hint
+      : d.hintSet !== undefined ? (v ? d.hintSet.split('{value}').join(v) : d.hintEmpty) : undefined;
+    if (hint !== undefined) f.label.querySelector('.hint').textContent = hint;
+  });
+  form.addEventListener('input', mark);
+  form.addEventListener('change', mark);
+});
+"""
 
 
 def _js_text(text: str) -> str:
@@ -1373,13 +1922,10 @@ def _js_text(text: str) -> str:
     return escape(js, quote=False).replace('"', "&quot;")
 
 
-def _joining(pending: list, approval: bool, post) -> str:
-    """Approving new pilots: on or off, and those waiting (hub.service.PendingPilot) with Approve and Refuse."""
-    toggle = post("/admin/join-approval", "Turn off" if approval else "Turn on",
-                  extra=f'<input type="hidden" name="on" value="{0 if approval else 1}">')
-    state = ("<strong>On:</strong> a pilot who joins, or sets a password on a name already on the board, waits for an "
-             "admin here. Until then they can sign in and see that they're waiting, nothing more."
-             if approval else "<strong>Off:</strong> anyone can join and use their account straight away.")
+def _waiting(pending: list, approval: bool, post) -> str:
+    """Pilots waiting for an admin (hub.service.PendingPilot), with Approve and Refuse; nothing if none are."""
+    if not pending:
+        return ""
     rows = "".join(
         f'<tr><td><a href="/pilots/{quote(p.name, safe="")}">{escape(p.name)}</a></td><td>{escape(_when(p.since))}</td>'
         f"<td>{p.passes}</td><td><div class=\"actions\">"
@@ -1388,11 +1934,10 @@ def _joining(pending: list, approval: bool, post) -> str:
                "Refuse this pilot? The name is free again: removed if it has no passes, else back to unclaimed.",
                danger=True)
         + "</div></td></tr>" for p in pending)
-    waiting = ('<div class="scroll"><table class="results"><thead><tr><th>Waiting</th><th>Asked</th><th>Passes</th>'
-               f"<th></th></tr></thead><tbody>{rows}</tbody></table></div>" if rows else "")
-    after = ('<p class="sub">Turning it off doesn\'t approve those waiting.</p>' if rows and approval else "")
-    return (f'<div class="panel" style="margin-bottom:12px"><h2 style="margin-top:0">Approving new pilots</h2>'
-            f'{waiting}<div class="actions"><p class="sub" style="margin:0">{state}</p>{toggle}</div>{after}</div>')
+    after = '<p class="sub">Turning approval off doesn\'t approve those waiting.</p>' if approval else ""
+    return ('<div class="panel" style="margin-bottom:12px"><h2 style="margin-top:0">Waiting for approval</h2>'
+            '<div class="scroll"><table class="results"><thead><tr><th>Pilot</th><th>Asked</th><th>Passes</th>'
+            f"<th></th></tr></thead><tbody>{rows}</tbody></table></div>{after}</div>")
 
 
 _OPEN_SENT = """onclick="document.getElementById('whats-sent').showModal()\""""
@@ -1402,13 +1947,45 @@ def _telemetry_notice(tel: dict) -> str:
     """Until an admin has seen it: that usage reports are on, with what's sent and how to turn them off."""
     if not tel or not tel.get("enabled") or tel.get("acknowledged"):
         return ""
-    return ('<div class="notice admin"><strong>This hub sends anonymous usage counts to the burble project once a '
-            'day.</strong> Counts only: no pilot names, UCIDs, IP addresses, or tracks. '
+    return ('<div class="notice admin"><strong>This hub sends anonymous usage counts to the burble project daily'
+            '</strong> · no names, IP addresses, or tracks '
             f'<button type="button" class="link" {_OPEN_SENT}>What\'s sent</button><div class="actions">'
             '<form method="post" action="/admin/telemetry"><input type="hidden" name="on" value="1">'
             '<button type="submit">Keep sending</button></form>'
             '<form method="post" action="/admin/telemetry"><input type="hidden" name="on" value="0">'
             '<button type="submit">Turn off</button></form></div></div>')
+
+
+# Tables marked data-sortable: a click on a column heading (th[data-sort], "text" or "num") sorts the rows by its
+# cells' data-value, and again the other way. Numbers start biggest first (most passes, newest landing).
+SORT_SCRIPT = """
+document.querySelectorAll('table[data-sortable]').forEach((table) => {
+  const heads = [...table.tHead.rows[0].cells];
+  heads.forEach((th, col) => {
+    if (!th.dataset.sort) return;
+    th.querySelector('button').addEventListener('click', () => {
+      const num = th.dataset.sort === 'num';
+      const was = th.getAttribute('aria-sort');
+      const up = was ? was === 'descending' : !num;
+      heads.forEach((h) => h.removeAttribute('aria-sort'));
+      th.setAttribute('aria-sort', up ? 'ascending' : 'descending');
+      const key = (row) => row.cells[col].dataset.value;
+      const rows = [...table.tBodies[0].rows].sort((a, b) => {
+        const x = key(a), y = key(b);
+        const c = num ? Number(x) - Number(y) : x.localeCompare(y);
+        return up ? c : -c;
+      });
+      table.tBodies[0].append(...rows);
+    });
+  });
+});
+"""
+
+
+def _help_icon(text: str) -> str:
+    """A small "?" that shows `text` in a themed popup on hover (and on focus by keyboard, and to screen readers)."""
+    return (f'<span class="help-icon pop-host" tabindex="0" role="img" aria-label="{escape(text)}">?'
+            f'<span class="pop text left" aria-hidden="true">{escape(text)}</span></span>')
 
 
 def _telemetry_panel(tel: dict) -> str:
@@ -1423,16 +2000,15 @@ def _telemetry_panel(tel: dict) -> str:
     rows = []
     for url in tel["urls"]:
         st = tel["status"].get(url)
-        when = (_when(datetime.fromisoformat(st["at"])) + (": sent" if st["ok"] else f": {st['message']}")
-                if st else "not sent yet")
+        at = _when(datetime.fromisoformat(st["at"])) if st else ""
+        when = (f"sent {at}" if st["ok"] else f"failed {at}: {st['message']}") if st else "not sent yet"
         rows.append(f"<li><code>{escape(url)}</code> <span class=\"sub\">({escape(when)})</span></li>")
-    where = f"<ul>{''.join(rows)}</ul>" if rows else '<p class="sub">No addresses: nothing is sent.</p>'
+    where = f"<ul>{''.join(rows)}</ul>" if rows else '<p class="sub">No addresses, so nothing is sent</p>'
     is_default = tel["urls"] == tel["default"]
     urls_form = ('<details><summary>Change where reports go</summary>'
                  '<form method="post" action="/admin/telemetry/urls">'
                  f'<textarea name="urls" spellcheck="false" style="min-height:4em">{escape(chr(10).join(tel["urls"]))}'
-                 '</textarea><p class="sub">One address per line: a usage receiver (<code>burble telemetry serve</code>), '
-                 'e.g. your community\'s own beside the project\'s. The report goes to each.</p>'
+                 '</textarea><p class="sub">One receiver per line (<code>burble telemetry serve</code>)</p>'
                  '<div class="actions"><button type="submit">Save addresses</button>'
                  + ("" if is_default else '<button type="submit" name="default" value="1">Back to the project\'s</button>')
                  + "</div></form></details>")
@@ -1440,22 +2016,22 @@ def _telemetry_panel(tel: dict) -> str:
     view_form = (f'<p>Showing stats from <code>{escape(view)}</code> on the <a href="/admin/usage">Usage page</a>.</p>'
                  '<form method="post" action="/admin/telemetry/view"><button type="submit" name="clear" value="1">'
                  "Disconnect</button></form>" if view else
-                 '<p class="sub">Connect a usage receiver to see the stats it has gathered on a Usage page here. '
-                 "Its API key comes from <code>burble telemetry new-key NAME</code> on the receiver's machine "
-                 "(or use its password).</p>"
+                 '<p class="sub">Connect a receiver to see its stats here.</p>'
                  '<form method="post" action="/admin/telemetry/view" class="actions">'
                  '<input name="url" required placeholder="https://telemetry.example.com" style="width:18em">'
                  '<input name="key" type="password" required placeholder="API key or password" autocomplete="off">'
-                 '<button type="submit">Connect</button></form>')
+                 '<button type="submit">Connect</button>'
+                 + _help_icon("For an API key, run burble telemetry new-key NAME on the receiver's machine. "
+                              "Its password works too.")
+                 + "</form>")
     sent = "".join(f"<li>{escape(x)}</li>" for x in WHAT_IS_SENT)
     never = "".join(f"<li>{escape(x)}</li>" for x in NEVER_SENT)
-    state = ("<strong>On</strong>: once a day, to the addresses below." if on else
-             "<strong>Off</strong>: nothing is sent.")
+    state = "<strong>On</strong>: sent once a day" if on else "<strong>Off</strong>: nothing is sent"
     return ('<div class="panel" id="usage-reports" style="margin-top:12px"><h2 style="margin-top:0">Usage reports</h2>'
-            f'<p>{state} They help the burble project see how many hubs run it and how they\'re used.</p>'
+            f'<p>{state}</p>'
             f'<div class="actions">{toggle}<button type="button" {_OPEN_SENT}>What\'s sent</button></div>'
             '<dialog class="modal" id="whats-sent"><h2 style="margin-top:0">What\'s sent</h2>'
-            f"<p class=\"sub\" style=\"margin:0\">All of it about the last 30 days.</p><ul>{sent}</ul>"
+            f"<p class=\"sub\" style=\"margin:0\">Covers the last 30 days</p><ul>{sent}</ul>"
             f"<h3>What's never sent</h3><ul>{never}</ul>"
             f'<details><summary>The report as it would be sent now</summary><pre>{escape(tel["report"])}</pre></details>'
             '<form method="dialog" class="actions" style="margin-top:8px"><button>Close</button></form></dialog>'
@@ -1474,17 +2050,27 @@ def usage_page(stats: dict | None, view: str | None, error: str | None) -> str:
     else:
         content = f'<div class="panel">{usage_body(stats)}</div>'
     source = f'<p class="sub">From <code>{escape(view)}</code> · <a href="/admin">Admin</a></p>' if view else ""
-    return _page("Usage", f"<style>{USAGE_STYLE}</style><h1>Usage</h1>{source}{content}")
+    return _page("Usage", f"<style>{USAGE_STYLE}</style>"
+                 + _header("Usage.") + f"{source}{content}", "admin")
 
 
 def _appearance(css: str) -> str:
     """The admins' custom CSS box, with the theme variables it can set."""
     names = ", ".join(f"<code>{v}</code>" for v in [*COLOR_VARS.values(), FONT_VAR, *GRADE_VARS.values()])
-    return ('<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Appearance</h2>'
-            '<p class="sub">CSS added to every page of this board. The Discord images (the greenie board, and the '
-            "colour beside each landing's post) can't use CSS rules, so they take only the theme variables set on "
-            f"<code>:root</code>: {names}. Discord's images are dark, so values set for dark mode "
-            "(<code>@media (prefers-color-scheme: dark)</code>) win there. Colours as #hex, rgb(), or names.</p>"
+    icon = CURRENT_ICON.get()
+    preview = f'<img src="/icon?v={escape(icon)}" alt="The current icon">' if icon else "GB"
+    remove = ('<form method="post" action="/admin/icon/remove"><button type="submit" class="button paper">Use GB</button>'
+              "</form>" if icon else "")
+    icon_row = ('<h3>Icon' + _help_icon("Shown in the square at the top left of every page and as the browser tab's "
+                                        "icon. A square PNG, JPEG, GIF, WebP, or ICO image, at most 512 KB.")
+                + f'</h3><div class="icon-row"><span class="preview">{preview}</span>'
+                '<form method="post" action="/admin/icon" enctype="multipart/form-data">'
+                '<input type="file" name="icon" required accept="image/png,image/jpeg,image/gif,image/webp,image/x-icon,.ico" '
+                'aria-label="Icon image"><button type="submit" class="button dark">Save icon</button></form>' + remove + "</div>")
+    return ('<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Appearance</h2>' + icon_row +
+            '<h3>CSS</h3><p class="sub">Custom CSS for every page</p>'
+            f'<p class="sub">Discord images only pick up these variables from <code>:root</code> (dark-mode values '
+            f"first): {names}</p>"
             '<form method="post" action="/admin/appearance">'
             f'<textarea name="css" spellcheck="false" maxlength="{MAX_CSS}" '
             'placeholder=":root { --bg: #101820; --card: #18242f; --grade-ok: #00c853; }">'
@@ -1500,5 +2086,5 @@ def not_admin_page(pilot: str | None) -> str:
     else:
         text = "This page is for the board's admins. Sign in as a pilot who's an admin to use it."
         action = f'<a href="/signin?next={quote("/admin", safe="")}">Sign in</a> · <a href="/">Greenie board</a>'
-    body = f'<h1>Admins only</h1><div class="panel"><p>{text}</p><p>{action}</p></div>'
+    body = _header("Admins only.") + f'<div class="panel"><p>{text}</p><p>{action}</p></div>'
     return _page("Admins only", body)

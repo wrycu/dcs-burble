@@ -18,7 +18,7 @@ from ..detect import PassResult, PassSample
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
 from ..grading import GradeResult, grade_name, grade_short
 from ..grading.grade import GLIDESLOPE_DEG, LINEUP_DEG, POSITIONS
-from .theme import Theme
+from .theme import Theme, follow_theme
 
 NM = 1852.0
 FT = 0.3048
@@ -29,6 +29,8 @@ WIDTH = 920
 PAD_L, PAD_R = 64, 24
 PLOT_W = WIDTH - PAD_L - PAD_R
 HEADER_H = 104
+# How far a bare card's plots move up: its header is empty, or just the night marker.
+BARE_SHIFT, BARE_SHIFT_NIGHT = 88, 66
 KT = 1852.0 / 3600.0  # m/s
 SIDE_TOP, SIDE_H = HEADER_H + 18, 250
 TOP_TOP, TOP_H = SIDE_TOP + SIDE_H + 44, 170
@@ -45,13 +47,13 @@ AOA_LABELS = {"fast": "Fast", "sfast": "Slightly fast", "onspeed": "On speed", "
 
 _LIGHT = """
 .tc { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-.tc-bg { fill: #ffffff; }
-.tc-text { fill: #1f2328; }
-.tc-muted { fill: #656d76; }
+.tc-bg { fill: #f8f7ef; }
+.tc-text { fill: #172a2c; }
+.tc-muted { fill: #4d6361; }
 .tc-axis { stroke: #8c959f; stroke-width: 1; }
-.tc-grid { stroke: #d0d7de; stroke-width: 1; stroke-dasharray: 2 4; }
+.tc-grid { stroke: #aabbb0; stroke-width: 1; stroke-dasharray: 2 4; }
 .tc-pos { stroke: #8c959f; stroke-width: 1; stroke-dasharray: 5 4; }
-.tc-ideal { stroke: #1f2328; stroke-width: 1.2; stroke-dasharray: 8 4; fill: none; }
+.tc-ideal { stroke: #172a2c; stroke-width: 1.2; stroke-dasharray: 8 4; fill: none; }
 .tc-band1 { fill: #2da44e; fill-opacity: 0.16; }
 .tc-band2 { fill: #d4a72c; fill-opacity: 0.16; }
 .tc-band3 { fill: #cf222e; fill-opacity: 0.12; }
@@ -68,18 +70,18 @@ _LIGHT = """
 .tc-grade-bad { fill: #cf222e; }
 .tc-grade-mid { fill: #9a6700; }
 .tc-grade-good { fill: #1a7f37; }
-.tc-rule { stroke: #d0d7de; stroke-width: 1; }
-.tc-call { fill: #ffffff; stroke: #1f2328; stroke-width: 2; }
-.tc-call-label { fill: #1f2328; font-weight: 600; }
+.tc-rule { stroke: #aabbb0; stroke-width: 1; }
+.tc-call { fill: #f8f7ef; stroke: #172a2c; stroke-width: 2; }
+.tc-call-label { fill: #172a2c; font-weight: 600; }
 """
 _DARK = """
-  .tc-bg { fill: #0d1117; }
-  .tc-text { fill: #e6edf3; }
-  .tc-muted { fill: #8d96a0; }
+  .tc-bg { fill: #243532; }
+  .tc-text { fill: #e6eee7; }
+  .tc-muted { fill: #b1c3b9; }
   .tc-axis { stroke: #6e7681; }
-  .tc-grid { stroke: #30363d; }
+  .tc-grid { stroke: #526960; }
   .tc-pos { stroke: #6e7681; }
-  .tc-ideal { stroke: #e6edf3; }
+  .tc-ideal { stroke: #e6eee7; }
   .tc-band1 { fill: #3fb950; fill-opacity: 0.14; }
   .tc-band2 { fill: #d29922; fill-opacity: 0.14; }
   .tc-band3 { fill: #f85149; fill-opacity: 0.10; }
@@ -95,9 +97,9 @@ _DARK = """
   .tc-grade-bad { fill: #f85149; }
   .tc-grade-mid { fill: #d29922; }
   .tc-grade-good { fill: #3fb950; }
-  .tc-rule { stroke: #30363d; }
-  .tc-call { fill: #0d1117; stroke: #e6edf3; }
-  .tc-call-label { fill: #e6edf3; }
+  .tc-rule { stroke: #526960; }
+  .tc-call { fill: #243532; stroke: #e6eee7; }
+  .tc-call-label { fill: #e6eee7; }
 """
 # The hub's theme variables (cards.theme, from its admins' custom CSS) the card takes: rule -> (property,
 # variable). Its background and the call markers follow the website's panels (--card).
@@ -134,7 +136,7 @@ def theme_style(theme: Theme) -> str:
 
 # The card follows the viewer's light or dark mode (and, inlined in the website, its theme); DARK_STYLE is always
 # dark (e.g. images for Discord, where there is no viewer to ask; `theme_style` gives the hub's theme there).
-STYLE = _with_variables(_LIGHT) + "@media (prefers-color-scheme: dark) {\n" + _with_variables(_DARK) + "}\n"
+STYLE = _with_variables(_LIGHT) + follow_theme(_with_variables(_DARK))
 DARK_STYLE = _LIGHT + _DARK
 
 
@@ -531,7 +533,7 @@ def turbulence_text(weather: dict | None, measured: float | None) -> str | None:
 def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "tc",
                 calls: list[dict] | None = None, night: bool = False, view: tuple[float, float] | None = None,
                 zoom_hint: bool = False, dark: bool = False, accuracy: str | None = None,
-                elsewhere: bool = False, theme: Theme | None = None) -> str:
+                elsewhere: bool = False, theme: Theme | None = None, bare: bool = False) -> str:
     """`uid` prefixes element ids, so several cards can be inlined in one page. `calls` are the
     live LSO calls made during the pass ({"time", "along", "call"}), if any. `night`: flown at night
     (marked with a black dot, as on the greenie board). `view`: the stretch of the approach to show, as
@@ -540,15 +542,18 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     `dark`: always the dark colours (otherwise they follow the viewer's light or dark mode). `accuracy`: the
     landing's overall accuracy level (hub/accuracy.py), shown as a badge; `elsewhere`: flown on another
     server than the hub's own, marked beside it. `theme`: the hub's theme, for a `dark` image (inlined in a page,
-    the card takes the page's theme variables itself)."""
+    the card takes the page's theme variables itself). `bare`: for the pass page, which says the rest itself: the
+    header is just the night marker (the page draws the badges, with tooltips; no pilot, mission, side number,
+    livery, airframe, carrier, outcome, grade, wire, DCS LSO, or wind), and the plots move up into the room."""
     calls = sorted(calls or [], key=_said_order)
     listed: list[tuple[str, list[str]]] = []  # (heading, items) for each line of the lists below the table
-    for heading, group in (("Pilot:", [c for c in calls if c.get("by") == "pilot"]),
-                           ("LSO calls:", [c for c in calls if c.get("by") != "pilot"])):
+    # The LSO's calls are only on the plot (each at where it was said); the pilot's are listed too.
+    for heading, group in (("Pilot:", [c for c in calls if c.get("by") == "pilot"]),):
         if group:
             lines = _wrap(heading, [f"{call_label(c)} ({c['along'] / NM:.2f} nm)" for c in group], 12, PLOT_W)
             listed += [(heading if i == 0 else "", line) for i, line in enumerate(lines)]
-    height = HEIGHT + (len(listed) * CALLS_LINE_H + 8 if listed else 0)
+    shift = (BARE_SHIFT_NIGHT if night else BARE_SHIFT) if bare else 0
+    height = HEIGHT - shift + (len(listed) * CALLS_LINE_H + 8 if listed else 0)
     aircraft = AIRCRAFT[p.aircraft_type]
     frame = DeckFrame(CARRIERS[p.carrier_type], aircraft)
     near, far = view if view else (X_MIN_M, X_MAX_M)
@@ -562,6 +567,15 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
         f"<style>{DARK_STYLE + theme_style(theme) if dark and theme else DARK_STYLE if dark else STYLE}</style>",
         f'<rect class="tc-bg" width="{WIDTH}" height="{height}" rx="10"/>',
     ]
+    gx = PAD_L + PLOT_W
+    if bare:
+        if night:
+            out.append(f'<circle cx="{PAD_L + 5}" cy="16" r="5" fill="#111" stroke="#fff" stroke-opacity="0.6"/>')
+            out.append(f'<text class="tc-text" x="{PAD_L + 15}" y="20" font-size="12" font-weight="600">Night</text>')
+        out.append(f'<g transform="translate(0,-{shift})">')
+        _body(p, grade, aircraft, frame, samples, x, uid, out, calls, view, zoom_hint, listed)
+        out.append("</g></svg>")
+        return "\n".join(out)
     pilot = escape(p.pilot or f"id {p.aircraft_id:x}")
     out.append(f'<text class="tc-text" x="{PAD_L}" y="34" font-size="20" font-weight="700">{pilot}</text>')
     sub = f"{p.aircraft_type} · {p.carrier_type} · {p.outcome.value} · t={p.start_time:.0f}s"
@@ -573,7 +587,6 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
                    f'<tspan class="tc-muted" font-weight="400">\u00a0· {escape(sub)}</tspan></text>')
     else:
         out.append(f'<text class="tc-muted" x="{PAD_L}" y="56" font-size="12">{escape(sub)}</text>')
-    gx = PAD_L + PLOT_W
     out.append(f'<text class="{_grade_class(grade.grade.value)}" x="{gx}" y="36" font-size="26" font-weight="700" '
                f'text-anchor="end">{escape(grade_short(grade.grade.value))}</text>')
     detail = f"{grade_name(grade.grade.value)} · {grade.points:g} pts · grading v{grade.version}"
@@ -590,6 +603,14 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
     wind = wind_text(p)
     out.append(f'<text class="{"tc-muted" if wind == WIND_UNKNOWN else "tc-text"}" x="{PAD_L}" y="{HEADER_H - 14}" '
                f'font-size="12">{escape(wind)}</text>')
+    _body(p, grade, aircraft, frame, samples, x, uid, out, calls, view, zoom_hint, listed)
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+def _body(p: PassResult, grade: GradeResult, aircraft, frame, samples, x, uid: str, out: list[str],
+          calls: list[dict], view, zoom_hint: bool, listed: list) -> None:
+    """Everything under the card's header: the legend, the two plots, the table, and the lists under it."""
     _legend(aircraft.on_speed_aoa, out)
     if zoom_hint:
         hint = "drag across a chart to zoom" if view is None else "zoomed in · double-click to reset"
@@ -606,17 +627,14 @@ def render_card(p: PassResult, grade: GradeResult, title: str = "", uid: str = "
         lead = f'<tspan font-weight="600">{heading}</tspan> ' if heading else ""
         out.append(f'<text class="tc-text" x="{PAD_L}" y="{HEIGHT + 4 + i * CALLS_LINE_H}" font-size="12">'
                    f'{lead}{text}</text>')
-    out.append("</svg>")
-    return "\n".join(out)
 
 
 # The replay page's lineup plot: the track flown so far over a faint copy of the whole, and the jet's marker.
 _LIVE = """
 .tc-ghost { stroke-opacity: 0.22; }
 .tc-mark.tc-hidden { display: none; }
-.tc-now { fill: #1f2328; stroke: #ffffff; stroke-width: 2; }
-@media (prefers-color-scheme: dark) { .tc-now { fill: #e6edf3; stroke: #0d1117; } }
-"""
+.tc-now { fill: #172a2c; stroke: #f8f7ef; stroke-width: 2; }
+""" + follow_theme(".tc-now { fill: #e6eee7; stroke: #243532; }")
 LINEUP_TOP = 30
 
 

@@ -33,7 +33,7 @@ from .accuracy import accuracy_of, flown_elsewhere
 from .db import Pass, Pilot, Source, Upload
 from .live import LiveBroker, sse
 from .pilothook import PILOT_HOOK_VERSION
-from .service import SESSION_DAYS, Hub, IngestError, SignedIn
+from .service import MAX_ICON, SESSION_DAYS, Hub, IngestError, SignedIn
 from .telemetry import DEFAULT_URLS, Settings as TelemetrySettings, build_report, fetch_usage
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -154,9 +154,10 @@ def create_app(hub: Hub) -> FastAPI:
         # Signed in but waiting for an admin's approval: their account does nothing else yet (PLAN #44).
         request.state.waiting = await run_in_threadpool(hub.is_pending, pilot) if pilot else False
         css = await run_in_threadpool(hub.custom_css)
+        icon = await run_in_threadpool(hub.icon_version)
         reset = (pages.CURRENT_PILOT.set(pilot), pages.CURRENT_ADMIN.set(request.state.admin),
                  pages.CURRENT_CSS.set(css), pages.CURRENT_PENDING.set(pending),
-                 pages.CURRENT_WAITING.set(request.state.waiting))
+                 pages.CURRENT_WAITING.set(request.state.waiting), pages.CURRENT_ICON.set(icon))
         try:
             response = await call_next(request)
         finally:
@@ -165,6 +166,7 @@ def create_app(hub: Hub) -> FastAPI:
             pages.CURRENT_CSS.reset(reset[2])
             pages.CURRENT_PENDING.reset(reset[3])
             pages.CURRENT_WAITING.reset(reset[4])
+            pages.CURRENT_ICON.reset(reset[5])
         if token and pilot is None and not getattr(request.state, "session_set", False):
             response.delete_cookie(SESSION_COOKIE, path="/")  # ended (signed out elsewhere, expired)
         return response
@@ -448,7 +450,8 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(404, "no such pilot")
         mine = getattr(request.state, "pilot", None) == name
         return pages.pilot_settings_page(pilot, done, error, hub.pilot_tokens(name) if mine else [],
-                                         hub.pilot_aliases(name) if mine else [], new_token, signed_in=mine)
+                                         hub.pilot_aliases(name) if mine else [], new_token, signed_in=mine,
+                                         claimable=hub.claimable_names(name) if mine else [])
 
     @app.get("/pilots/{name}/settings", response_class=HTMLResponse)
     def pilot_settings(request: Request, name: str, done: str | None = None, error: str | None = None) -> str:
@@ -585,21 +588,26 @@ def create_app(hub: Hub) -> FastAPI:
     @app.post("/admin/join-approval")
     def admin_join_approval(request: Request, on: Annotated[str, Form()], q: Annotated[str, Form()] = ""):
         on_ = on == "1"
-        return _admin_step(request, lambda: hub.set_join_approval(on_),
-                           "New pilots now wait for approval." if on_ else "New pilots no longer wait for approval.", q)
+        return _admin_step(request, lambda: hub.set_join_approval(on_), "", q)  # the switch shows its state
 
     @app.post("/admin/members-only")
     def admin_members_only(request: Request, on: Annotated[str, Form()], q: Annotated[str, Form()] = ""):
         on_ = on == "1"
-        return _admin_step(request, lambda: hub.set_members_only(on_),
-                           "The board is members-only now." if on_ else "The board is open to everyone now.", q)
+        return _admin_step(request, lambda: hub.set_members_only(on_), "", q)  # the switch shows its state
 
     @app.post("/admin/settings")
     async def admin_settings(request: Request):
         _admin(request)
         form = await request.form()
         values = {key: str(form[key]) for key in hub.settings() if key in form}
-        return _admin_step(request, lambda: hub.set_settings(values), "Hub settings saved.")
+
+        def save() -> None:
+            hub.set_settings(values)
+            if "members_only" in form:  # kept apart from hub/settings.py, as before
+                hub.set_members_only(form["members_only"] == "1")
+            if "join_approval" in form:
+                hub.set_join_approval(form["join_approval"] == "1")
+        return _admin_step(request, save, "Hub settings saved.")
 
     @app.post("/admin/pilots/{name}/approve")
     def admin_approve_pilot(request: Request, name: str, q: Annotated[str, Form()] = ""):
@@ -659,6 +667,11 @@ def create_app(hub: Hub) -> FastAPI:
             return _admin_page(request, error=str(exc), status=400)
         return _admin_page(request, f"Server agent {name.strip()} added.",
                            new_token=(f"server agent token for {name.strip()}", token))
+
+    @app.post("/admin/agents/{name}/remove")
+    def admin_remove_agent(request: Request, name: str):
+        return _admin_step(request, lambda: hub.remove_server_agent(name),
+                           f"Server agent {name} removed; its token no longer works.")
 
     def _agent_page(request: Request, name: str, done: str | None = None, error: str | None = None,
                     status: int = 200, form: dict | None = None) -> HTMLResponse:
@@ -744,6 +757,25 @@ def create_app(hub: Hub) -> FastAPI:
         view = TelemetrySettings(hub).view()
         return HTMLResponse(pages.usage_page(stats, view[0] if view else None, error))
 
+    @app.get("/icon")
+    def icon() -> Response:
+        """The admins' icon (the header's square and the favicon); open to everyone, like the page it's on."""
+        found = hub.icon()
+        if found is None:
+            raise HTTPException(404, "no icon set")
+        data, kind = found
+        return Response(data, media_type=kind, headers={"Cache-Control": "public, max-age=86400",
+                                                        "X-Content-Type-Options": "nosniff"})
+
+    @app.post("/admin/icon")
+    async def admin_icon(request: Request, icon: Annotated[UploadFile | None, File()] = None):
+        data = await icon.read(MAX_ICON + 1) if icon is not None else b""
+        return await run_in_threadpool(_admin_step, request, lambda: hub.set_icon(data), "Icon saved")
+
+    @app.post("/admin/icon/remove")
+    def admin_remove_icon(request: Request):
+        return _admin_step(request, hub.remove_icon, "Icon removed")
+
     @app.post("/admin/appearance")
     def admin_appearance(request: Request, css: Annotated[str, Form()] = ""):
         return _admin_step(request, lambda: hub.set_custom_css(css),
@@ -781,7 +813,7 @@ def create_app(hub: Hub) -> FastAPI:
             return servers
         return "ours" if hub.other_servers == "hidden" else "all"
 
-    def _passes(days: int, pilot: str | None, source: str | None, servers: str = "all",
+    def _passes(days: int, pilots: list[str], source: str | None, servers: str = "all",
                 aircraft: str | None = None) -> list[Pass]:
         with hub.sessions() as s:
             # Landings only: reports merged into another (same landing) and lone track reports are hidden.
@@ -790,8 +822,8 @@ def create_app(hub: Hub) -> FastAPI:
                           selectinload(Pass.slice)))
             if days:
                 q = q.where(Pass.occurred_at >= datetime.now(UTC) - timedelta(days=days))
-            if pilot:
-                q = q.join(Pass.pilot).where(Pilot.name == pilot)
+            if pilots:
+                q = q.join(Pass.pilot).where(Pilot.name.in_(pilots))
             if source:
                 # A landing belongs to every source that reported it.
                 theirs = select(Pass.merged_into_id).join(Pass.source).where(Source.name == source)
@@ -817,12 +849,12 @@ def create_app(hub: Hub) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/v1/passes", dependencies=members)
-    def list_passes(days: int = 30, pilot: str | None = None, source: str | None = None,
+    def list_passes(days: int = 30, pilot: Annotated[list[str] | None, Query()] = None, source: str | None = None,
                     servers: str | None = None, aircraft: str | None = None) -> list[dict]:
-        """`servers`: "ours" (flown on this hub's servers, or unknown) or "all"; default per `--other-servers`.
+        """`pilot`: one or more (repeat it). `servers`: "ours" (flown on this hub's servers, or unknown) or "all"; default per `--other-servers`.
         `aircraft`: one airframe ("F-14 Tomcat": every F-14 variant) or aircraft type ("F-14B")."""
         out = []
-        for p in _passes(days, pilot, source, _servers(servers), aircraft or None):
+        for p in _passes(days, [n for n in pilot or [] if n], source, _servers(servers), aircraft or None):
             g = p.grade
             reports = hub.reports(p)
             out.append({"id": p.id, "pilot": p.pilot.name, "source": p.source.name,
@@ -881,17 +913,18 @@ def create_app(hub: Hub) -> FastAPI:
         return Response(svg, media_type="image/svg+xml")
 
     @app.get("/", response_class=HTMLResponse, dependencies=members)
-    def board(days: Annotated[int, Query(ge=0)] = 30, pilot: str | None = None, source: str | None = None,
+    def board(days: Annotated[int, Query(ge=0)] = 30, pilot: Annotated[list[str] | None, Query()] = None,
               empty: bool = False, servers: str | None = None, aircraft: str | None = None) -> str:
-        pilot, source, aircraft = pilot or None, source or None, aircraft or None  # the form sends "" for All
+        """`pilot`: any number of pilots (repeated), none for everyone."""
+        aircraft = aircraft or None  # the form sends "" for All
+        chosen = list(dict.fromkeys(n for n in pilot or [] if n))
         servers = _servers(servers)
-        passes = _passes(days, pilot, source, servers, aircraft)
+        passes = _passes(days, chosen, None, servers, aircraft)
         with hub.sessions() as s:
             pilots = sorted(s.scalars(select(Pilot.name)), key=str.lower)
-            sources = sorted(s.scalars(select(Source.name)), key=str.lower)
             types = set(s.scalars(select(Pass.aircraft_type).distinct()))
         airframes = sorted({airframe(t) for t in types}, key=str.lower)
-        return pages.board_page(passes, pilots, sources, days, pilot, source, BOARD_COLUMNS, empty, servers,
+        return pages.board_page(passes, pilots, days, chosen, BOARD_COLUMNS, empty, servers,
                                 aircraft, airframes)
 
     def _badges(accuracy) -> dict:
@@ -919,7 +952,7 @@ def create_app(hub: Hub) -> FastAPI:
         try:
             result = hub.load_pass(p, reports)
             svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls,
-                              night=bool(p.night), zoom_hint=True, **_badges(accuracy))
+                              night=bool(p.night), zoom_hint=True, bare=True, **_badges(accuracy))
             return pages.pass_page(p, svg, reports=reports, track_source=result.track_source, accuracy=accuracy,
                                    wind=wind_text(result), weather=result.weather, radio=hub.pass_radio(p))
         except (IngestError, OSError) as exc:
@@ -941,7 +974,7 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(404, f"trap card unavailable: {exc}") from exc
         view = _view(near, far)
         svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}" if zoom else f"hover{p.id}",
-                          calls=p.calls, night=bool(p.night), view=view, zoom_hint=zoom,
+                          calls=p.calls, night=bool(p.night), view=view, zoom_hint=zoom, bare=zoom,
                           **_badges(accuracy_of(p, reports)))
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=300"})
 

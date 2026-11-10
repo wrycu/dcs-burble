@@ -27,14 +27,14 @@ DEFAULT_FONT = "DejaVu Sans, Verdana, Arial, sans-serif"
 
 @dataclass(frozen=True, slots=True)
 class Theme:
-    """Colours and font for the images (defaults: the dark board as it always was)."""
-    bg: str = "#0d1117"
-    panel: str = "#161b22"
-    row_alt: str = "#1c2129"
-    empty: str = "#21262d"
-    text: str = "#e6edf3"
-    muted: str = "#8d96a0"
-    border: str = "#30363d"
+    """Colours and font for the images (defaults: the website's Ready Room look in dark mode, PLAN #63)."""
+    bg: str = "#172324"
+    panel: str = "#243532"
+    row_alt: str = "#2c4039"
+    empty: str = "#304440"
+    text: str = "#e6eee7"
+    muted: str = "#b1c3b9"
+    border: str = "#526960"
     font: str = DEFAULT_FONT
     grades: dict[str, str] = field(default_factory=dict)  # grade -> colour, where the CSS sets one
     values: dict[str, str] = field(default_factory=dict)  # every theme variable the CSS sets, checked (e.g. --card)
@@ -97,6 +97,18 @@ def _rules(css: str):
             media, depth_media = None, False
             start = i + 1
         i += 1
+
+
+def follow_theme(dark_css: str) -> str:
+    """Dark-mode rules that follow the website's Light/Dark toggle (`data-theme` on <html>) as well as the
+    viewer's system setting: dark when the toggle says so, or the system does and the toggle hasn't said light.
+    In an SVG on its own (no toggle), `:root` is the SVG, so it follows the system as before."""
+    def prefix(scope: str) -> str:
+        return re.sub(r"([^{}]+)\{([^}]*)\}",
+                      lambda m: ", ".join(f"{scope} {s.strip()}" for s in m.group(1).split(",") if s.strip())
+                      + f" {{{m.group(2)}}}\n", dark_css)
+    return ("@media (prefers-color-scheme: dark) {\n" + prefix(':root:not([data-theme="light"])') + "}\n"
+            + prefix(':root[data-theme="dark"]'))
 
 
 def safe_css(css: str) -> str:

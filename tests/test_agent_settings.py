@@ -197,7 +197,7 @@ def test_editing_on_the_page(hub):
     viper = client_for(hub, "Viper", "viper password")
     page = viper.get("/admin/agents/server1").text
     assert 'name="carrier.0.unit" value="CVN-75"' in page and "&quot;mystery&quot;: true" in page
-    assert "hasn't said which voices it has yet" in page and '<input name="callouts.voice"' in page
+    assert "hasn't said which voices it has yet" in page and 'name="callouts.voice"' in page
     assert page.count('name="call"') == len(ac.CHOOSABLE_CALLS) and "0 changed" in page
     form = {"callouts.enabled": "1", "live.enabled": "1", "callouts.record_radio": "1", "lights.enabled": "1",
             "callouts.srs.host": "10.0.0.5", "carriers": "3",
@@ -249,7 +249,7 @@ def test_the_agent_says_which_voices_it_has(hub, tmp_path):
     info = hub.server_agent("server1").agent_info
     assert info["voices"] == ["clips-amy", "clips-ryan"] and not info["listen_model"] and not info["one_voice"]
     page = client_for(hub, "Viper", "viper password").get("/admin/agents/server1").text
-    assert '<select name="callouts.voice">' in page and '<option value="clips-amy">clips-amy</option>' in page
+    assert 'aria-labelledby="setting-callouts.voice-name" name="callouts.voice">' in page and '<option value="clips-amy">clips-amy</option>' in page
     assert "clips-joe (not on the agent)" in page and "has no listen_model" in page
     assert '<option value="each carrier">A different one for each carrier</option>' in page
     assert '<select name="carrier.0.voice" aria-label="Voice"><option value="" selected>The LSO&#x27;s voice' in page

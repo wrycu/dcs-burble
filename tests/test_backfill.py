@@ -110,7 +110,8 @@ def test_backfill_merges_and_never_duplicates(hub, tmp_path):
 def test_upload_api(hub, tmp_path):
     token = hub.add_source("uploader")  # a server agent token: imports everything
     client = TestClient(create_app(hub))
-    assert client.get("/upload").status_code == 200
+    page = client.get("/upload").text  # signed out: sign in first, no form (nor a password field)
+    assert 'href="/signin?next=/upload"' in page and 'id="upload"' not in page and 'name="password"' not in page
     assert client.post("/api/v1/recordings", headers={"Authorization": "Bearer wrong"},
                        files={"recording": ("x.acmi", b"x")}).status_code == 401
     auth = {"Authorization": f"Bearer {token}"}
@@ -252,7 +253,7 @@ def test_a_server_can_require_a_token(tmp_path):
     client = TestClient(create_app(strict))
     r = client.post("/api/v1/recordings", files={"recording": (AI_TRAP.name, AI_TRAP.read_bytes())})
     assert r.status_code == 401
-    assert "Upload token <input" in client.get("/upload").text and "Upload token (optional)" not in client.get("/upload").text
+    assert "from its servers only" in client.get("/upload").text  # no form: the API, with a token
     body = upload(client, AI_TRAP, Authorization=f"Bearer {token}")
     assert wait(client, body["status_url"])["status"] == "done"
 

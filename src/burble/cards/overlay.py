@@ -13,20 +13,23 @@ from html import escape
 from ..detect import PassResult
 from ..geometry import AIRCRAFT, CARRIERS, DeckFrame
 from ..grading import grade_name
+from .theme import follow_theme
 from ..grading.grade import GLIDESLOPE_DEG, LINEUP_DEG, POSITIONS
 from .svg import (FT, NM, PAD_L, PLOT_W, STYLE, WIDTH, X_MAX_M, X_MIN_M, Axis, _clip, _distance_axis_view, _f,
                   _poly, _step,
                   deck_top, lineup_ticks)
 
-# Grade colours (light, dark), shared with the greenie board.
+# Grade colours (light, dark), shared with the greenie board: the Ready Room's (PLAN #63). The website's board and
+# grade squares use the light shade in both modes (the board is paper on the wall); charts on a dark background,
+# and Discord's dark images, the dark one.
 GRADE_COLORS = {
-    "_OK_": ("#116329", "#2ea043"),
-    "OK": ("#2da44e", "#3fb950"),
-    "(OK)": ("#d4a72c", "#d29922"),
-    "---": ("#8a5a2b", "#a0703c"),
-    "B": ("#0969da", "#388bfd"),
-    "WO": ("#6e7781", "#8b949e"),
-    "C": ("#cf222e", "#f85149"),
+    "_OK_": ("#2a6340", "#5fb27e"),
+    "OK": ("#397a51", "#7cc493"),
+    "(OK)": ("#dfb03e", "#e8c25e"),
+    "---": ("#755339", "#b08860"),
+    "B": ("#326587", "#6fa3c7"),
+    "WO": ("#596c6e", "#93a6a8"),
+    "C": ("#a4473d", "#d9756a"),
 }
 _GRADE_CLASS = {g: f"ov-g{i}" for i, g in enumerate(GRADE_COLORS)}
 _STYLE = (STYLE + "\n.ov-track { fill: none; stroke-width: 1.6; stroke-opacity: 0.75; stroke-linejoin: round; }\n"
@@ -34,9 +37,8 @@ _STYLE = (STYLE + "\n.ov-track { fill: none; stroke-width: 1.6; stroke-opacity: 
           "a:hover .ov-track { stroke-width: 3.2; stroke-opacity: 1; }\n"
           + "\n".join(f".{c} {{ stroke: {GRADE_COLORS[g][0]}; }} .{c}-fill {{ fill: {GRADE_COLORS[g][0]}; }}"
                       for g, c in _GRADE_CLASS.items())
-          + "\n@media (prefers-color-scheme: dark) {\n"
-          + "\n".join(f"  .{c} {{ stroke: {GRADE_COLORS[g][1]}; }} .{c}-fill {{ fill: {GRADE_COLORS[g][1]}; }}"
-                      for g, c in _GRADE_CLASS.items()) + "\n}\n")
+          + "\n" + follow_theme("\n".join(f".{c} {{ stroke: {GRADE_COLORS[g][1]}; }} .{c}-fill {{ fill: {GRADE_COLORS[g][1]}; }}"
+                                         for g, c in _GRADE_CLASS.items())))
 
 LEGEND_H = 30
 SIDE_TOP, SIDE_H = LEGEND_H + 24, 250

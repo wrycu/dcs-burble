@@ -77,12 +77,14 @@ def test_board_and_pass_pages(client, token):
     for acmi in PASS_FILES:
         upload(client, token, acmi)
     board = client.get("/", params={"days": 0}).text
+    assert '<input name="days" type="number" min="0" step="1" value="0"' in board  # − and +, 0 for all time
+    assert '<div class="stepper">' in board  # not data-submit: Apply loads it
     assert "Greenie Board" in board and "Wrycu" in board and "Maverick" in board
-    assert board.count('href="/passes/') == len(PASS_FILES)
+    assert board.count('<a class="tile') == len(PASS_FILES)
     # "---" is a real grade (No Grade); the board must not show it as a bare "---".
     assert ">NG</a>" in board and "No Grade" in board and ">---</a>" not in board
     only = client.get("/", params={"days": 0, "pilot": "Maverick"}).text
-    assert only.count('href="/passes/') == 1
+    assert only.count('<a class="tile') == 1
 
     pass_id = upload(client, token, PASS_FILES[-1]).json()["pass_id"]
     page = client.get(f"/passes/{pass_id}").text
@@ -104,7 +106,8 @@ def test_dcs_grade_from_sidecar_is_shown(client, token, tmp_path):
     pass_id = upload(client, token, acmi).json()["pass_id"]
     (row,) = client.get("/api/v1/passes", params={"days": 0}).json()
     assert row["wire"] == 3 and row["dcs_grade"] == "LSO: GRADE:C : LNFIW  WIRE# 3" and row["grade"] == "C"
-    assert "LNFIW  WIRE# 3" in client.get(f"/passes/{pass_id}").text
+    assert "LNFIW  WIRE# 3" in client.get(f"/passes/{pass_id}/card.svg").text  # the full card (hover, Discord)
+    assert "LNFIW  WIRE# 3" not in client.get(f"/passes/{pass_id}").text  # the pass page's card is bare
 
 
 def test_regrade_adds_new_version_and_keeps_slices(hub, client, token, monkeypatch):
@@ -142,7 +145,7 @@ def test_pass_page_card_zooms(client, token):
     import xml.etree.ElementTree as ET
     pass_id = upload(client, token, PASS_FILES[0]).json()["pass_id"]
     page = client.get(f"/passes/{pass_id}").text
-    assert 'class="panel card zoomable"' in page and f'data-src="/passes/{pass_id}/card.svg?zoom=1"' in page
+    assert 'class="card zoomable"' in page and f'data-src="/passes/{pass_id}/card.svg?zoom=1"' in page
     assert "card-zoom-reset" in page and "ZOOM" not in page
     svg = client.get(f"/passes/{pass_id}/card.svg", params={"zoom": 1, "near": 0, "far": 300}).text
     root = ET.fromstring(svg)
@@ -160,15 +163,57 @@ def test_board_has_a_table_per_airframe(client, token, tmp_path):
     [(tomcat, meta)] = slice_recording(FIXTURES / "live" / "tomcat-trap-server.zip.acmi", tmp_path / "tomcat")
     meta["pass"]["pilot"] = "Wrycu"  # flies both: a row in each table
     assert upload(client, token, tomcat, meta).status_code == 201
-    board = client.get("/", params={"days": 0}).text.split("</form>")[1]
+    board = client.get("/", params={"days": 0}).text.split("Board scope")[0]  # the boards, not the filters
     hornets, tomcats = board.split('<h2 class="airframe">F-14 Tomcat</h2>')
     assert '<h2 class="airframe">F/A-18C Hornet</h2>' in hornets  # the busiest airframe first
-    assert tomcats.count('href="/passes/') == 1 and "Wrycu" in tomcats and "Maverick" not in tomcats
+    assert tomcats.count('<a class="tile') == 1 and "Wrycu" in tomcats and "Maverick" not in tomcats
     only = client.get("/", params={"days": 0, "aircraft": "F-14 Tomcat"}).text
-    assert only.count('href="/passes/') == 1 and '<option value="F-14 Tomcat" selected>' in only
+    assert only.count('<a class="tile') == 1 and '<option value="F-14 Tomcat" selected>' in only
     listed = client.get("/api/v1/passes", params={"days": 0, "aircraft": "F-14 Tomcat"}).json()
     assert [(p["aircraft"], p["airframe"]) for p in listed] == [("F-14BU", "F-14 Tomcat")]
     assert len(client.get("/api/v1/passes", params={"days": 0, "aircraft": "F-14BU"}).json()) == 1
+
+
+def test_the_board_shows_every_pass_in_the_period(client, token, monkeypatch):
+    import burble.hub.app as app_module
+
+    monkeypatch.setattr(app_module, "BOARD_COLUMNS", 2)  # fewer than Wrycu's passes
+    for acmi in PASS_FILES:
+        upload(client, token, acmi)
+    board = client.get("/", params={"days": 0}).text.split("Board scope")[0]
+    most = max(board.split("<tr>")[2:], key=lambda row: row.count('<a class="tile')).count('<a class="tile')
+    assert most > 2  # not cut to the minimum: the board widens (and scrolls)
+    assert f'<th scope="col" class="g">{most:02d}</th>' in board and f'<th scope="col" class="g">{most + 1:02d}</th>' not in board
+    assert "board-scroll" in board and "scrollLeft" not in client.get("/").text  # opens at the oldest, on the left
+
+
+def test_board_filters_to_any_number_of_pilots(client, token, tmp_path):
+    from burble.slices import slice_recording
+
+    for acmi in PASS_FILES:
+        upload(client, token, acmi)
+    [(tomcat, meta)] = slice_recording(FIXTURES / "live" / "tomcat-trap-server.zip.acmi", tmp_path / "tomcat")
+    meta["pass"]["pilot"] = "Wrycu"
+    assert upload(client, token, tomcat, meta).status_code == 201
+    everyone = client.get("/api/v1/passes", params={"days": 0}).json()
+    names = sorted({p["pilot"] for p in everyone})
+    assert len(names) >= 2, names
+    two = names[:2]
+
+    def board(pilots):
+        return client.get("/", params={"days": 0, "pilot": pilots}).text
+
+    both = board(two)
+    tiles = both.split("Board scope")[0].count('<a class="tile')
+    assert tiles == sum(p["pilot"] in two for p in everyone)
+    for n in two:  # ticked, and listed first in the picker
+        assert f'name="pilot" value="{n}" checked' in both
+    assert f"<summary aria-label=\"Pilots: {', '.join(two)}\">" in both
+    one = board([two[0]])
+    assert one.split("Board scope")[0].count('<a class="tile') == sum(p["pilot"] == two[0] for p in everyone)
+    assert '<summary aria-label="Pilots: All pilots">' in board([""])  # nothing ticked: everyone
+    listed = client.get("/api/v1/passes", params={"days": 0, "pilot": two}).json()
+    assert {p["pilot"] for p in listed} == set(two)
 
 
 def test_pilot_page_has_a_tab_per_airframe(client, token, tmp_path):
@@ -188,6 +233,6 @@ def test_pilot_page_has_a_tab_per_airframe(client, token, tmp_path):
     assert set(hornets["pass_ids"]).isdisjoint(tomcats["pass_ids"])
     page = client.get("/pilots/Wrycu", params={"aircraft": "F-14 Tomcat"}).text
     assert '<nav class="airframes">' in page and 'class="current" aria-current="page">F-14 Tomcat' in page
-    assert "Last 1 F-14 Tomcat pass ·" in page and "aircraft=F-14%20Tomcat" in page
+    assert "<strong>0 / 1</strong>" in page and "F-14 Tomcat ·" not in page and "aircraft=F-14%20Tomcat" in page
     only = client.get("/pilots/Maverick").text  # one airframe: one tab, saying which
-    assert only.count('<nav class="airframes">') == 1 and only.count("aria-current") == 1 and "F/A-18C Hornet" in only
+    assert only.count('<nav class="airframes">') == 1 and only.count('aria-current="page"') == 1 and "F/A-18C Hornet" in only

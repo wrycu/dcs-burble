@@ -80,9 +80,16 @@ def _is_pilot_hook(r: Pass) -> bool:
     return "pilot_hook" in (r.slice.sidecar or {})
 
 
-def _rate(r: Pass) -> str:
+# The usual sampling of each kind of track (measured, PLAN facts): the pilot hook about 43-50 Hz, a host's own
+# Tacview file 7-14 Hz, a server's copy of the jet about 4.6-5 Hz. Only a rate outside these is worth saying.
+USUAL_HZ = {"hook": (35.0, 60.0), "own": (6.0, 15.0), "server": (4.0, 6.0)}
+
+
+def _rate(r: Pass, kind: str) -> str:
+    """The track's sampling rate, said only when it's unusual for its `kind` (USUAL_HZ)."""
     rate = _info(r).get("sample_rate_hz")
-    return f"about {rate:.0f} Hz" if rate else ""
+    low, high = USUAL_HZ[kind]
+    return f"about {rate:.0f} Hz" if rate and not low <= rate <= high else ""
 
 
 def landing_accuracy(landing: Pass, reports: list[Pass]) -> Accuracy:
@@ -101,17 +108,19 @@ def landing_accuracy(landing: Pass, reports: list[Pass]) -> Accuracy:
     tracks = [r for r in reports if not r.is_dcs_only] or reports
     best = max(tracks, key=lambda r: (bool(_info(r).get("aoa_recorded")), float(_info(r).get("sample_rate_hz") or 0)))
     own = bool(_info(best).get("aoa_recorded"))
-    rate = f"{_rate(best)}, " if _rate(best) else ""
     if landing.is_rebuilt:
         approach = (Score("Medium", "carrier rebuilt from the jet, placed by DCS's wire") if landing.wire is not None
                     else Score("Low", "carrier rebuilt from the jet, placed by an assumed wire"))
     elif landing.is_dcs_only or not gradable:
         approach = Score("None", "no carrier in any report: DCS's grade only")
     elif own:
-        who = "the pilot hook's track" if _is_pilot_hook(best) else "the jet's own track"
-        approach = Score("Full", f"{who} ({rate}recorded AOA)")
+        by_hook = _is_pilot_hook(best)
+        rate = _rate(best, "hook" if by_hook else "own")
+        who = "the pilot hook's track" if by_hook else "the jet's own track"
+        approach = Score("Full", who + (f" ({rate})" if rate else ""))
     else:
-        approach = Score("High", f"the server's copy of the jet ({rate}AOA from motion)")
+        rate = _rate(best, "server")
+        approach = Score("High", f"the server's copy of the jet ({rate + ', ' if rate else ''}AOA from motion)")
 
     estimate = ((landing.grade.detail or {}) if landing.grade else {}).get("wire_estimate")
     if landing.outcome != "trap":

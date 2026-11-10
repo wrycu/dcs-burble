@@ -82,7 +82,8 @@ def test_claiming_a_name_on_the_board_waits_too(hub):
     hub.set_pilot_password("Wrycu", "wrycu password")
     assert hub.is_pending("Wrycu")
     client = TestClient(create_app(hub))
-    assert "uploads password-protected" not in client.get("/pilots/Wrycu").text
+    found = hub.pilot_trends("Wrycu", 12, "all")
+    assert found is None or not found.protected  # a waiting claim doesn't protect the record
 
 
 def test_refusing_frees_the_name(hub):
@@ -119,8 +120,9 @@ def test_making_a_waiting_pilot_an_admin_approves_them(hub):
 
 def test_admins_approve_and_refuse_on_the_admin_page(hub):
     admin = signed_in(hub, "Boss", "boss password")
-    assert "<strong>Off:</strong>" in admin.get("/admin").text
-    r = admin.post("/admin/join-approval", data={"on": "1"}, follow_redirects=False)
+    page = admin.get("/admin").text
+    assert 'selected>Off</option>' in page and '<span class="hint">New users can join without approval</span>' in page
+    r = admin.post("/admin/settings", data={"join_approval": "1"}, follow_redirects=False)  # with Save
     assert r.status_code == 303 and hub.join_approval()
     joiner = TestClient(create_app(hub))
     assert "An admin approves new pilots" in joiner.get("/join").text
@@ -129,7 +131,7 @@ def test_admins_approve_and_refuse_on_the_admin_page(hub):
     assert r.status_code == 303 and "approve" in r.headers["location"]
     joiner.post("/join", data={"name": "Iceman", "password": "iceman password", "confirm": "iceman password"})
     page = admin.get("/admin").text
-    assert '<a href="/admin">Admin (2)</a>' in page
+    assert 'Admin (2)</a>' in page
     assert "/admin/pilots/Goose/approve" in page and "/admin/pilots/Iceman/refuse" in page
     assert '<span class="tag">waiting</span>' in page
     assert "Admin (" not in joiner.get("/").text  # only admins see the count
@@ -137,7 +139,7 @@ def test_admins_approve_and_refuse_on_the_admin_page(hub):
     assert "Goose%20approved" in r.headers["location"] and not hub.is_pending("Goose")
     r = admin.post("/admin/pilots/Iceman/refuse", follow_redirects=False)
     assert "removed" in r.headers["location"] and "Iceman" not in [p.name for p in hub.admin_pilots()]
-    assert '<a href="/admin">Admin</a>' in admin.get("/admin").text
+    assert '<a href="/admin" aria-current=page>Admin</a>' in admin.get("/admin").text
     # Not an admin: no.
     pilot = signed_in(hub, "Goose", "goose password")
     assert pilot.post("/admin/join-approval", data={"on": "0"}).status_code == 403 and hub.join_approval()

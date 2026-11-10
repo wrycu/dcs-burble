@@ -103,8 +103,8 @@ def test_card_zooms_into_a_stretch_of_the_approach():
     root = ET.fromstring(zoomed)
     assert (float(root.get("data-near")), float(root.get("data-far"))) == (-40.0, 300.0)
     assert "200 ft" in zoomed and "0.5 nm" not in zoomed and "zoomed in" in zoomed
-    # Only the calls in view get a marker (all are still listed below the card).
-    assert zoomed.count('class="tc-call"') == 1 and "re high (0.49 nm)" in zoomed
+    # Only the calls in view get a marker (the LSO's calls aren't listed below the card).
+    assert zoomed.count('class="tc-call"') == 1 and "(0.49 nm)" not in zoomed
     assert "drag across" not in render_card(p, grade_pass(p))  # offline cards: no hint
 
 
@@ -118,4 +118,16 @@ def test_a_pilots_call_reads_above_the_answer():
         root = ET.fromstring(svg)
         y = {t.text: float(t.get("y")) for t in root.iter(f"{SVG}text") if "tc-call-label" in t.get("class", "")}
         assert y["“015, Clara”"] < y["Roger clara"]
-        assert svg.index("Pilot:") < svg.index("LSO calls:")
+        assert "Pilot:" in svg and "LSO calls:" not in svg  # the LSO's calls are on the plot only
+
+
+def test_a_bare_card_leaves_the_details_to_the_page():
+    (p,) = find_passes(load_recording(FIXTURES / "ai_hornet_trap_cvn75.zip.acmi"))
+    full = render_card(p, grade_pass(p), "my mission", accuracy="Full")
+    bare = render_card(p, grade_pass(p), "my mission", accuracy="Full", bare=True)
+    assert "my mission" in full and "Wind" in full and "pts · grading" in full
+    assert p.pilot and f">{p.pilot}</text>" in full and f">{p.pilot}</text>" not in bare
+    assert "my mission" not in bare and "Wind" not in bare and "pts · grading" not in bare and p.aircraft_type not in bare
+    assert "Full accuracy" in full and "Full accuracy" not in bare and 'translate(0,-' in bare  # the page draws it
+    full_h, bare_h = (float(ET.fromstring(s).get("height")) for s in (full, bare))
+    assert bare_h < full_h

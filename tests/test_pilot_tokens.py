@@ -125,7 +125,7 @@ def test_settings_page_tokens_and_names(hub):
                                      "next": "/pilots/Wrycu/settings"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/pilots/Wrycu/settings"
     page = client.get("/pilots/Wrycu/settings").text
-    assert "Create a pilot token" in page and "Claim name" in page and 'name="password"' not in page
+    assert "Create a pilot token" in page and "No names on the board to claim" in page and 'name="password"' not in page
     r = client.post("/pilots/Wrycu/settings/tokens", data={"label": "my PC"})  # signed in: no password
     assert r.status_code == 200 and "copy it now" in r.text
     token = r.text.split("<code>")[1].split("</code>")[0]
@@ -140,18 +140,29 @@ def test_settings_page_tokens_and_names(hub):
     r = client.post("/pilots/Wrycu/settings/aliases", data={"alias": "Wrycu 2"}, follow_redirects=False)
     assert "now%20one%20of%20your%20names" in r.headers["location"]
     assert "Wrycu 2" in client.get("/pilots/Wrycu/settings").text
-    # The API, for tools that set up the pilot hook: with the password, no sign-in.
-    api = TestClient(create_app(hub))
-    r = api.post("/api/v1/pilots/Wrycu/tokens", data={"password": "first password", "label": "hook"})
-    assert r.status_code == 201 and hub.authenticate(r.json()["token"]) is not None
-    assert api.post("/api/v1/pilots/Wrycu/tokens", data={"label": "hook"}).status_code == 403
 
 
+def test_claim_a_name_offers_only_unclaimed_names(hub):
+    hub.set_pilot_password("Wrycu", "first password")
+    assert hub.claimable_names("Wrycu") == []  # nobody else on the board yet
+    hub.ingest(1, *report(OWN, "CVW-17 | Wrycu"))
+    hub.add_source("server2")
+    hub.ingest(2, *report(OWN, "Maverick"))
+    assert hub.claimable_names("Wrycu") == ["CVW-17 | Wrycu", "Maverick"]
+    hub.set_pilot_password("Maverick", "maverick password")  # a pilot with a password isn't claimable
+    assert hub.claimable_names("Wrycu") == ["CVW-17 | Wrycu"]
+    client = TestClient(create_app(hub))
+    client.post("/signin", data={"name": "Wrycu", "password": "first password"})
+    page = client.get("/pilots/Wrycu/settings").text
+    assert '<select name="alias" required>' in page and '<option value="CVW-17 | Wrycu">' in page
+    assert '<option value="Maverick">' not in page and "Only a name nobody else has claimed" in page
+    hub.claim_alias("Wrycu", "first password", "CVW-17 | Wrycu")
+    assert hub.claimable_names("Wrycu") == [] and hub.claimable_names("Maverick") == []  # now Wrycu's
 
 
 def test_joining_the_board_before_flying_here(hub):
     client = TestClient(create_app(hub))
-    assert "Join this board" in client.get("/").text and "<form" in client.get("/join").text
+    assert 'href="/join"' in client.get("/").text and "<form" in client.get("/join").text
     r = client.post("/join", data={"name": " Goose ", "password": "goose password", "confirm": "goose password"},
                     follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/pilots/Goose/settings?done=")

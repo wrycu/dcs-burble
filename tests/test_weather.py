@@ -56,9 +56,12 @@ def test_backfill_carries_the_wind_and_weather_to_the_card(tmp_path):
     hub = Hub(f"sqlite:///{tmp_path / 'lso.db'}", tmp_path / "data")
     source = hub.authenticate(hub.add_source("server1"))
     pass_id = hub.ingest(source.id, acmi.read_bytes(), meta).pass_id
-    page = TestClient(create_app(hub)).get(f"/passes/{pass_id}").text
-    assert "Wind over deck" in page and "wind 16 kt from 225°" in page and "turbulence 2 kt (mission setting)" in page
-    assert "clouds from 8,202 ft, visibility 43 nm, 26 °C, QNH 29.72 inHg" in page
+    client = TestClient(create_app(hub))
+    page = client.get(f"/passes/{pass_id}").text  # the details: wind and weather
+    assert "<dt>Wind</dt><dd>over deck 17 kt" in page and "wind 16 kt from 225°" in page
+    assert "turbulence 2 kt (mission setting)" in page and "clouds from 8,202 ft, visibility 43 nm, 26 °C, QNH 29.72 inHg" in page
+    card = client.get(f"/passes/{pass_id}/card.svg").text  # the full card (the pass page's is bare)
+    assert "Wind over deck" in card and "wind 16 kt from 225°" in card and "turbulence 2 kt (mission setting)" in card
 
 
 def test_wind_text_without_wind_or_turbulence():

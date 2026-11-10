@@ -46,6 +46,11 @@ log = logging.getLogger(__name__)
 
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
 CUSTOM_CSS_SETTING = "custom_css"
+ICON_SETTING = "icon"  # "<content type> <version>" of the admins' icon, kept as <data-dir>/icon
+MAX_ICON = 512 * 1024  # bytes
+# The image types an icon may be, by their first bytes (no SVG: it can carry script).
+ICON_TYPES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF87a", "image/gif"),
+              (b"GIF89a", "image/gif"), (b"\x00\x00\x01\x00", "image/x-icon"))
 JOIN_APPROVAL_SETTING = "join_approval"  # "on": new pilots wait for an admin's approval (PLAN #44)
 MEMBERS_ONLY_SETTING = "members_only"  # "on": the board and passes need a signed-in pilot (PLAN #45)
 PILOT_HOOKS = "pilot hooks"  # source of pilot hook uploads recognised without a token (see pilot_hook_access)
@@ -94,6 +99,7 @@ class AdminPilot:
     passes: int  # landings shown (reports merged into another aren't counted)
     aliases: list[str]
     pending: bool = False  # waiting for an admin's approval
+    last_landed: datetime | None = None  # their newest landing
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,10 +212,25 @@ class Hub:
             raise ValueError("enter a name of up to 100 characters")
         token = secrets.token_urlsafe(32)
         with self.sessions.begin() as s:
-            if s.scalar(select(Source).where(Source.name == name)) is not None:
+            found = s.scalar(select(Source).where(Source.name == name))
+            if found is not None and found.kind == kind == "server" and found.revoked_at is not None:
+                # A removed server agent added again: back, with a new token, and its landings still its own.
+                found.token_hash, found.revoked_at = _hash_token(token), None
+                return token
+            if found is not None:
                 raise ValueError(f"there's already a source named {name!r}")
             s.add(Source(name=name, kind=kind, token_hash=_hash_token(token)))
         return token
+
+    def remove_server_agent(self, name: str) -> None:
+        """Take a server agent off the hub: its token stops working and it's no longer listed. Its landings stay
+        (they're still from it); adding an agent of the same name again brings it back, with a new token."""
+        with self.sessions.begin() as s:
+            source = s.scalar(select(Source).where(Source.kind == "server", Source.name == name,
+                                                   Source.revoked_at.is_(None)))
+            if source is None:
+                raise LookupError(f"no server agent named {name!r}")
+            source.revoked_at = datetime.now(UTC)
 
     # -- pilot tokens -----------------------------------------------------------------------
 
@@ -262,6 +283,21 @@ class Hub:
         with self.sessions() as s:
             pilot = self._pilot(s, name)
             return list(s.scalars(select(PilotAlias).where(PilotAlias.pilot_id == pilot.id).order_by(PilotAlias.name)))
+
+    def claimable_names(self, name: str) -> list[str]:
+        """The names on the board `name` could claim (claim_alias): pilots with passes and no password, not
+        anyone's name already, not DCS's default, and not a name that would sign in as another pilot."""
+        with self.sessions() as s:
+            pilot = self._pilot(s, name)
+            taken = set(s.scalars(select(PilotAlias.name)))
+            with_passes = select(Pass.pilot_id).where(Pass.merged_into_id.is_(None))
+            out = []
+            for other in s.scalars(select(Pilot).where(Pilot.password_hash.is_(None), Pilot.id != pilot.id,
+                                                       Pilot.id.in_(with_passes)).order_by(func.lower(Pilot.name))):
+                if (other.name not in taken and not is_default_pilot(other.name)
+                        and self._name_clash(s, other.name, pilot) is None):
+                    out.append(other.name)
+            return out
 
     def claim_alias(self, name: str, password: str | SignedIn | None, alias: str) -> int:
         """A pilot claims another in-game name with their password: passes reported under it are credited to
@@ -560,6 +596,50 @@ class Hub:
             else:
                 row.value = css
         self._notify(None)  # the Discord board is redrawn with it
+
+    def icon_version(self) -> str | None:
+        """The admins' icon's version (changes with each upload, for links to it), or None for the built-in mark."""
+        with self.sessions() as s:
+            row = s.get(Setting, ICON_SETTING)
+            return row.value.split(" ", 1)[1] if row and row.value else None
+
+    def icon(self) -> tuple[bytes, str] | None:
+        """The admins' icon and its content type, or None."""
+        with self.sessions() as s:
+            row = s.get(Setting, ICON_SETTING)
+            kind = row.value.split(" ", 1)[0] if row and row.value else None
+        path = self.data_dir / "icon"
+        return (path.read_bytes(), kind) if kind and path.exists() else None
+
+    def set_icon(self, data: bytes) -> None:
+        """The hub's icon (the header's square and the favicon): a PNG, JPEG, GIF, WebP, or ICO file."""
+        if not data:
+            raise ValueError("choose an image")
+        if len(data) > MAX_ICON:
+            raise ValueError(f"the icon is too big (at most {MAX_ICON // 1024} KB)")
+        kind = next((k for magic, k in ICON_TYPES if data.startswith(magic)), None)
+        if kind is None and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            kind = "image/webp"
+        if kind is None:
+            raise ValueError("the icon must be a PNG, JPEG, GIF, WebP, or ICO image")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.data_dir / "icon.part"
+        tmp.write_bytes(data)
+        tmp.replace(self.data_dir / "icon")
+        value = f"{kind} {hashlib.sha256(data).hexdigest()[:12]}"
+        with self.sessions.begin() as s:
+            row = s.get(Setting, ICON_SETTING)
+            if row is None:
+                s.add(Setting(key=ICON_SETTING, value=value))
+            else:
+                row.value = value
+
+    def remove_icon(self) -> None:
+        """Back to the built-in "GB" mark."""
+        with self.sessions.begin() as s:
+            if (row := s.get(Setting, ICON_SETTING)) is not None:
+                s.delete(row)
+        (self.data_dir / "icon").unlink(missing_ok=True)
 
     def authenticate(self, token: str) -> Source | None:
         with self.sessions() as s:
@@ -1413,24 +1493,28 @@ class Hub:
     def admin_pilots(self, search: str = "") -> list[AdminPilot]:
         """Every pilot (or those whose name, or one of their other names, contains `search`), for the admin page."""
         with self.sessions() as s:
-            counts = dict(s.execute(select(Pass.pilot_id, func.count()).where(Pass.merged_into_id.is_(None))
-                                    .group_by(Pass.pilot_id)).all())
+            counts, last = {}, {}
+            for pilot_id, n, newest in s.execute(select(Pass.pilot_id, func.count(), func.max(Pass.occurred_at))
+                                                 .where(Pass.merged_into_id.is_(None)).group_by(Pass.pilot_id)):
+                counts[pilot_id], last[pilot_id] = n, _aware(newest) if newest else None
             aliases: dict[int, list[str]] = {}
             for a in s.scalars(select(PilotAlias).order_by(PilotAlias.name)):
                 aliases.setdefault(a.pilot_id, []).append(a.name)
             needle = (search or "").strip().lower()
             return [AdminPilot(p.name, p.password_hash is not None, bool(p.is_admin), counts.get(p.id, 0),
-                               aliases.get(p.id, []), p.pending_since is not None)
+                               aliases.get(p.id, []), p.pending_since is not None, last.get(p.id))
                     for p in s.scalars(select(Pilot).order_by(func.lower(Pilot.name)))
                     if not needle or needle in p.name.lower() or any(needle in a.lower() for a in aliases.get(p.id, []))]
 
     def server_agents(self) -> list[Source]:
         with self.sessions() as s:
-            return list(s.scalars(select(Source).where(Source.kind == "server").order_by(Source.name)))
+            return list(s.scalars(select(Source).where(Source.kind == "server", Source.revoked_at.is_(None))
+                                  .order_by(Source.name)))
 
     def server_agent(self, name: str) -> Source:
         with self.sessions() as s:
-            source = s.scalar(select(Source).where(Source.kind == "server", Source.name == name))
+            source = s.scalar(select(Source).where(Source.kind == "server", Source.name == name,
+                                                   Source.revoked_at.is_(None)))
             if source is None:
                 raise LookupError(f"no server agent named {name!r}")
             return source
