@@ -77,6 +77,8 @@ def test_board_and_pass_pages(client, token):
     for acmi in PASS_FILES:
         upload(client, token, acmi)
     board = client.get("/", params={"days": 0}).text
+    assert '<input name="days" type="number" min="0" step="1" value="0"' in board  # − and +, 0 for all time
+    assert '<div class="stepper">' in board  # not data-submit: Apply loads it
     assert "Greenie Board" in board and "Wrycu" in board and "Maverick" in board
     assert board.count('<a class="tile') == len(PASS_FILES)
     # "---" is a real grade (No Grade); the board must not show it as a bare "---".
@@ -170,6 +172,19 @@ def test_board_has_a_table_per_airframe(client, token, tmp_path):
     listed = client.get("/api/v1/passes", params={"days": 0, "aircraft": "F-14 Tomcat"}).json()
     assert [(p["aircraft"], p["airframe"]) for p in listed] == [("F-14BU", "F-14 Tomcat")]
     assert len(client.get("/api/v1/passes", params={"days": 0, "aircraft": "F-14BU"}).json()) == 1
+
+
+def test_the_board_shows_every_pass_in_the_period(client, token, monkeypatch):
+    import burble.hub.app as app_module
+
+    monkeypatch.setattr(app_module, "BOARD_COLUMNS", 2)  # fewer than Wrycu's passes
+    for acmi in PASS_FILES:
+        upload(client, token, acmi)
+    board = client.get("/", params={"days": 0}).text.split("Board scope")[0]
+    most = max(board.split("<tr>")[2:], key=lambda row: row.count('<a class="tile')).count('<a class="tile')
+    assert most > 2  # not cut to the minimum: the board widens (and scrolls)
+    assert f'<th scope="col" class="g">{most:02d}</th>' in board and f'<th scope="col" class="g">{most + 1:02d}</th>' not in board
+    assert "board-scroll" in board and "scrollLeft" not in client.get("/").text  # opens at the oldest, on the left
 
 
 def test_board_filters_to_any_number_of_pilots(client, token, tmp_path):

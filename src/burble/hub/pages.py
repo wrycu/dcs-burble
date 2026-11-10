@@ -127,11 +127,18 @@ footer.site a { color: var(--text); font-weight: 700; }
 .board-strip { display: flex; justify-content: space-between; gap: 15px; background: var(--board-strip); border: 1px solid var(--board-rule);
   padding: 9px 24px; color: var(--board-strip-ink); font: 700 11px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
 .board-scroll { overflow-x: auto; border: 1px solid var(--board-rule); border-top: 0; }
-table.board { border-collapse: collapse; width: 100%; table-layout: fixed; }
+table.board { border-collapse: separate; border-spacing: 0; width: 100%; table-layout: fixed; }  /* each cell its own borders: they stay with the pinned ones */
 table.board th, table.board td { border-right: 1px solid var(--board-grid); border-bottom: 1px solid var(--board-grid); }
 table.board th { background: var(--board-th); color: var(--board-th-ink); font: 700 11px/1.3 var(--mono); letter-spacing: .07em;
   padding: 12px 6px; text-transform: uppercase; }
 table.board th.pilot { width: 170px; text-align: left; padding-left: 18px; }
+/* Pilot, Passes, Avg, and Traps stay put; only the passes scroll (BOARD_FIXED: 170 + 3 x 68 px) */
+table.board :is(th, td):nth-child(-n+4) { position: sticky; z-index: 1; }
+table.board :is(th, td):nth-child(1) { left: 0; }
+table.board :is(th, td):nth-child(2) { left: 170px; }
+table.board :is(th, td):nth-child(3) { left: 238px; }
+table.board :is(th, td):nth-child(4) { left: 306px; box-shadow: inset -1px 0 var(--board-grid); }
+table.board td:nth-child(-n+4) { background: var(--board-paper); }
 table.board th.num { width: 68px; }
 table.board td { padding: 0; text-align: center; }
 table.board td.pilot { text-align: left; padding: 14px 18px; overflow-wrap: anywhere; }
@@ -187,6 +194,7 @@ form.filters.compact > .field, form.filters.compact > label { flex: 0 0 auto; mi
 form.filters.compact select { width: auto; }
 form.filters .stepper input { width: 4.5em; }
 form.filters .stepper { display: flex; }
+form.filters .field:has(> .stepper) { flex: 0 0 auto; min-width: 0; }  /* as wide as its − number +, no wider */
 form.filters .stepper input { text-align: center; -moz-appearance: textfield; appearance: textfield; }
 form.filters .stepper input::-webkit-inner-spin-button, form.filters .stepper input::-webkit-outer-spin-button {
   -webkit-appearance: none; margin: 0; }
@@ -508,6 +516,17 @@ def _when(dt: datetime | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC") if dt else "unknown time"
 
 
+BOARD_FIXED = 170 + 3 * 68  # px: the Pilot, Passes, Avg, and Traps columns
+BOARD_CELL = 41  # px: the smallest a pass's column gets (on a narrow screen, where the board scrolls anyway)
+
+
+def _board_width(cols: int, fit: int) -> str:
+    """The board table's width: `fit` pass columns fill the board (as wide as it is), and each column past them
+    adds one more of the same size, scrolled to; never narrower than BOARD_CELL each."""
+    return (f"width:calc({BOARD_FIXED}px + (100% - {BOARD_FIXED}px) * {cols} / {fit});"
+            f"min-width:{BOARD_FIXED + cols * BOARD_CELL}px")
+
+
 def board_page(passes: list[Pass], pilots: list[str], days: int, chosen: list[str], columns: int,
                empty: bool = False, servers: str = "all", aircraft: str | None = None,
                airframes: list[str] | None = None) -> str:
@@ -524,12 +543,10 @@ def board_page(passes: list[Pass], pilots: list[str], days: int, chosen: list[st
         sel = " selected" if value == (selected or "") else ""
         return f'<option value="{escape(value)}"{sel}>{escape(label)}</option>'
 
-    periods = ((7, "7 days"), (30, "30 days"), (90, "90 days"), (365, "1 year"), (0, "All time"))
     filters = (
         '<form class="filters" method="get">'
-        '<label>Period <select name="days">'
-        + "".join(option(str(d), label, str(days)) for d, label in periods)
-        + "</select></label>" + _pilot_picker(pilots, chosen)
+        + _stepper("days", days, "Days (0 for all)", 0, fewer="Fewer days", more="More days")
+        + _pilot_picker(pilots, chosen)
         + '<label>Aircraft <select name="aircraft">' + option("", "All aircraft", aircraft)
         + "".join(option(n, n, aircraft) for n in (airframes or []))
         + '</select></label><label>Servers <select name="servers">'
@@ -539,19 +556,18 @@ def board_page(passes: list[Pass], pilots: list[str], days: int, chosen: list[st
         + '<button type="submit">Apply</button></form>'
     )
 
-    def no_passes_row(name: str) -> str:
+    def no_passes_row(name: str, cols: int) -> str:
         return (f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}">{escape(name)}</a></td>'
                 '<td class="num">0</td><td class="num">–</td><td class="num">–</td>'
-                + '<td><span class="tile empty"></span></td>' * columns + "</tr>")
+                + '<td><span class="tile empty"></span></td>' * cols + "</tr>")
 
-    def pilot_row(name: str, items: list[Pass]) -> str:
+    def pilot_row(name: str, items: list[Pass], cols: int) -> str:
         graded = [p for p in items if p.grade]
         traps = sum(p.outcome == "trap" for p in items)
         avg = sum(p.grade.points for p in graded) / len(graded) if graded else 0.0
         modex = items[-1].pilot.modex
-        shown = items[-columns:]
         cells = []
-        for p in shown:
+        for p in items:  # every pass in the period (the board scrolls sideways)
             g = p.grade.grade if p.grade else "?"
             night = " · night" if p.night else ""
             # The date and time first (a line each: date and time, grade, mission).
@@ -560,15 +576,15 @@ def board_page(passes: list[Pass], pilots: list[str], days: int, chosen: list[st
             cells.append(f'<td><a class="tile {GRADE_CLASS.get(g, "")}{" night" if p.night else ""}" href="/passes/{p.id}" '
                          f'title="{escape(title)}" aria-label="{escape(grade_name(g))}, {escape(_when(p.occurred_at))}">'
                          "</a></td>")  # the colour says the grade (the key is below); the letter is in the tooltip
-        cells += ['<td><span class="tile empty"></span></td>'] * (columns - len(shown))
+        cells += ['<td><span class="tile empty"></span></td>'] * (cols - len(items))
         side = f'<span class="side">#{escape(modex)}</span>' if modex else ""
         return (f'<tr><td class="pilot"><a href="/pilots/{quote(name, safe="")}" title="Themes across recent passes">'
                 f'{escape(name)}</a>{side}</td><td class="num">{len(items)}</td>'
                 f'<td class="num">{avg:.2f}</td><td class="num">{100 * traps / len(items):.0f}%</td>'
                 + "".join(cells) + "</tr>")
 
-    def frame(title: str, rows: list[str], items: list[Pass]) -> str:
-        heads = "".join(f'<th scope="col">{n:02d}</th>' for n in range(1, columns + 1))
+    def frame(title: str, rows: list[str], items: list[Pass], cols: int) -> str:
+        heads = "".join(f'<th scope="col" class="g">{n:02d}</th>' for n in range(1, cols + 1))
         traps = sum(p.outcome == "trap" for p in items)
         note = (f'<strong>{len(items)} pass{"es" if len(items) != 1 else ""}</strong> &nbsp;/&nbsp; '
                 f'{100 * traps / len(items):.0f}% traps' if items else "<strong>No passes</strong>")
@@ -576,22 +592,25 @@ def board_page(passes: list[Pass], pilots: list[str], days: int, chosen: list[st
                 f'<h2 class="airframe">{escape(title)}</h2></div></div>'
                 f'<div class="board-strip"><span>{len(rows):02d} pilot{"s" if len(rows) != 1 else ""} shown</span></div>'
                 f'<div class="board-scroll" tabindex="0" role="region" aria-label="{escape(title)} board, scrolls sideways">'
-                f'<table class="board" style="min-width:{170 + 3 * 68 + columns * 45}px"><thead><tr>'
+                f'<table class="board" style="{_board_width(cols, columns)}"><thead><tr>'
                 '<th scope="col" class="pilot">Pilot</th><th scope="col" class="num">Passes</th>'
                 f'<th scope="col" class="num">Avg</th><th scope="col" class="num">Traps</th>{heads}</tr></thead>'
                 f'<tbody>{"".join(rows)}</tbody></table></div>'
-                f'<div class="board-note"><span>{note}</span><span>Choose a grade to open its debrief.</span></div>'
+                f'<div class="board-note"><span>{note}</span><span>Click a pass to view its debrief</span></div>'
                 '</div></div><p class="board-hint">Swipe across the board to see the passes →</p>')
 
     # The busiest airframe first.
     order = sorted(sections, key=lambda a: (-sum(len(v) for v in sections[a].values()), a.lower()))
-    parts = [frame(a, [pilot_row(n, sections[a][n]) for n in sorted(sections[a], key=str.lower)],
-                   [p for v in sections[a].values() for p in v]) for a in order]
+    def wide(a: str) -> int:  # at least `columns`, more for a pilot with more passes in the period
+        return max(columns, *(len(v) for v in sections[a].values()))
+
+    parts = [frame(a, [pilot_row(n, sections[a][n], wide(a)) for n in sorted(sections[a], key=str.lower)],
+                   [p for v in sections[a].values() for p in v], wide(a)) for a in order]
     if empty:
         flown = {n for by_pilot in sections.values() for n in by_pilot}
         idle = sorted((n for n in pilots if n not in flown and (not chosen or n in chosen)), key=str.lower)
         if idle:
-            parts.append(frame("No passes yet", [no_passes_row(n) for n in idle], []))
+            parts.append(frame("No passes yet", [no_passes_row(n, columns) for n in idle], [], columns))
     content = "".join(parts) if parts else ('<div class="board-frame"><div class="board-paper">'
                                             '<p class="empty-state">No passes yet for this filter.</p></div></div>')
 
@@ -619,7 +638,7 @@ def _pilot_picker(pilots: list[str], chosen: list[str]) -> str:
             '<input type="search" placeholder="Search pilots" aria-label="Search pilots" autocomplete="off" hidden>'
             f'<div class="names">{names}</div><p class="none" hidden>No pilot by that name.</p>'
             '<button type="button" class="clear" hidden>Clear (all pilots)</button></div></details></div>'
-            f"<script>{PICKER_SCRIPT}</script>")
+            f"<script>{PICKER_SCRIPT}{STEPPER_SCRIPT}</script>")
 
 
 PICKER_SCRIPT = """
@@ -1305,13 +1324,14 @@ ZOOM_SCRIPT = """
 
 STEPPER_SCRIPT = """
 (() => {
-  // Look at last N: − and + step it; typing a number and leaving the box (or Enter) loads it. Kept in range.
+  // A number with − and + (pages._stepper): kept in range (min, and max if it has one). With data-submit, each
+  // change loads it (− and +, or typing and leaving the box); otherwise the form's own button does.
   document.querySelectorAll('.stepper').forEach((box) => {
     const input = box.querySelector('input');
     const go = () => {
-      const lo = +input.min, hi = +input.max, n = Math.round(+input.value);
+      const lo = +input.min, hi = input.max === '' ? Infinity : +input.max, n = Math.round(+input.value);
       input.value = Math.min(hi, Math.max(lo, isNaN(n) ? lo : n));
-      input.form.submit();
+      if (box.dataset.submit !== undefined) input.form.submit();
     };
     input.addEventListener('change', go);
     box.querySelectorAll('button[data-step]').forEach((b) => b.addEventListener('click', () => {
@@ -1321,6 +1341,18 @@ STEPPER_SCRIPT = """
   });
 })();
 """
+
+def _stepper(name: str, value: int, label: str, low: int, high: int | None = None, submit: bool = False,
+             fewer: str = "Fewer", more: str = "More") -> str:
+    """A labelled number with − and + buttons (STEPPER_SCRIPT, which the page includes); `submit`: each change
+    loads the page."""
+    key = f"stepper-{name}"
+    top = f' max="{high}"' if high is not None else ""
+    return (f'<div class="field"><span id="{key}">{label}</span><div class="stepper"{" data-submit" if submit else ""}>'
+            f'<button type="button" data-step="-1" aria-label="{escape(fewer)}">−</button>'
+            f'<input name="{name}" type="number" min="{low}"{top} step="1" value="{value}" aria-labelledby="{key}">'
+            f'<button type="button" data-step="1" aria-label="{escape(more)}">+</button></div></div>')
+
 
 KIND_LABELS = {"fault": "Fault", "bias": "Leaning", "speed": "Speed", "outcome": "Outcome", "wires": "Wires",
                "trend": "Trend"}
@@ -1345,11 +1377,8 @@ def pilot_page(name: str, summary, passes: int, overlay_svg: str | None = None, 
             return f'<a href="{escape(href)}"{current}>{escape(a)} <span class="n">{n}</span></a>'
         tabs = '<nav class="airframes">' + "".join(tab(a, n) for a, n in summary.airframes) + "</nav>"
     picker = (f'<form class="filters compact" method="get"><input type="hidden" name="aircraft" value="{escape(chosen)}">'
-              '<div class="field"><span id="look-at">Look at last</span><div class="stepper">'
-              '<button type="button" data-step="-1" aria-label="Fewer passes">−</button>'
-              f'<input name="passes" type="number" min="3" max="50" step="1" value="{passes}" aria-labelledby="look-at" '
-              '><button type="button" data-step="1" aria-label="More passes">+</button>'
-              f"</div></div><label>Servers <select name=\"servers\" onchange=\"this.form.submit()\">"
+              + _stepper("passes", passes, "Look at last", 3, 50, submit=True, fewer="Fewer passes", more="More passes")
+              + f"<label>Servers <select name=\"servers\" onchange=\"this.form.submit()\">"
               + "".join(f'<option value="{v}"{" selected" if v == servers else ""}>{label}</option>'
                         for v, label in (("ours", "This hub&#x27;s servers"), ("all", "All servers")))
               + f"</select></label></form><script>{STEPPER_SCRIPT}</script>")
