@@ -46,6 +46,11 @@ log = logging.getLogger(__name__)
 
 PUBLIC_UPLOADS = "uploads"  # source of recordings uploaded without a token
 CUSTOM_CSS_SETTING = "custom_css"
+ICON_SETTING = "icon"  # "<content type> <version>" of the admins' icon, kept as <data-dir>/icon
+MAX_ICON = 512 * 1024  # bytes
+# The image types an icon may be, by their first bytes (no SVG: it can carry script).
+ICON_TYPES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF87a", "image/gif"),
+              (b"GIF89a", "image/gif"), (b"\x00\x00\x01\x00", "image/x-icon"))
 JOIN_APPROVAL_SETTING = "join_approval"  # "on": new pilots wait for an admin's approval (PLAN #44)
 MEMBERS_ONLY_SETTING = "members_only"  # "on": the board and passes need a signed-in pilot (PLAN #45)
 PILOT_HOOKS = "pilot hooks"  # source of pilot hook uploads recognised without a token (see pilot_hook_access)
@@ -591,6 +596,50 @@ class Hub:
             else:
                 row.value = css
         self._notify(None)  # the Discord board is redrawn with it
+
+    def icon_version(self) -> str | None:
+        """The admins' icon's version (changes with each upload, for links to it), or None for the built-in mark."""
+        with self.sessions() as s:
+            row = s.get(Setting, ICON_SETTING)
+            return row.value.split(" ", 1)[1] if row and row.value else None
+
+    def icon(self) -> tuple[bytes, str] | None:
+        """The admins' icon and its content type, or None."""
+        with self.sessions() as s:
+            row = s.get(Setting, ICON_SETTING)
+            kind = row.value.split(" ", 1)[0] if row and row.value else None
+        path = self.data_dir / "icon"
+        return (path.read_bytes(), kind) if kind and path.exists() else None
+
+    def set_icon(self, data: bytes) -> None:
+        """The hub's icon (the header's square and the favicon): a PNG, JPEG, GIF, WebP, or ICO file."""
+        if not data:
+            raise ValueError("choose an image")
+        if len(data) > MAX_ICON:
+            raise ValueError(f"the icon is too big (at most {MAX_ICON // 1024} KB)")
+        kind = next((k for magic, k in ICON_TYPES if data.startswith(magic)), None)
+        if kind is None and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            kind = "image/webp"
+        if kind is None:
+            raise ValueError("the icon must be a PNG, JPEG, GIF, WebP, or ICO image")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.data_dir / "icon.part"
+        tmp.write_bytes(data)
+        tmp.replace(self.data_dir / "icon")
+        value = f"{kind} {hashlib.sha256(data).hexdigest()[:12]}"
+        with self.sessions.begin() as s:
+            row = s.get(Setting, ICON_SETTING)
+            if row is None:
+                s.add(Setting(key=ICON_SETTING, value=value))
+            else:
+                row.value = value
+
+    def remove_icon(self) -> None:
+        """Back to the built-in "GB" mark."""
+        with self.sessions.begin() as s:
+            if (row := s.get(Setting, ICON_SETTING)) is not None:
+                s.delete(row)
+        (self.data_dir / "icon").unlink(missing_ok=True)
 
     def authenticate(self, token: str) -> Source | None:
         with self.sessions() as s:

@@ -33,7 +33,7 @@ from .accuracy import accuracy_of, flown_elsewhere
 from .db import Pass, Pilot, Source, Upload
 from .live import LiveBroker, sse
 from .pilothook import PILOT_HOOK_VERSION
-from .service import SESSION_DAYS, Hub, IngestError, SignedIn
+from .service import MAX_ICON, SESSION_DAYS, Hub, IngestError, SignedIn
 from .telemetry import DEFAULT_URLS, Settings as TelemetrySettings, build_report, fetch_usage
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -154,9 +154,10 @@ def create_app(hub: Hub) -> FastAPI:
         # Signed in but waiting for an admin's approval: their account does nothing else yet (PLAN #44).
         request.state.waiting = await run_in_threadpool(hub.is_pending, pilot) if pilot else False
         css = await run_in_threadpool(hub.custom_css)
+        icon = await run_in_threadpool(hub.icon_version)
         reset = (pages.CURRENT_PILOT.set(pilot), pages.CURRENT_ADMIN.set(request.state.admin),
                  pages.CURRENT_CSS.set(css), pages.CURRENT_PENDING.set(pending),
-                 pages.CURRENT_WAITING.set(request.state.waiting))
+                 pages.CURRENT_WAITING.set(request.state.waiting), pages.CURRENT_ICON.set(icon))
         try:
             response = await call_next(request)
         finally:
@@ -165,6 +166,7 @@ def create_app(hub: Hub) -> FastAPI:
             pages.CURRENT_CSS.reset(reset[2])
             pages.CURRENT_PENDING.reset(reset[3])
             pages.CURRENT_WAITING.reset(reset[4])
+            pages.CURRENT_ICON.reset(reset[5])
         if token and pilot is None and not getattr(request.state, "session_set", False):
             response.delete_cookie(SESSION_COOKIE, path="/")  # ended (signed out elsewhere, expired)
         return response
@@ -754,6 +756,25 @@ def create_app(hub: Hub) -> FastAPI:
             stats, error = None, str(exc)
         view = TelemetrySettings(hub).view()
         return HTMLResponse(pages.usage_page(stats, view[0] if view else None, error))
+
+    @app.get("/icon")
+    def icon() -> Response:
+        """The admins' icon (the header's square and the favicon); open to everyone, like the page it's on."""
+        found = hub.icon()
+        if found is None:
+            raise HTTPException(404, "no icon set")
+        data, kind = found
+        return Response(data, media_type=kind, headers={"Cache-Control": "public, max-age=86400",
+                                                        "X-Content-Type-Options": "nosniff"})
+
+    @app.post("/admin/icon")
+    async def admin_icon(request: Request, icon: Annotated[UploadFile | None, File()] = None):
+        data = await icon.read(MAX_ICON + 1) if icon is not None else b""
+        return await run_in_threadpool(_admin_step, request, lambda: hub.set_icon(data), "Icon saved")
+
+    @app.post("/admin/icon/remove")
+    def admin_remove_icon(request: Request):
+        return _admin_step(request, hub.remove_icon, "Icon removed")
 
     @app.post("/admin/appearance")
     def admin_appearance(request: Request, css: Annotated[str, Form()] = ""):

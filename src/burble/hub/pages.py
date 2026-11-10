@@ -45,6 +45,13 @@ header.site { background: var(--header); color: var(--header-text); border-botto
 header.site .top { max-width: 1500px; margin: 0 auto; padding: 14px 40px; display: flex; align-items: center; gap: 32px; }
 .brand { display: flex; align-items: center; gap: 12px; white-space: nowrap; text-decoration: none; }
 .brandmark { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid #adc3b5; font: 700 17px Georgia, serif; }
+.brandmark.custom { border: 0; overflow: hidden; }
+.brandmark.custom img { width: 100%; height: 100%; object-fit: contain; }
+.icon-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 8px 0 18px; }
+.icon-row .preview { width: 48px; height: 48px; display: grid; place-items: center; background: var(--header);
+  color: var(--header-text); font: 700 20px Georgia, serif; flex: none; }
+.icon-row .preview img { width: 100%; height: 100%; object-fit: contain; }
+.icon-row form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
 .brand strong { display: block; font-size: 14px; letter-spacing: .08em; }
 .brand small { display: block; font: 10px var(--mono); letter-spacing: .12em; color: #b6c7b9; margin-top: 3px; }
 nav.nav { display: flex; gap: 2px; overflow-x: auto; }
@@ -324,6 +331,7 @@ table[data-sortable] th[aria-sort=ascending] button::after { content: " ▲"; fo
 table[data-sortable] th[aria-sort=descending] button::after { content: " ▼"; font-size: .8em; }
 .help-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--border);
   border-radius: 50%; color: var(--muted); font: 700 12px/1 var(--font, system-ui), sans-serif; cursor: help; }
+h3 .help-icon { margin-left: 8px; vertical-align: 2px; letter-spacing: 0; }
 h2 .help-icon { margin-left: 10px; vertical-align: 3px; letter-spacing: 0; }
 label .help-icon { margin-left: 8px; vertical-align: 1px; }
 .pop-host .pop { letter-spacing: normal; text-transform: none; }
@@ -397,6 +405,8 @@ CURRENT_PENDING: ContextVar[int] = ContextVar("current_pending", default=0)
 CURRENT_WAITING: ContextVar[bool] = ContextVar("current_waiting", default=False)
 # The admins' custom CSS (set per request by the app), added after the built-in styles on every page.
 CURRENT_CSS: ContextVar[str] = ContextVar("current_css", default="")
+# The admins' icon's version (set per request by the app), or None for the built-in "GB" mark.
+CURRENT_ICON: ContextVar[str | None] = ContextVar("current_icon", default=None)
 
 
 # The header's Light/Dark toggle: the viewer's choice is kept in this browser (`burble-theme`); until they make one,
@@ -447,7 +457,10 @@ def _nav(section: str | None = None) -> str:
                  '<form method="post" action="/signout"><button type="submit" class="simple">Sign out</button></form>')
     else:
         right = '<a class="simple" href="/signin">Sign in</a><a class="button lime" href="/join">Join</a>'
-    return ('<header class="site"><div class="top"><a class="brand" href="/"><span class="brandmark">GB</span>'
+    icon = CURRENT_ICON.get()
+    mark = (f'<span class="brandmark custom"><img src="/icon?v={escape(icon)}" alt=""></span>' if icon
+            else '<span class="brandmark">GB</span>')
+    return ('<header class="site"><div class="top"><a class="brand" href="/">' + mark +
             '<span><strong>GREENIE BOARD</strong><small>CARRIER LANDING RECORDS</small></span></a>'
             f'<nav class="nav" aria-label="Sections">{nav}</nav><div class="header-right">{toggle}{right}</div></div></header>')
 
@@ -468,7 +481,9 @@ def _header(title: str, sub: str = "", actions: str = "", micro: str = "") -> st
 def _page(title: str, body: str, section: str | None = None) -> str:
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f"<title>{escape(title)}</title>{THEME_HEAD}<style>{STYLE}\n{GRADE_CSS}</style>"
+            f"<title>{escape(title)}</title>"
+            + (f'<link rel="icon" href="/icon?v={escape(icon)}">' if (icon := CURRENT_ICON.get()) else "")
+            + f"{THEME_HEAD}<style>{STYLE}\n{GRADE_CSS}</style>"
             + (f"<style>{safe_css(css)}</style>" if (css := CURRENT_CSS.get()) else "") + "</head>"
             f"<body>{_nav(section)}<main>{body}</main>"
             '<footer class="site"><div><span>Powered by <a href="https://github.com/wrycu/dcs-burble">Burble</a></span>'
@@ -2013,8 +2028,18 @@ def usage_page(stats: dict | None, view: str | None, error: str | None) -> str:
 def _appearance(css: str) -> str:
     """The admins' custom CSS box, with the theme variables it can set."""
     names = ", ".join(f"<code>{v}</code>" for v in [*COLOR_VARS.values(), FONT_VAR, *GRADE_VARS.values()])
-    return ('<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Appearance</h2>'
-            '<p class="sub">Custom CSS for every page</p>'
+    icon = CURRENT_ICON.get()
+    preview = f'<img src="/icon?v={escape(icon)}" alt="The current icon">' if icon else "GB"
+    remove = ('<form method="post" action="/admin/icon/remove"><button type="submit" class="button paper">Use GB</button>'
+              "</form>" if icon else "")
+    icon_row = ('<h3>Icon' + _help_icon("Shown in the square at the top left of every page and as the browser tab's "
+                                        "icon. A square PNG, JPEG, GIF, WebP, or ICO image, at most 512 KB.")
+                + f'</h3><div class="icon-row"><span class="preview">{preview}</span>'
+                '<form method="post" action="/admin/icon" enctype="multipart/form-data">'
+                '<input type="file" name="icon" required accept="image/png,image/jpeg,image/gif,image/webp,image/x-icon,.ico" '
+                'aria-label="Icon image"><button type="submit" class="button dark">Save icon</button></form>' + remove + "</div>")
+    return ('<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">Appearance</h2>' + icon_row +
+            '<h3>CSS</h3><p class="sub">Custom CSS for every page</p>'
             f'<p class="sub">Discord images only pick up these variables from <code>:root</code> (dark-mode values '
             f"first): {names}</p>"
             '<form method="post" action="/admin/appearance">'

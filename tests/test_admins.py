@@ -172,3 +172,34 @@ def test_no_breadcrumbs_and_the_header_marks_your_own_page_and_settings(hub):
     settings = client.get("/pilots/Viper/settings").text
     assert "breadcrumb" not in settings and 'href="/pilots/Viper/settings" aria-current=page>Settings' in settings
     assert "breadcrumb" not in client.get("/admin").text
+
+
+PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+       b"\x00\x00\x00\rIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+
+
+def test_admins_set_the_icon_for_the_header_and_the_favicon(hub):
+    anyone = TestClient(create_app(hub))
+    page = anyone.get("/").text
+    assert '<span class="brandmark">GB</span>' in page and 'rel="icon"' not in page
+    assert anyone.get("/icon").status_code == 404
+    assert anyone.post("/admin/icon", files={"icon": ("i.png", PNG, "image/png")},
+                       follow_redirects=False).status_code in (303, 401, 403)
+    assert hub.icon_version() is None  # not an admin: nothing saved
+    admin = client_for(hub, "Viper", "viper password")
+    r = admin.post("/admin/icon", files={"icon": ("i.svg", b"<svg onload='x()'/>", "image/svg+xml")},
+                   follow_redirects=False)
+    assert "error=" in r.headers["location"] and hub.icon_version() is None  # no SVG
+    r = admin.post("/admin/icon", files={"icon": ("i.png", PNG, "image/png")}, follow_redirects=False)
+    assert "done=Icon%20saved" in r.headers["location"]
+    version = hub.icon_version()
+    page = anyone.get("/").text
+    assert f'<link rel="icon" href="/icon?v={version}">' in page and f'<img src="/icon?v={version}"' in page
+    assert ">GB</span>" not in page
+    r = anyone.get("/icon")
+    assert r.status_code == 200 and r.content == PNG and r.headers["content-type"] == "image/png"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert "Use GB" in admin.get("/admin").text
+    admin.post("/admin/icon/remove", follow_redirects=False)
+    assert hub.icon_version() is None and '<span class="brandmark">GB</span>' in anyone.get("/").text
+    assert anyone.get("/icon").status_code == 404
