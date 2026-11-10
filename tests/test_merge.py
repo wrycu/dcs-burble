@@ -129,7 +129,8 @@ def test_livery_and_side_number_are_kept_and_shown(hub):
     assert (landings["bolter"]["livery"], landings["bolter"]["modex"]) == ("VFA-37", "301")
     page = client.get(f"/passes/{landings['bolter']['id']}").text
     assert "<dt>Side number</dt><dd>301</dd>" in page and "<dt>Livery</dt><dd>VFA-37</dd>" in page
-    assert "#301 · VFA-37" in page  # the trap card's title line
+    assert "#301 · VFA-37" not in page  # the pass page's card is bare: the details above say it
+    assert "#301 · VFA-37" in client.get(f"/passes/{landings['bolter']['id']}/card.svg").text  # the full card's title line
     pilot = client.get("/pilots/Wrycu").text
     assert '<span class="modex">#301</span>' in pilot
     assert "Last livery" not in pilot

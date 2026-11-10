@@ -930,7 +930,7 @@ def create_app(hub: Hub) -> FastAPI:
         try:
             result = hub.load_pass(p, reports)
             svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}", calls=p.calls,
-                              night=bool(p.night), zoom_hint=True, **_badges(accuracy))
+                              night=bool(p.night), zoom_hint=True, bare=True, **_badges(accuracy))
             return pages.pass_page(p, svg, reports=reports, track_source=result.track_source, accuracy=accuracy,
                                    wind=wind_text(result), weather=result.weather, radio=hub.pass_radio(p))
         except (IngestError, OSError) as exc:
@@ -952,7 +952,7 @@ def create_app(hub: Hub) -> FastAPI:
             raise HTTPException(404, f"trap card unavailable: {exc}") from exc
         view = _view(near, far)
         svg = render_card(result, grade_pass(result), pages.card_title(p), uid=f"p{p.id}" if zoom else f"hover{p.id}",
-                          calls=p.calls, night=bool(p.night), view=view, zoom_hint=zoom,
+                          calls=p.calls, night=bool(p.night), view=view, zoom_hint=zoom, bare=zoom,
                           **_badges(accuracy_of(p, reports)))
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=300"})
 

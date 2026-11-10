@@ -104,7 +104,8 @@ def test_dcs_grade_from_sidecar_is_shown(client, token, tmp_path):
     pass_id = upload(client, token, acmi).json()["pass_id"]
     (row,) = client.get("/api/v1/passes", params={"days": 0}).json()
     assert row["wire"] == 3 and row["dcs_grade"] == "LSO: GRADE:C : LNFIW  WIRE# 3" and row["grade"] == "C"
-    assert "LNFIW  WIRE# 3" in client.get(f"/passes/{pass_id}").text
+    assert "LNFIW  WIRE# 3" in client.get(f"/passes/{pass_id}/card.svg").text  # the full card (hover, Discord)
+    assert "LNFIW  WIRE# 3" not in client.get(f"/passes/{pass_id}").text  # the pass page's card is bare
 
 
 def test_regrade_adds_new_version_and_keeps_slices(hub, client, token, monkeypatch):

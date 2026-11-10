@@ -194,7 +194,7 @@ def test_live_calls_are_spoken_and_uploaded(tmp_path, clips):
     assert all(radio == Radio(127.6, Modulation.AM) for _, radio in sink.said)  # the Truman's frequency
     (row,) = listed
     assert [c["call"] for c in row["calls"]] == [c.value for c in said]
-    assert "LSO calls:" in page and "Wave off" in page
+    assert "LSO calls:" not in page and "Wave off" in page  # on the card's plot, not listed under it
     # Each call says exactly what was said (the variant picked), and in which voice (PLAN #51).
     assert [c["said"] for c in row["calls"]] == sink.texts
     assert {c["voice"] for c in row["calls"]} == {"test-tones"}

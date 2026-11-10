@@ -230,7 +230,6 @@ ul.themes li { display: flex; gap: 10px; align-items: baseline; }
   align-items: center; padding: 24px 28px; border-top: 4px solid #bdb694; }
 .sheet-head h2 { margin: 7px 0; font-size: 27px; letter-spacing: -.04em; }
 .sheet-head p, .sheet-head .micro { margin: 0; color: #c5d5c8; }
-.sheet-head .grade-text { font: 13px var(--mono); margin-top: 6px; }
 .sheet-card { background: var(--card); border: 1px solid var(--border); border-top: 0; padding: 24px; }
 .sheet-caption { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 14px; flex-wrap: wrap; }
 .sheet-caption h2 { font-size: 21px; margin: 4px 0; }
@@ -241,6 +240,21 @@ ul.themes li { display: flex; gap: 10px; align-items: baseline; }
 .detail-list dd { margin: 5px 0 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .detail-list div.wide { grid-column: 1 / -1; }
 .quality { background: var(--surface2); }
+.detail-grid.single { grid-template-columns: 1fr; }
+.caption-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.badges { display: flex; gap: 6px; }
+.badge { color: #fff; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; cursor: help; white-space: nowrap; }
+.pop-host { position: relative; }
+.pop-host .pop { display: none; position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: max-content;
+  max-width: min(720px, calc(100vw - 32px)); overflow-x: auto; background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); padding: 14px 16px; box-shadow: 0 8px 24px rgba(0, 0, 0, .25); cursor: auto;
+  font-weight: 400; white-space: normal; text-align: left; }
+.pop-host:hover .pop, .pop-host:focus .pop, .pop-host:focus-within .pop { display: block; }
+.pop-host .pop.text { width: max-content; max-width: min(320px, calc(100vw - 32px)); font-size: 13px; line-height: 1.45; }
+.pop-host .pop.left { left: 0; right: auto; }
+.stamp.pop-host { cursor: help; }
+.stamp .pop { font: 13px/1.45 var(--font, system-ui), sans-serif; }
+.pop-host .pop::before { content: ""; position: absolute; left: 0; right: 0; top: -10px; height: 10px; }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 16px; }
 dl.facts dt { color: var(--muted); }
 dl.facts dd { margin: 0; }
@@ -682,17 +696,36 @@ def _report(r: Pass, used: bool) -> str:
             + (" <strong>track used</strong>" if used else ""))
 
 
+ACCURACY_COLORS = {"Full": "#1a7f37", "High": "#0969da", "Medium": "#bf8700", "Low": "#cf4d1a", "None": "#8c959f"}
+ELSEWHERE_TIP = "Flown on a server that isn't tracked by this hub."
+
+
+def _accuracy_badges(a: Accuracy | None) -> str:
+    """The pass page's badges over the trap card: the overall accuracy, whose tooltip is the whole Source and
+    confidence table, and "another server" (flown elsewhere), with a tooltip saying what that means."""
+    if a is None:
+        return ""
+    level = a.overall.level
+    out = (f'<span class="badge pop-host" tabindex="0" style="background:{ACCURACY_COLORS.get(level, "#8c959f")}">'
+           f'{escape(level)} accuracy<span class="pop" role="tooltip"><strong>Source and confidence</strong>'
+           f"{_accuracy(a)}</span></span>")
+    if a.flown.level == "elsewhere":
+        out = ('<span class="badge pop-host" tabindex="0" style="background:#6e40c9">another server'
+               f'<span class="pop text" role="tooltip">{escape(ELSEWHERE_TIP)}</span></span>') + out
+    return f'<span class="badges">{out}</span>'
+
+
 def _accuracy(a: Accuracy) -> str:
     """The landing's row of the accuracy table (docs/accuracy-scores.png): which parts reported it, and the scores."""
-    def level(s) -> str:
+    def level(s, noted: bool = True) -> str:
         cls = "na" if s.level == "n/a" else s.level
-        note = f'<span class="note">{escape(s.note)}</span>' if s.note else ""
+        note = f'<span class="note">{escape(s.note)}</span>' if s.note and noted else ""
         return f'<span class="level level-{cls}">{escape(s.level)}</span>{note}'
 
     heads = [p.name for p in a.parts] + ["Overall", "Approach", "Wire", "Comms"]
     cells = [f'<span class="{"yes" if p.present else "no"}">{"✓" if p.present else "✗"}</span>'
              + (f'<span class="note">{escape(p.note)}</span>' if p.note else "") for p in a.parts]
-    cells += [level(s) for s in a.scores().values()]
+    cells += [level(s, name != "comms") for name, s in a.scores().items()]  # Comms: just the level
     split = len(a.parts)
     th = "".join(f'<th{" class=split" if i == split else ""}>{escape(h)}</th>' for i, h in enumerate(heads))
     td = "".join(f'<td{" class=split" if i == split else ""}>{c}</td>' for i, c in enumerate(cells))
@@ -729,65 +762,69 @@ def weather_text(weather: dict | None) -> str | None:
     return ", ".join(parts)
 
 
+def _grade_stamp(g) -> str:
+    """The pass sheet's grade square: colour only, with what it means and its points in a themed popup."""
+    grade = g.grade if g else "?"
+    tip = (f"<strong>{escape(grade_short(grade))}: {escape(grade_name(grade))}</strong><br>{g.points:g} points"
+           if g else "<strong>Not graded</strong>")
+    label = f"{grade_name(grade)}, {g.points:g} points" if g else "Not graded"
+    return (f'<div class="stamp pop-host {GRADE_CLASS.get(grade, "")}" tabindex="0" role="img" aria-label="{escape(label)}">'
+            f'<span class="pop text" aria-hidden="true">{tip}</span></div>')
+
+
 def pass_page(p: Pass, card_svg: str | None, error: str | None = None, reports: list[Pass] | None = None,
               track_source: str | None = None, accuracy: Accuracy | None = None, wind: str | None = None,
               weather: dict | None = None, radio: list[dict] | None = None) -> str:
     g = p.grade
-    facts = [
+    facts = [("Wind", escape(wind.removeprefix("Wind ")))] if wind else []  # first, at the top
+    facts += [
         ("Carrier", escape(f"{p.carrier_unit or ''} ({p.carrier_type})")),
         ("Mission", escape(p.mission or "–")),
-        ("Aircraft", escape(p.aircraft_type)),
         ("Side number", escape(p.pilot.modex or "–")),
         ("Livery", escape(p.livery or "–")),
         ("Wire", escape(_wire(p))),
-        ("DCS LSO", escape(p.dcs_grade or "–")),
     ]
     wide = []
-    if wind:
-        wide.append(("Wind", escape(wind.removeprefix("Wind "))))
     if (settings := weather_text(weather)) is not None:
         wide.append(("Weather", escape(settings)))
     if accuracy is not None:
         facts.append(("Flown on", escape(accuracy.flown_label + (f" ({accuracy.flown.note})" if accuracy.flown.note else ""))))
-    if relayed := (p.slice.sidecar or {}).get("calls_from"):
-        wide.append(("LSO calls", escape(f"made on {relayed}'s server, relayed by the pilot hook")))
     if radio:
         wide.append(("Radio", _radio(p, radio)))
     reports = reports or [p]
     used = track_source or p.source.name
     listed = "<br>".join(_report(r, len(reports) > 1 and r.source.name == used) for r in reports)
-    wide.append(("Reports" if len(reports) > 1 else "Source", listed))
+    facts.append(("Reports" if len(reports) > 1 else "Source", listed))
     dl = ("".join(f"<div><dt>{k}</dt><dd>{v}</dd></div>" for k, v in facts)
           + "".join(f'<div class="wide"><dt>{k}</dt><dd>{v}</dd></div>' for k, v in wide))
     name = escape(p.pilot.name)
     quoted = quote(p.pilot.name, safe="")
     grade = g.grade if g else "?"
     head = ('<div class="sheet-head"><div>'
-            f'<div class="micro">{name} &nbsp;/&nbsp; Pass {p.id}{f" &nbsp;/&nbsp; grading v{g.version}" if g else ""}</div>'
-            f"<h2>{escape(grade_name(grade) if g else 'Not graded')}{f' &nbsp;·&nbsp; {g.points:g} points' if g else ''}</h2>"
+            f'<h2>{name} &nbsp;/&nbsp; Pass {p.id}{f" &nbsp;/&nbsp; grading v{g.version}" if g else ""}</h2>'
             f"<p>{escape(_outcome(p))}{' · night' if p.night else ''}</p>"
-            + (f'<p class="grade-text">{escape(g.text)}</p>' if g and g.text else "")
-            + f'</div><div class="stamp {GRADE_CLASS.get(grade, "")}" aria-hidden="true">{escape(grade_short(grade))}</div></div>')
+            f'</div>{_grade_stamp(g)}</div>')
     if card_svg:
-        card = (f'<div class="sheet-card"><div class="sheet-caption"><div><div class="micro quiet">The trap card</div>'
-                "<h2>Glideslope, lineup, and LSO calls</h2></div>"
-                '<button id="card-zoom-reset" class="zoom-reset" hidden>Reset zoom</button></div>'
+        card = ('<div class="sheet-card"><div class="sheet-caption"><h2>Trap Sheet</h2>'
+                '<div class="caption-right"><button id="card-zoom-reset" class="zoom-reset" hidden>Reset zoom</button>'
+                f"{_accuracy_badges(accuracy)}</div></div>"
                 f'<div class="card zoomable" id="trap-card" data-src="/passes/{p.id}/card.svg?zoom=1" '
                 f'data-reset="card-zoom-reset">{card_svg}</div></div><script>{ZOOM_SCRIPT}</script>')
     else:
         card = f'<div class="sheet-card"><p class="empty-state">{escape(error or "")}</p></div>'
-    quality = ('<div class="panel quality"><div class="micro quiet">Source and confidence</div><h3>Accuracy</h3>'
-               f'{_accuracy(accuracy)}</div>' if accuracy else "")
+    # With a card, the accuracy table is the tooltip of its badge; without one, a panel beside the details.
+    quality = ('<div class="panel quality"><h3>Source and confidence</h3>'
+               f'{_accuracy(accuracy)}</div>' if accuracy and not card_svg else "")
     actions = (f'<a class="button paper" href="/pilots/{quoted}">← {name}</a>'
                f'<a class="button paper" href="/passes/{p.id}/acmi">Download ACMI</a>'
                + (f'<a class="button dark" href="/passes/{p.id}/replay">▶ &nbsp;Replay in 3D</a>' if card_svg else ""))
     sub = " · ".join(escape(x) for x in (_when(p.occurred_at), p.aircraft_type,
                                          f"#{p.pilot.modex}" if p.pilot.modex else "") if x)
-    body = (_header("Pass debrief.", sub, actions=actions)
+    body = (_header("Debrief", sub, actions=actions)
             + head + card
-            + '<div class="detail-grid"><div class="panel"><div class="micro quiet">Flight details</div><h3>Pass context</h3>'
+            + f'<div class="detail-grid{"" if quality else " single"}"><div class="panel"><h3>Flight details</h3>'
             f'<dl class="detail-list">{dl}</dl></div>{quality}</div>')
-    return _page(f"{p.pilot.name} {g.grade if g else ''}", body, "board")
+    return _page(f"{p.pilot.name} {g.grade if g else ''}", body)  # no tab: a pass isn't the board
 
 
 def _radio(p: Pass, radio: list[dict]) -> str:
@@ -864,7 +901,7 @@ def replay_page(p: Pass, lineup_svg: str | None = None) -> str:
            f'{escape(p.aircraft_type)} · {escape(p.carrier_unit or p.carrier_type)}'
            f'{" · wire " + escape(_wire(p)) if p.wire else ""}')
     body = (_header("3D replay.", sub,
-                    actions=f'<a class="button paper" href="/passes/{p.id}">← Pass debrief</a>')
+                    actions=f'<a class="button paper" href="/passes/{p.id}">← Debrief</a>')
             + f'<div class="replay" id="replay" data-src="/passes/{p.id}/replay.json">'
             f'<canvas aria-label="3D replay of the pass"></canvas>'
             + _scene_overlays("Loading the replay…") + '</div>'
@@ -887,7 +924,7 @@ def replay_page(p: Pass, lineup_svg: str | None = None) -> str:
             f"the landing's best track, smoothed between samples.</p>"
             f'<script type="importmap">{_imports()}</script>'
             f'<script type="module" src="/static/replay.js"></script>')
-    return _page(f"Replay: {p.pilot.name} {g.grade if g else ''}", f"<style>{REPLAY_STYLE}</style>{body}", "board")
+    return _page(f"Replay: {p.pilot.name} {g.grade if g else ''}", f"<style>{REPLAY_STYLE}</style>{body}")
 
 
 LIVE_STYLE = """
@@ -1894,8 +1931,9 @@ document.querySelectorAll('table[data-sortable]').forEach((table) => {
 
 
 def _help_icon(text: str) -> str:
-    """A small "?" that shows `text` on hover (and to screen readers, and on focus by keyboard)."""
-    return f'<span class="help-icon" tabindex="0" role="img" aria-label="{escape(text)}" title="{escape(text)}">?</span>'
+    """A small "?" that shows `text` in a themed popup on hover (and on focus by keyboard, and to screen readers)."""
+    return (f'<span class="help-icon pop-host" tabindex="0" role="img" aria-label="{escape(text)}">?'
+            f'<span class="pop text left" aria-hidden="true">{escape(text)}</span></span>')
 
 
 def _telemetry_panel(tel: dict) -> str:

@@ -253,7 +253,7 @@ def test_relaying_calls_to_another_hub(tmp_path):
         assert [c["call"] for c in calls] == ["you're high", "power"]
         assert calls[1]["said"] == "301, Power." and calls[1]["voice"] == "clips-ryan"  # kept when relayed
     page = client_at(b).get(f"/passes/{relayed['pass_id']}").text
-    assert "relayed by the pilot hook" in page and "lso.wrycu.com" in page and "Power (" in page
+    assert "relayed by the pilot hook" not in page and "live calls" not in page and 'class="tc-call"' in page
 
 
 def test_dcs_grade_added_by_a_later_upload(tmp_path):
@@ -367,7 +367,7 @@ def test_accuracy_rows(tmp_path, hub):
     assert parts == {"Server report": True, "Pilot hook": True, "DCS comms": False}
     assert scores == {"overall": "Full", "approach": "Full", "wire": "High", "comms": "None"}
     page = client.get(f"/passes/{client.get('/api/v1/passes?days=0').json()[0]['id']}").text
-    assert "<h3>Accuracy</h3>" in page and "level-Full" in page and "estimated from where the jet stopped" in page
+    assert "<strong>Source and confidence</strong>" in page and "<h3>Source and confidence</h3>" not in page and "level-Full" in page and "estimated from where the jet stopped" in page
 
 
 def test_accuracy_of_a_landing_graded_by_dcs_alone(tmp_path):
@@ -401,6 +401,9 @@ def test_where_a_pilot_hooks_landing_was_flown(tmp_path, extra, where):
     assert landing["accuracy"]["flown"]["where"] == where
     card = client.get(f"/passes/{report['pass_id']}/card.svg").text
     assert ("another server" in card) == (where == "elsewhere")
+    page = client.get(f"/passes/{report['pass_id']}").text  # the pass page draws the badge, with what it means
+    assert ("isn&#x27;t tracked by this hub" in page) == (where == "elsewhere")
+    assert 'class="badge pop-host"' in page and "<strong>Source and confidence</strong>" in page
 
 
 def test_accuracy_is_rescored_when_dcss_grade_arrives_later(tmp_path):
